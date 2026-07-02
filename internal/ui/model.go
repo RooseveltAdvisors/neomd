@@ -4457,6 +4457,13 @@ func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "esc":
+		if m.compose.fromPresend {
+			// User cancelled CC/BCC edit — just return to pre-send unchanged.
+			m.compose.fromPresend = false
+			m.compose.extraVisible = false
+			m.state = statePresend
+			return m, nil
+		}
 		if m.hasComposeDraft() {
 			m.beginDiscardConfirm()
 			return m, nil
@@ -4484,6 +4491,15 @@ func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var launch bool
 	m.compose, cmd, launch = m.compose.update(msg)
 	if launch {
+		if m.compose.fromPresend && m.pendingSend != nil {
+			// Returning from CC/BCC-only edit: patch pendingSend and go back to pre-send.
+			m.pendingSend.cc = m.compose.cc.Value()
+			m.pendingSend.bcc = m.compose.bcc.Value()
+			m.compose.fromPresend = false
+			m.compose.extraVisible = false
+			m.state = statePresend
+			return m, nil
+		}
 		return m.launchEditorCmd()
 	}
 	return m, cmd
@@ -4607,10 +4623,13 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.compose.extraVisible = !m.compose.extraVisible
 		if m.compose.extraVisible {
 			// Pre-fill from pending data so the user can edit.
+			m.compose.to.SetValue(ps.to)
+			m.compose.subject.SetValue(ps.subject)
 			m.compose.cc.SetValue(ps.cc)
 			m.compose.bcc.SetValue(ps.bcc)
 			m.compose.step = stepCC
 			m.compose.cc.Focus()
+			m.compose.fromPresend = true
 			m.state = stateCompose
 		}
 		return m, nil

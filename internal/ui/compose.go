@@ -26,6 +26,7 @@ type composeModel struct {
 	subject      textinput.Model
 	step         composeStep
 	extraVisible bool // ctrl+b toggles Cc+Bcc together; off by default
+	fromPresend  bool // true when ctrl+b was pressed from the pre-send screen (CC-only edit)
 
 	// Address autocomplete
 	knownAddrs  []string // all addresses from screener lists (set once)
@@ -70,6 +71,7 @@ func (c *composeModel) reset() {
 	c.subject.Reset()
 	c.step = stepTo
 	c.extraVisible = false
+	c.fromPresend = false
 	c.to.Focus()
 	c.cc.Blur()
 	c.bcc.Blur()
@@ -254,6 +256,9 @@ func (c composeModel) advanceField() (composeModel, tea.Cmd, bool) {
 		c.bcc.Focus()
 		return c, nil, false
 	case stepBCC:
+		if c.fromPresend {
+			return c, nil, true // signal: done editing CC/BCC, return to pre-send
+		}
 		c.step = stepSubject
 		c.bcc.Blur()
 		c.subject.Focus()
