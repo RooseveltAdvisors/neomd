@@ -549,10 +549,11 @@ type Model struct {
 	markAsReadFolder string // folder of email with pending mark-as-read timer
 
 	// Compose / pre-send
-	compose      composeModel
-	attachments  []string // files to attach to the next send (cleared after send)
-	pendingSend  *pendingSendData
-	presendFromI int // index into presendFroms() for the From field cycle
+	compose        composeModel
+	attachments    []string // files to attach to the next send (cleared after send)
+	pendingSend    *pendingSendData
+	presendFromI   int  // index into presendFroms() for the From field cycle
+	pendingIsReply bool // true when the active editor session was launched as a reply (not forward/new)
 
 	// AI handoff (pre-send `i`) — when active, shows a one-line input for the
 	// instruction that gets substituted into [ai].args via {prompt}. Empty
@@ -2521,6 +2522,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case editorDoneMsg:
+		isReply := m.pendingIsReply
+		m.pendingIsReply = false
 		if msg.err != nil {
 			m.attachments = nil
 			m.status = msg.err.Error()
@@ -2556,8 +2559,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			to: msg.to, cc: msg.cc, bcc: mergeAutoBCC(msg.bcc, m.cfg.AutoBCC),
 			subject: msg.subject, body: cleanBody,
 		}
-		// Track original email for \Answered flag (replies/forwards).
-		if m.openEmail != nil && strings.HasPrefix(strings.ToLower(msg.subject), "re:") {
+		// Track original email for \Answered flag (replies only, not forwards/new).
+		if m.openEmail != nil && isReply {
 			m.pendingSend.replyToUID = m.openEmail.UID
 			m.pendingSend.replyToFolder = m.openEmail.Folder
 			m.pendingSend.replyToAccount = m.activeAccount().Name
@@ -5184,6 +5187,7 @@ func (m Model) launchReplyWithCC(extraCC string, replyAll bool) (tea.Model, tea.
 
 	prelude := editor.ReplyPrelude(to, cc, subject, m.presendFrom(), e.From, m.openBody)
 
+	m.pendingIsReply = true
 	f, err := os.CreateTemp(neomdTempDir(), "neomd-*.md")
 	if err != nil {
 		m.status = err.Error()
