@@ -549,10 +549,11 @@ type Model struct {
 	markAsReadFolder string // folder of email with pending mark-as-read timer
 
 	// Compose / pre-send
-	compose      composeModel
-	attachments  []string // files to attach to the next send (cleared after send)
-	pendingSend  *pendingSendData
-	presendFromI int // index into presendFroms() for the From field cycle
+	compose        composeModel
+	attachments    []string // files to attach to the next send (cleared after send)
+	pendingSend    *pendingSendData
+	presendFromI   int  // index into presendFroms() for the From field cycle
+	pendingIsReply bool // true when the active editor session was launched as a reply (not forward/new)
 
 	// AI handoff (pre-send `i`) — when active, shows a one-line input for the
 	// instruction that gets substituted into [ai].args via {prompt}. Empty
@@ -2521,7 +2522,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case editorDoneMsg:
+		// pendingIsReply stays set across the whole compose session so that
+		// re-edit (e), spell check (s), and AI handoff (i) from pre-send —
+		// which fire editorDoneMsg again — keep the \Answered tracking and
+		// threading headers. It is cleared only when the session ends:
+		// abort/error/empty here, send, or discard.
+		isReply := m.pendingIsReply
 		if msg.err != nil {
+			m.pendingIsReply = false
 			m.attachments = nil
 			m.status = msg.err.Error()
 			m.isError = true
@@ -2529,12 +2537,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.aborted {
+			m.pendingIsReply = false
 			m.attachments = nil
 			m.status = "Aborted (no changes saved). Use :recover to reopen the latest backup."
 			m.state = stateInbox
 			return m, nil
 		}
 		if strings.TrimSpace(msg.body) == "" {
+			m.pendingIsReply = false
 			m.attachments = nil
 			m.status = "Cancelled (empty body). Use :recover if you want the latest backup."
 			m.state = stateInbox
@@ -2556,8 +2566,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			to: msg.to, cc: msg.cc, bcc: mergeAutoBCC(msg.bcc, m.cfg.AutoBCC),
 			subject: msg.subject, body: cleanBody,
 		}
-		// Track original email for \Answered flag (replies/forwards).
-		if m.openEmail != nil && strings.HasPrefix(strings.ToLower(msg.subject), "re:") {
+		// Track original email for \Answered flag (replies only, not forwards/new).
+		if m.openEmail != nil && isReply {
 			m.pendingSend.replyToUID = m.openEmail.UID
 			m.pendingSend.replyToFolder = m.openEmail.Folder
 			m.pendingSend.replyToAccount = m.activeAccount().Name
@@ -4441,6 +4451,7 @@ func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "y":
 			m.pendingDiscard = false
+			m.pendingIsReply = false
 			m.attachments = nil
 			m.pendingSend = nil
 			m.state = stateInbox
@@ -4457,6 +4468,13 @@ func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "esc":
+		if m.compose.fromPresend {
+			// User cancelled CC/BCC edit — just return to pre-send unchanged.
+			m.compose.fromPresend = false
+			m.compose.extraVisible = false
+			m.state = statePresend
+			return m, nil
+		}
 		if m.hasComposeDraft() {
 			m.beginDiscardConfirm()
 			return m, nil
@@ -4484,6 +4502,15 @@ func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var launch bool
 	m.compose, cmd, launch = m.compose.update(msg)
 	if launch {
+		if m.compose.fromPresend && m.pendingSend != nil {
+			// Returning from CC/BCC-only edit: patch pendingSend and go back to pre-send.
+			m.pendingSend.cc = m.compose.cc.Value()
+			m.pendingSend.bcc = m.compose.bcc.Value()
+			m.compose.fromPresend = false
+			m.compose.extraVisible = false
+			m.state = statePresend
+			return m, nil
+		}
 		return m.launchEditorCmd()
 	}
 	return m, cmd
@@ -4501,6 +4528,7 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "y":
 			m.pendingDiscard = false
+			m.pendingIsReply = false
 			m.attachments = nil
 			m.pendingSend = nil
 			m.state = stateInbox
@@ -4543,6 +4571,7 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		includeHTMLSig, cleanBody := extractHTMLSignatureMarker(ps.body)
 		m.attachments = nil
 		m.pendingSend = nil
+		m.pendingIsReply = false
 		// Route to Listmonk if the To address matches a configured trigger.
 		if m.cfg.ListmonkEnabled() {
 			triggers := m.listmonkTriggers()
@@ -4607,10 +4636,13 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.compose.extraVisible = !m.compose.extraVisible
 		if m.compose.extraVisible {
 			// Pre-fill from pending data so the user can edit.
+			m.compose.to.SetValue(ps.to)
+			m.compose.subject.SetValue(ps.subject)
 			m.compose.cc.SetValue(ps.cc)
 			m.compose.bcc.SetValue(ps.bcc)
 			m.compose.step = stepCC
 			m.compose.cc.Focus()
+			m.compose.fromPresend = true
 			m.state = stateCompose
 		}
 		return m, nil
@@ -4850,6 +4882,7 @@ func (m Model) saveDraftCmd(imapCli *imap.Client, from, to, cc, bcc, subject, bo
 }
 
 func (m Model) launchEditorCmd() (tea.Model, tea.Cmd) {
+	m.pendingIsReply = false
 	to := m.compose.to.Value()
 	cc := m.compose.cc.Value()
 	bcc := m.compose.bcc.Value()
@@ -5051,6 +5084,7 @@ func (m Model) enterReactionMode(e *imap.Email) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) launchForwardCmd() (tea.Model, tea.Cmd) {
+	m.pendingIsReply = false
 	e := m.openEmail
 	if e == nil {
 		return m, nil
@@ -5165,6 +5199,7 @@ func (m Model) launchReplyWithCC(extraCC string, replyAll bool) (tea.Model, tea.
 
 	prelude := editor.ReplyPrelude(to, cc, subject, m.presendFrom(), e.From, m.openBody)
 
+	m.pendingIsReply = true
 	f, err := os.CreateTemp(neomdTempDir(), "neomd-*.md")
 	if err != nil {
 		m.status = err.Error()

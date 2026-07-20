@@ -1023,3 +1023,34 @@ func TestFilterValidAttachments(t *testing.T) {
 		t.Errorf("skipped = %v, want [%s %s]", skipped, subDir, missing)
 	}
 }
+
+func TestEditorDoneReplyTrackingSurvivesReEdit(t *testing.T) {
+	m := Model{
+		cfg:            &config.Config{},
+		accounts:       []config.AccountConfig{{Name: "test"}},
+		openEmail:      &imap.Email{UID: 42, Folder: "INBOX", MessageID: "<orig@example.com>"},
+		pendingIsReply: true,
+		state:          stateCompose,
+	}
+
+	// First editor exit (initial reply).
+	next, _ := m.Update(editorDoneMsg{to: "a@b.c", subject: "Re: hi", body: "hello"})
+	got := next.(Model)
+	if got.pendingSend == nil || got.pendingSend.replyToUID != 42 {
+		t.Fatal("first editor exit should track replyToUID")
+	}
+
+	// Second editor exit — simulates re-edit (e), spell check (s), or AI
+	// handoff (i) from the pre-send screen. Reply tracking must survive.
+	next, _ = got.Update(editorDoneMsg{to: "a@b.c", subject: "Re: hi", body: "hello v2"})
+	got = next.(Model)
+	if got.pendingSend == nil {
+		t.Fatal("pendingSend nil after re-edit")
+	}
+	if got.pendingSend.replyToUID != 42 {
+		t.Fatalf("re-edit lost reply tracking: replyToUID = %d, want 42", got.pendingSend.replyToUID)
+	}
+	if got.pendingSend.inReplyTo != "<orig@example.com>" {
+		t.Fatalf("re-edit lost In-Reply-To: %q", got.pendingSend.inReplyTo)
+	}
+}

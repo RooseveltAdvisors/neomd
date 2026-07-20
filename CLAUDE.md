@@ -98,6 +98,8 @@ Folder operations prefer RFC 6851 MOVE; `u` undo uses UIDPLUS destination UIDs c
 
 ## Project-Specific Conventions
 
+- **Check `AGENTS.md` before and after changes** — it lists the user-visible feature invariants that must not break (reply `·` dot, threading headers, MIME shapes, screener priority, pre-send round-trip guarantees, …) with code anchors and pinning tests. Scan the relevant section before touching related code, re-verify after, and add an entry when shipping a new feature.
+- **Always update `CHANGELOG.md` at the end of every user-visible change** — dated `# YYYY-MM-DD` heading (newest first), bold title, what/why/where, and the regression test name.
 - **Keep diffs minimal** — fix the specific thing asked; do not refactor adjacent code.
 - **Avoid modifier keys for new bindings** — user's tmux prefix is `C-t`, and `ctrl+a`/`ctrl+e` collide with bubbles textinput line-start/end. Prefer plain letters, especially on the pre-send screen.
 - **Inline markers must be visible plain text** — use `[attach] /path`, never HTML comments (hidden by treesitter in the neovim compose buffer).
