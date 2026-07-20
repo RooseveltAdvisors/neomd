@@ -2522,9 +2522,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case editorDoneMsg:
+		// pendingIsReply stays set across the whole compose session so that
+		// re-edit (e), spell check (s), and AI handoff (i) from pre-send —
+		// which fire editorDoneMsg again — keep the \Answered tracking and
+		// threading headers. It is cleared only when the session ends:
+		// abort/error/empty here, send, or discard.
 		isReply := m.pendingIsReply
-		m.pendingIsReply = false
 		if msg.err != nil {
+			m.pendingIsReply = false
 			m.attachments = nil
 			m.status = msg.err.Error()
 			m.isError = true
@@ -2532,12 +2537,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.aborted {
+			m.pendingIsReply = false
 			m.attachments = nil
 			m.status = "Aborted (no changes saved). Use :recover to reopen the latest backup."
 			m.state = stateInbox
 			return m, nil
 		}
 		if strings.TrimSpace(msg.body) == "" {
+			m.pendingIsReply = false
 			m.attachments = nil
 			m.status = "Cancelled (empty body). Use :recover if you want the latest backup."
 			m.state = stateInbox
@@ -4444,6 +4451,7 @@ func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "y":
 			m.pendingDiscard = false
+			m.pendingIsReply = false
 			m.attachments = nil
 			m.pendingSend = nil
 			m.state = stateInbox
@@ -4520,6 +4528,7 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "y":
 			m.pendingDiscard = false
+			m.pendingIsReply = false
 			m.attachments = nil
 			m.pendingSend = nil
 			m.state = stateInbox
@@ -4562,6 +4571,7 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		includeHTMLSig, cleanBody := extractHTMLSignatureMarker(ps.body)
 		m.attachments = nil
 		m.pendingSend = nil
+		m.pendingIsReply = false
 		// Route to Listmonk if the To address matches a configured trigger.
 		if m.cfg.ListmonkEnabled() {
 			triggers := m.listmonkTriggers()
@@ -4872,6 +4882,7 @@ func (m Model) saveDraftCmd(imapCli *imap.Client, from, to, cc, bcc, subject, bo
 }
 
 func (m Model) launchEditorCmd() (tea.Model, tea.Cmd) {
+	m.pendingIsReply = false
 	to := m.compose.to.Value()
 	cc := m.compose.cc.Value()
 	bcc := m.compose.bcc.Value()
@@ -5073,6 +5084,7 @@ func (m Model) enterReactionMode(e *imap.Email) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) launchForwardCmd() (tea.Model, tea.Cmd) {
+	m.pendingIsReply = false
 	e := m.openEmail
 	if e == nil {
 		return m, nil
