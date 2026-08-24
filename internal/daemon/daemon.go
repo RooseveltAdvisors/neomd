@@ -9,13 +9,16 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/sspaeti/neomd/internal/config"
 	"github.com/sspaeti/neomd/internal/imap"
+	"github.com/sspaeti/neomd/internal/schedule"
 	"github.com/sspaeti/neomd/internal/screener"
+	"github.com/sspaeti/neomd/internal/smtp"
 )
 
 // Daemon runs headless email screening in the background.
@@ -68,6 +71,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := d.screenInbox(ctx); err != nil {
 		d.logger.Error("initial screening failed", "error", err)
 	}
+	if err := d.processScheduled(ctx); err != nil {
+		d.logger.Error("send-later pass failed", "error", err)
+	}
 
 	// Set up ticker for periodic screening
 	ticker := time.NewTicker(interval)
@@ -82,6 +88,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.logger.Info("running scheduled screening")
 			if err := d.screenInbox(ctx); err != nil {
 				d.logger.Error("screening failed", "error", err)
+			}
+			if err := d.processScheduled(ctx); err != nil {
+				d.logger.Error("send-later pass failed", "error", err)
 			}
 
 		case event := <-watcher.Events:
@@ -156,6 +165,122 @@ func (d *Daemon) reloadScreener() error {
 	d.screener = newScreener
 	d.logger.Info("screener reloaded successfully")
 	return nil
+}
+
+// processScheduled delivers due send-later messages queued in the Scheduled
+// folder (see internal/schedule). Claim protocol: a message is marked
+// \Flagged right before SMTP delivery so a crash mid-send can never deliver
+// twice — a message that is due but already flagged is skipped and logged
+// (unflag it in the Scheduled folder to retry, or delete it to cancel).
+func (d *Daemon) processScheduled(ctx context.Context) error {
+	folder := d.cfg.Folders.Scheduled
+	if folder == "" {
+		return nil
+	}
+	emails, err := d.imapCli.FetchHeaders(ctx, folder, 0)
+	if err != nil {
+		return fmt.Errorf("fetch scheduled headers: %w", err)
+	}
+	now := time.Now()
+	for _, e := range emails {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		raw, err := d.imapCli.FetchRaw(ctx, folder, e.UID)
+		if err != nil {
+			d.logger.Error("send-later: fetch raw failed", "uid", e.UID, "error", err)
+			continue
+		}
+		job, cleaned, found, err := schedule.Extract(raw)
+		if err != nil {
+			d.logger.Error("send-later: invalid queued message", "uid", e.UID, "subject", e.Subject, "error", err)
+			continue
+		}
+		if !found {
+			continue // regular mail in the Scheduled folder (GTD) — not ours
+		}
+		if job.SendAt.After(now) {
+			d.logger.Info("send-later: not due yet", "uid", e.UID, "subject", e.Subject, "send_at", job.SendAt.Format(time.RFC3339))
+			continue
+		}
+		if e.Flagged {
+			d.logger.Warn("send-later: skipping claimed message — a previous delivery attempt did not finish; unflag it in Scheduled to retry, delete it to cancel", "uid", e.UID, "subject", e.Subject)
+			continue
+		}
+		smtpCfg, err := d.smtpConfigFor(job.From)
+		if err != nil {
+			d.logger.Error("send-later: cannot resolve SMTP account", "from", job.From, "error", err)
+			continue
+		}
+		// Claim before sending — duplicate-send protection.
+		if err := d.imapCli.MarkFlagged(ctx, folder, e.UID); err != nil {
+			d.logger.Error("send-later: claim (\\Flagged) failed, skipping", "uid", e.UID, "error", err)
+			continue
+		}
+		if err := smtp.SendRaw(smtpCfg, job.Rcpt, cleaned); err != nil {
+			d.logger.Error("send-later: SMTP delivery failed — message stays flagged in Scheduled; unflag to retry", "uid", e.UID, "subject", e.Subject, "error", err)
+			continue
+		}
+		if err := d.imapCli.SaveSent(ctx, d.cfg.Folders.Sent, cleaned); err != nil {
+			d.logger.Error("send-later: delivered, but Sent copy failed", "uid", e.UID, "error", err)
+		}
+		if err := d.imapCli.ExpungeAll(ctx, folder, []uint32{e.UID}); err != nil {
+			d.logger.Error("send-later: delivered, but delete from Scheduled failed — delete it manually to avoid confusion", "uid", e.UID, "error", err)
+			continue
+		}
+		d.logger.Info("send-later: delivered", "subject", e.Subject, "rcpt", strings.Join(job.Rcpt, ", "), "scheduled_for", job.SendAt.Format(time.RFC3339))
+	}
+	return nil
+}
+
+// smtpConfigFor resolves SMTP settings for a queued message's From header:
+// accounts first, then [[senders]] aliases (via their account= reference,
+// falling back to the first account like the TUI does).
+func (d *Daemon) smtpConfigFor(from string) (smtp.Config, error) {
+	addrs := imap.SplitAddrs(from)
+	if len(addrs) == 0 {
+		return smtp.Config{}, fmt.Errorf("unparseable From %q", from)
+	}
+	target := addrs[0]
+	accounts := d.cfg.ActiveAccounts()
+	for _, a := range accounts {
+		if fa := imap.SplitAddrs(a.From); len(fa) > 0 && fa[0] == target {
+			return d.smtpConfig(a, from), nil
+		}
+	}
+	for _, s := range d.cfg.Senders {
+		fa := imap.SplitAddrs(s.From)
+		if len(fa) == 0 || fa[0] != target {
+			continue
+		}
+		for _, a := range accounts {
+			if strings.EqualFold(a.Name, s.Account) {
+				return d.smtpConfig(a, from), nil
+			}
+		}
+		if len(accounts) > 0 {
+			return d.smtpConfig(accounts[0], from), nil
+		}
+	}
+	return smtp.Config{}, fmt.Errorf("no account or [[senders]] alias matches %q", target)
+}
+
+func (d *Daemon) smtpConfig(a config.AccountConfig, from string) smtp.Config {
+	host, port, _ := strings.Cut(a.SMTP, ":")
+	cfg := smtp.Config{
+		Host:        host,
+		Port:        port,
+		User:        a.User,
+		Password:    a.Password,
+		From:        from,
+		STARTTLS:    a.STARTTLS,
+		TLSCertFile: a.TLSCertFile,
+	}
+	// OAuth2 token source is only available for the daemon's own IMAP account.
+	if d.imapCli != nil && strings.EqualFold(a.User, d.imapCli.User()) {
+		cfg.TokenSource = d.imapCli.TokenSource()
+	}
+	return cfg
 }
 
 // screenInbox fetches inbox emails and screens them.

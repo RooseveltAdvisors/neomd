@@ -30,6 +30,7 @@ import (
 	"github.com/sspaeti/neomd/internal/listmonk"
 	"github.com/sspaeti/neomd/internal/notify"
 	"github.com/sspaeti/neomd/internal/render"
+	"github.com/sspaeti/neomd/internal/schedule"
 	"github.com/sspaeti/neomd/internal/screener"
 	"github.com/sspaeti/neomd/internal/smtp"
 )
@@ -153,6 +154,11 @@ type (
 		label        string
 	}
 	saveDraftDoneMsg  struct{ err error }
+	// scheduleDoneMsg reports the result of queuing a send-later message.
+	scheduleDoneMsg struct {
+		at  time.Time
+		err error
+	}
 	attachOpenDoneMsg struct {
 		path      string
 		err       error
@@ -562,6 +568,10 @@ type Model struct {
 	aiPromptActive bool
 	aiPromptInput  textinput.Model
 
+	// Send-later time prompt on the pre-send screen (`l`).
+	sendLaterActive bool
+	sendLaterInput  textinput.Model
+
 	// Reaction
 	reactionEmail    *imap.Email // email being reacted to
 	reactionSelected int         // selected emoji index (0-7)
@@ -692,6 +702,13 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener, mail
 	}
 
 	spyKeys, scannedKeys := loadSpyPixelCache()
+	// Contacts: harvested cache + optional user-maintained [contacts] file
+	// (simple addr,name lines or a Google Contacts CSV export).
+	cs := contacts.Load(config.ContactsCachePath())
+	notice := detectStartupNotice()
+	if err := cs.MergeFile(cfg.Contacts.File); err != nil {
+		notice = "[contacts] file: " + err.Error()
+	}
 	return Model{
 		cfg:         cfg,
 		accounts:    cfg.ActiveAccounts(),
@@ -710,8 +727,8 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener, mail
 		markedUIDs:     make(map[uint32]bool),
 		spyPixelKeys:   spyKeys,
 		spyScannedKeys: scannedKeys,
-		contacts:       contacts.Load(config.ContactsCachePath()),
-		startupNotice:  detectStartupNotice(),
+		contacts:       cs,
+		startupNotice:  notice,
 		sortField:      "date",
 		sortReverse:    true, // newest first
 		mailto:         mp,
@@ -954,6 +971,36 @@ func (m Model) sendEmailCmd(smtpAcct config.AccountConfig, from, to, cc, bcc, su
 			_ = replyCli.MarkAnswered(nil, replyToFolder, replyToUID)
 		}
 		return sendDoneMsg{replyToUID: replyToUID, replyToFolder: replyToFolder}
+	}
+}
+
+// scheduleSendCmd builds the message exactly like sendEmailCmd, injects the
+// send-later headers (X-Neomd-Send-At + full RCPT list), and APPENDs it to the
+// Scheduled folder. Delivery happens in the headless daemon (`neomd
+// --headless`) — see internal/schedule. Reply \Answered marking is skipped:
+// the TUI may be long gone when the message actually goes out.
+func (m Model) scheduleSendCmd(smtpAcct config.AccountConfig, from, to, cc, bcc, subject, body string, attachments []string, includeHTMLSig bool, inReplyTo, references string, sendAt time.Time) tea.Cmd {
+	cli := m.presendIMAPClient()
+	folder := m.cfg.Folders.Scheduled
+	htmlSignature := ""
+	if includeHTMLSig {
+		htmlSignature = m.cfg.Signature(smtpAcct).HTML
+	}
+	hdrTo := m.contacts.Decorate(to)
+	hdrCC := m.contacts.Decorate(cc)
+	return func() tea.Msg {
+		if cli == nil {
+			return scheduleDoneMsg{err: fmt.Errorf("no IMAP-enabled account available to store the scheduled message")}
+		}
+		raw, err := smtp.BuildMessageWithThreading(from, hdrTo, hdrCC, subject, body, attachments, htmlSignature, inReplyTo, references)
+		if err != nil {
+			return scheduleDoneMsg{err: fmt.Errorf("build message: %w", err)}
+		}
+		queued := schedule.Inject(raw, sendAt, collectRcptTo(to, cc, bcc))
+		if err := cli.SaveSent(nil, folder, queued); err != nil {
+			return scheduleDoneMsg{err: err}
+		}
+		return scheduleDoneMsg{at: sendAt}
 	}
 }
 
@@ -1217,7 +1264,11 @@ func (m Model) contactNamesFor(fields ...string) string {
 	var b strings.Builder
 	for _, f := range fields {
 		for _, addr := range imap.SplitAddrs(f) {
-			if n := m.contacts.Name(addr); n != "" {
+			n := m.contacts.Name(addr)
+			if n == "" {
+				n = contacts.DeriveName(addr) // first.last@ → "First Last"
+			}
+			if n != "" {
 				b.WriteString(" ")
 				b.WriteString(strings.ToLower(n))
 			}
@@ -2269,6 +2320,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingSend = nil
 			m.state = stateInbox
 			m.status = "Saved to Drafts."
+			m.isError = false
+		}
+		return m, nil
+
+	case scheduleDoneMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.status = "Send later error: " + msg.err.Error()
+			m.isError = true
+		} else {
+			m.status = fmt.Sprintf("Scheduled for %s — delivered by the headless daemon (gc to review, delete to cancel).", msg.at.Format("Mon 2006-01-02 15:04"))
 			m.isError = false
 		}
 		return m, nil
@@ -4615,6 +4677,36 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.aiPromptInput, cmd = m.aiPromptInput.Update(msg)
 		return m, cmd
 	}
+	// Send-later time prompt: typed when the user pressed `l`. Enter queues
+	// the message in the Scheduled folder; esc cancels back to pre-send.
+	if m.sendLaterActive {
+		switch msg.String() {
+		case "esc":
+			m.sendLaterActive = false
+			return m, nil
+		case "enter":
+			at, err := schedule.ParseSendAt(m.sendLaterInput.Value(), time.Now())
+			if err != nil {
+				m.sendLaterInput.SetValue("")
+				m.sendLaterInput.Placeholder = err.Error()
+				return m, nil
+			}
+			m.sendLaterActive = false
+			m.loading = true
+			m.state = stateInbox
+			from := m.presendFrom()
+			smtpAcct := m.presendSMTPAccount()
+			attachments := m.attachments
+			includeHTMLSig, cleanBody := extractHTMLSignatureMarker(ps.body)
+			m.attachments = nil
+			m.pendingSend = nil
+			m.pendingIsReply = false
+			return m, tea.Batch(m.spinner.Tick, m.scheduleSendCmd(smtpAcct, from, ps.to, ps.cc, ps.bcc, ps.subject, cleanBody, attachments, includeHTMLSig, ps.inReplyTo, ps.references, at))
+		}
+		var cmd tea.Cmd
+		m.sendLaterInput, cmd = m.sendLaterInput.Update(msg)
+		return m, cmd
+	}
 	switch msg.String() {
 	case "enter":
 		m.loading = true
@@ -4687,6 +4779,21 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		// Save to Drafts without sending.
 		return m, m.saveDraftCmd(m.presendIMAPClient(), m.presendFrom(), ps.to, ps.cc, ps.bcc, ps.subject, ps.body, m.attachments)
+	case "l":
+		// Send later: prompt for a delivery time. The message is queued in
+		// the Scheduled folder and delivered by the headless daemon.
+		if m.cfg.ListmonkEnabled() && len(listmonk.ResolveListIDs(m.listmonkTriggers(), ps.to)) > 0 {
+			m.status = "Send later is not available for Listmonk campaigns — Listmonk already schedules with its own delay."
+			m.isError = true
+			return m, nil
+		}
+		ti := textinput.New()
+		ti.Placeholder = "+2h · 17:30 · tomorrow 09:00 · 2026-08-25 17:30"
+		ti.CharLimit = 40
+		ti.Focus()
+		m.sendLaterInput = ti
+		m.sendLaterActive = true
+		return m, nil
 	case "ctrl+b":
 		// Toggle CC/BCC fields — show input prompts to add/edit them.
 		m.compose.extraVisible = !m.compose.extraVisible
@@ -5649,6 +5756,9 @@ func (m Model) viewPresend() string {
 		// One-line instruction prompt active — replaces the help footer
 		// until the user submits (Enter) or cancels (Esc).
 		b.WriteString(styleInputLabel.Render("AI prompt:") + " " + m.aiPromptInput.View())
+	} else if m.sendLaterActive {
+		b.WriteString(styleInputLabel.Render("Send at:") + " " + m.sendLaterInput.View() +
+			styleHelp.Render("  · enter schedule · esc cancel"))
 	} else if m.status != "" {
 		b.WriteString(statusBar(m.status, m.isError))
 	} else {
@@ -5659,7 +5769,7 @@ func (m Model) viewPresend() string {
 			if strings.TrimSpace(m.cfg.AI.Command) != "" {
 				aiHint = " · i AI (quit to return)"
 			}
-			b.WriteString(styleHelp.Render("  enter send · e edit · s spell · p preview · a attach · D remove attach" + aiHint + " · ctrl+f from · ctrl+b cc/bcc · d draft · esc cancel · x discard"))
+			b.WriteString(styleHelp.Render("  enter send · l later · e edit · s spell · p preview · a attach · D remove attach" + aiHint + " · ctrl+f from · ctrl+b cc/bcc · d draft · esc cancel · x discard"))
 		}
 	}
 	return b.String()

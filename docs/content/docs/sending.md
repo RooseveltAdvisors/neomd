@@ -223,6 +223,7 @@ After saving and closing the editor, neomd shows a review screen before sending 
 | Key | Action |
 |-----|--------|
 | `enter` | send |
+| `l` | send later — schedule delivery via the headless daemon (see [Send Later](#send-later)) |
 | `p` | preview in `$BROWSER` — renders through the same pipeline as sending, with inline images visible |
 | `a` | attach file via yazi |
 | `D` | remove last attachment |
@@ -267,6 +268,35 @@ For configuration (`[ai].command`, `[ai].args`, placeholders), see [Configuratio
 Press `d` in the pre-send screen to save to Drafts instead of sending. Navigate to Drafts with `gd`. To resume a saved draft, open it and press `E` — it re-opens in the editor with all fields pre-filled, and saving goes through the normal pre-send review.
 
 **Note:** Drafts are stored as plain text only (not multipart/alternative) to preserve markdown formatting when reopening. This prevents formatting corruption like line break addition, pipe escaping, and italic style changes.
+
+## Send Later
+
+Press `l` on the pre-send screen to schedule delivery instead of sending immediately. neomd prompts for a time:
+
+| Input | Meaning |
+|-------|---------|
+| `+2h`, `+30m`, `+1d`, `+1d2h` | relative offset from now |
+| `17:30` | next occurrence of that clock time (today, or tomorrow if already past) |
+| `tomorrow` | tomorrow 09:00 |
+| `tomorrow 17:30` | tomorrow at that time |
+| `2026-08-25 17:30` | absolute date and time |
+
+The fully built message (attachments, signatures, threading headers included) is stored in your **Scheduled** folder with an `X-Neomd-Send-At` header. Delivery is done by the **headless daemon** (`neomd --headless`) — typically running on an always-on server — which checks the Scheduled folder on its regular sync cycle (`[ui].background_sync_interval`, default 5 minutes) and sends due messages via SMTP, saves a copy to Sent, and removes the queue entry.
+
+- **Cancel**: go to the Scheduled folder (`gc`) and delete the message (`x`).
+- **Requirement**: a running headless daemon. Without one, the message simply waits in Scheduled — nothing is lost, but nothing is sent. The TUI itself never delivers scheduled mail, so a laptop that's asleep at send time is fine as long as the daemon runs elsewhere.
+- **Safety**: the daemon claims a message with the IMAP `\Flagged` flag *before* the SMTP send, so a crash mid-delivery can never send twice. If delivery fails, the message stays flagged in Scheduled and the daemon logs it — remove the flag to retry, or delete the message to cancel.
+- Regular emails you move to Scheduled for GTD purposes are untouched — only messages queued via `l` carry the scheduling header.
+
+## Recipient Names
+
+When you type a bare address (`louise@domain.io`), neomd automatically upgrades the outgoing `To:`/`Cc:` headers to `Louise Nachname <louise@domain.io>` when it knows the name — so recipients see a proper name and your Sent folder becomes searchable by name. Names come from three sources, in order:
+
+1. **Harvested**: every `Name <addr>` pair seen in loaded email headers is cached to `~/.cache/neomd/contacts` automatically.
+2. **Your contacts file** (optional): set `[contacts] file = "..."` in config.toml — see [Configuration → Contacts](configuration#contacts).
+3. **Derived**: `first.last@domain` shaped addresses fall back to a capitalized guess ("First Last"); role mailboxes (`info@`, `no-reply@`, …) are never guessed.
+
+The same names power search: filtering (`/`) and server search (`space /`) match a person's name even when the stored message only carries their bare address.
 
 ## HTML Signatures
 

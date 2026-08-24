@@ -24,6 +24,14 @@ type SenderConfig struct {
 	Account string `toml:"account"` // optional: account name whose SMTP to use
 }
 
+// ContactsConfig points at an optional user-maintained contacts file merged
+// into the harvested address→name cache at startup. Two formats are accepted:
+// simple lines ("addr,name", "addr<TAB>name", or "Name <addr>") and a Google
+// Contacts CSV export (contacts.google.com → Export → Google CSV).
+type ContactsConfig struct {
+	File string `toml:"file"`
+}
+
 // AccountConfig holds IMAP/SMTP connection settings.
 type AccountConfig struct {
 	Name        string `toml:"name"`
@@ -340,6 +348,7 @@ type Config struct {
 	Senders []SenderConfig `toml:"senders"`
 
 	Screener      ScreenerConfig      `toml:"screener"`
+	Contacts      ContactsConfig      `toml:"contacts"`
 	Folders       FoldersConfig       `toml:"folders"`
 	UI            UIConfig            `toml:"ui"`
 	Notifications NotificationsConfig `toml:"notifications"`
@@ -532,6 +541,7 @@ func Load(path string) (*Config, error) {
 	cfg.Screener.PaperTrail = expandPath(cfg.Screener.PaperTrail)
 	cfg.Screener.Spam = expandPath(cfg.Screener.Spam)
 	cfg.Screener.Notify = expandPath(cfg.Screener.Notify)
+	cfg.Contacts.File = expandPath(cfg.Contacts.File)
 
 	// Ensure screener list directories and files exist so appending (I/O/F/P/$)
 	// works on a fresh install without manual mkdir or touching files.

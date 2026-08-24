@@ -9,8 +9,10 @@
 package contacts
 
 import (
+	"encoding/csv"
 	"mime"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -133,7 +135,11 @@ func (s *Store) Decorate(field string) string {
 			continue
 		}
 		if !strings.Contains(p, "<") {
-			if name := s.Name(p); name != "" {
+			name := s.Name(p)
+			if name == "" {
+				name = DeriveName(p) // first.last@domain → "First Last"
+			}
+			if name != "" {
 				// Q-encodes non-ASCII names (RFC 2047); ASCII passes through.
 				p = mime.QEncoding.Encode("utf-8", name) + " <" + p + ">"
 			}
@@ -141,6 +147,127 @@ func (s *Store) Decorate(field string) string {
 		out = append(out, p)
 	}
 	return strings.Join(out, ", ")
+}
+
+// derivableLocalRe matches local parts shaped like a person's name:
+// two or more purely alphabetic segments separated by "." / "_" / "-".
+var derivableLocalRe = regexp.MustCompile(`^[a-zA-Z]+(?:[._-][a-zA-Z]+)+$`)
+
+// roleWords are local-part segments that indicate a functional mailbox, not a
+// person — never derive a display name from those.
+var roleWords = map[string]bool{
+	"admin": true, "billing": true, "contact": true, "help": true,
+	"hello": true, "info": true, "mail": true, "newsletter": true,
+	"no": true, "noreply": true, "office": true, "reply": true,
+	"sales": true, "service": true, "support": true, "team": true,
+}
+
+// DeriveName guesses a display name from a "first.last@domain" shaped address
+// ("example.name@domain.io" → "Example Name"). Returns "" when the local part
+// doesn't look like a person's name (single segment, digits, role mailboxes).
+// Used only as a fallback when no harvested or user-provided name exists.
+func DeriveName(addr string) string {
+	local, _, ok := strings.Cut(strings.TrimSpace(addr), "@")
+	if !ok || !derivableLocalRe.MatchString(local) {
+		return ""
+	}
+	segs := strings.FieldsFunc(local, func(r rune) bool { return r == '.' || r == '_' || r == '-' })
+	for i, seg := range segs {
+		if roleWords[strings.ToLower(seg)] {
+			return ""
+		}
+		segs[i] = strings.ToUpper(seg[:1]) + strings.ToLower(seg[1:])
+	}
+	return strings.Join(segs, " ")
+}
+
+// MergeFile merges a user-maintained contacts file into the store. Two
+// formats are auto-detected: a Google Contacts CSV export (header row with
+// "E-mail 1 - Value" columns; contacts.google.com → Export → Google CSV), and
+// simple lines — "addr,name", "addr<TAB>name", or "Name <addr>", with #
+// comments. Missing file is fine (returns nil): the feature is optional.
+func (s *Store) MergeFile(path string) error {
+	if s == nil || path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	text := string(data)
+	if strings.Contains(strings.SplitN(text, "\n", 2)[0], "E-mail 1 - Value") {
+		return s.mergeGoogleCSV(text)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if i := strings.IndexByte(line, '<'); i > 0 { // "Name <addr>" form
+			s.HarvestField(line)
+			continue
+		}
+		addr, name, ok := strings.Cut(line, "\t")
+		if !ok {
+			addr, name, ok = strings.Cut(line, ",")
+		}
+		if ok {
+			s.Add(addr, name)
+		}
+	}
+	return nil
+}
+
+// mergeGoogleCSV imports name + email columns from a Google Contacts export.
+func (s *Store) mergeGoogleCSV(text string) error {
+	r := csv.NewReader(strings.NewReader(text))
+	r.FieldsPerRecord = -1
+	rows, err := r.ReadAll()
+	if err != nil {
+		return err
+	}
+	if len(rows) < 2 {
+		return nil
+	}
+	nameCol, firstCol, lastCol := -1, -1, -1
+	var mailCols []int
+	for i, h := range rows[0] {
+		switch {
+		case h == "Name":
+			nameCol = i
+		case h == "First Name":
+			firstCol = i
+		case h == "Last Name":
+			lastCol = i
+		case strings.HasPrefix(h, "E-mail ") && strings.HasSuffix(h, "- Value"):
+			mailCols = append(mailCols, i)
+		}
+	}
+	cell := func(row []string, i int) string {
+		if i >= 0 && i < len(row) {
+			return strings.TrimSpace(row[i])
+		}
+		return ""
+	}
+	for _, row := range rows[1:] {
+		name := cell(row, nameCol)
+		if name == "" {
+			name = strings.TrimSpace(cell(row, firstCol) + " " + cell(row, lastCol))
+		}
+		if name == "" {
+			continue
+		}
+		for _, mc := range mailCols {
+			// Google separates multiple addresses in one cell with " ::: ".
+			for _, addr := range strings.Split(cell(row, mc), ":::") {
+				s.Add(addr, name)
+			}
+		}
+	}
+	return nil
 }
 
 // SaveIfDirty atomically writes the store to disk when it changed since load

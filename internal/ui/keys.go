@@ -110,6 +110,7 @@ var HelpSections = []HelpSection{
 		{"a  (pre-send)", "attach file via yazi file picker (or $NEOMD_FILE_PICKER)"},
 		{"D  (pre-send)", "remove last attachment"},
 		{"d  (pre-send)", "save to Drafts folder (IMAP APPEND with \\Draft flag)"},
+		{"l  (pre-send)", "send later — queue in Scheduled folder (+2h, 17:30, tomorrow 09:00, …); the headless daemon delivers it"},
 		{"s  (pre-send)", "spell check — open in nvim with spell on, jump to first error"},
 		{"p  (pre-send)", "preview email in $BROWSER (images rendered, same as recipient sees)"},
 		{"e  (pre-send)", "re-open editor to edit body"},

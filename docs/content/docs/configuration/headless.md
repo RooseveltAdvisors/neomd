@@ -9,6 +9,7 @@ Neomd can run in headless daemon mode to continuously screen emails in the backg
 
 When running in headless mode, neomd:
 - **Screens emails automatically** every `bg_sync_interval` minutes
+- **Delivers "send later" messages** queued in the Scheduled folder (see below)
 - **Watches screener list files** and reloads when they change (via Syncthing)
 - **Runs in the background** as a standard process
 - **Logs to stdout** for monitoring
@@ -28,6 +29,17 @@ nohup neomd --headless > /var/log/neomd.log 2>&1 &
 # Or redirect to a file
 neomd --headless >> ~/.local/share/neomd/daemon.log 2>&1 &
 ```
+
+## Send Later Delivery
+
+The daemon is the delivery vehicle for the TUI's [Send Later](../../sending#send-later) feature (`l` on the pre-send screen). Each sync cycle it scans the **Scheduled** folder for messages carrying an `X-Neomd-Send-At` header and, when the time has passed:
+
+1. **Claims** the message with the IMAP `\Flagged` flag — a crash mid-send can never deliver twice.
+2. **Sends** via SMTP, resolving credentials from the message's `From` header against your configured `[[accounts]]` and `[[senders]]`.
+3. **Copies** the delivered message to Sent (scheduling headers stripped).
+4. **Deletes** the queue entry from Scheduled.
+
+Failed deliveries stay flagged in Scheduled and are logged — remove the flag (from any mail client) to retry, or delete the message to cancel. Regular emails moved to Scheduled for GTD purposes have no scheduling header and are never touched. OAuth2 accounts: token refresh is only available for the daemon's own login account; password/keyring accounts work for any identity.
 
 ## Multi-Device Setup with Syncthing
 

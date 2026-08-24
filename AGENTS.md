@@ -91,8 +91,16 @@ Build commands, architecture, and API quirks live in `CLAUDE.md`. Feature docs l
   contact name become `Name <addr>` in message headers at send time, but
   `collectRcptTo` always uses the raw undecorated fields and Bcc is never decorated
   (BCC privacy + comma-split RCPT must not break). Unsafe names (`,<>"`), and any
-  part already containing `<`, are left untouched (`contacts.Decorate`). Tests:
-  `TestHarvestNameAndDecorate`, `TestAddRejectsUnsafeNames`.
+  part already containing `<`, are left untouched; `first.last@` derivation never
+  fires for role mailboxes (`contacts.Decorate`, `contacts.DeriveName`). Tests:
+  `TestHarvestNameAndDecorate`, `TestAddRejectsUnsafeNames`, `TestDeriveName`.
+- **Send later never double-delivers** — the daemon claims a due Scheduled message
+  with `\Flagged` *before* SMTP; flagged leftovers are skipped and logged, never
+  retried automatically (`processScheduled`, `internal/daemon/daemon.go`). The
+  delivered message and its Sent copy must carry **no** `X-Neomd-*` headers
+  (`X-Neomd-Rcpt` contains Bcc!); messages without `X-Neomd-Send-At` in the
+  Scheduled folder (GTD items) are never touched. Tests:
+  `TestInjectExtractRoundTrip`, `TestExtractIgnoresRegularMail`, `TestSMTPConfigFor`.
 - **Callouts** — `> [!note]` / `> [!tip]` / `> [!warning]` (with or without space after
   `>`) render as styled boxes in the HTML part and as emoji text (no blockquote markers)
   in the plain part. Tests: `TestToHTML_Callout_*`, `TestFormatCalloutsForPlainText_*`.

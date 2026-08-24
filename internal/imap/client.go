@@ -47,6 +47,7 @@ type Email struct {
 	Date          time.Time
 	Seen          bool
 	Answered      bool // \Answered flag — set when replied to from any client
+	Flagged       bool // \Flagged — the send-later daemon uses it as a claim marker
 	Folder        string
 	Size          uint32 // RFC822 size in bytes
 	HasAttachment bool   // true if BODYSTRUCTURE contains an attachment part
@@ -339,6 +340,9 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 				}
 				if f == imap.FlagAnswered {
 					e.Answered = true
+				}
+				if f == imap.FlagFlagged {
+					e.Flagged = true
 				}
 			}
 			if m.Envelope != nil {
@@ -742,6 +746,9 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 				if f == imap.FlagAnswered {
 					e.Answered = true
 				}
+				if f == imap.FlagFlagged {
+					e.Flagged = true
+				}
 			}
 			if m.Envelope != nil {
 				e.Subject = m.Envelope.Subject
@@ -1083,6 +1090,26 @@ func (c *Client) MarkAnswered(ctx context.Context, folder string, uid uint32) er
 		return conn.Store(uidSet, &imap.StoreFlags{
 			Op:    imap.StoreFlagsAdd,
 			Flags: []imap.Flag{imap.FlagAnswered},
+		}, nil).Close()
+	})
+}
+
+// MarkFlagged adds the \Flagged flag. The send-later daemon sets it to claim
+// a due queued message before SMTP delivery, so a crash mid-send can never
+// deliver twice — a flagged message is skipped on later scans.
+func (c *Client) MarkFlagged(ctx context.Context, folder string, uid uint32) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return c.withConn(ctx, func(conn *imapclient.Client) error {
+		if err := c.selectMailbox(folder); err != nil {
+			return err
+		}
+		var uidSet imap.UIDSet
+		uidSet.AddNum(imap.UID(uid))
+		return conn.Store(uidSet, &imap.StoreFlags{
+			Op:    imap.StoreFlagsAdd,
+			Flags: []imap.Flag{imap.FlagFlagged},
 		}, nil).Close()
 	})
 }

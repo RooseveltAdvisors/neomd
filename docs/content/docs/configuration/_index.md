@@ -253,6 +253,31 @@ imap_disabled = true
 
 To abort a compose without sending, close neovim with `ZQ` or `:q!` (discard). To send, save normally with `ZZ` or `:wq`.
 
+## Contacts
+
+neomd keeps a small address book (address → display name) at `~/.cache/neomd/contacts`, harvested automatically from the headers of every email it loads. It powers name search (finding "louise" even when a message only stores `lnachname@domain.io`) and decorates outgoing `To:`/`Cc:` headers with real names — see [Sending → Recipient Names](../sending#recipient-names).
+
+You can merge your own contacts on top:
+
+```toml
+[contacts]
+file = "~/.config/neomd/contacts.csv"
+```
+
+Two formats are auto-detected:
+
+**Simple lines** — one contact per line, `#` comments allowed:
+
+```
+# addr,name  or  addr<TAB>name  or  Name <addr>
+lnachname@domain.io,Louise Nachname
+Bob Builder <bob@x.io>
+```
+
+**Google Contacts export** — point `file` directly at an unmodified export from [contacts.google.com](https://contacts.google.com) → Export → **Google CSV**. Names and every `E-mail N` column are imported. Re-export whenever your contacts change; the file is re-read on every start.
+
+Contacts from other sources (e.g. Obsidian frontmatter) can be converted to the simple `addr,name` format with a small script — neomd deliberately reads one flat file instead of integrating per-source APIs.
+
 ## Signature
 
 The `signature` field in `[ui]` is appended automatically when opening a new compose buffer (`c`). It is **not** added for replies. The separator `--` is inserted for you — just write the signature body in Markdown.
