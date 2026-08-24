@@ -74,6 +74,7 @@ var HelpSections = []HelpSection{
 	{"Leader Key Mappings (space prefix)", [][2]string{
 		{"<space>1 … <space>9", "jump to folder tab by number (Inbox=1, ToScreen=2, …)"},
 		{"<space>/", "IMAP search ALL emails on server (From + Subject)"},
+		{"<space>c", "contacts picker — browse harvested + [contacts] file names; / filter, y copy address, Y copy \"Name <addr>\", enter compose to contact"},
 		{"<space>S", "scan current folder for spy pixels (skips already scanned)"},
 		{"<space>d  (reader)", "download raw email source (.eml) to ~/Downloads"},
 		{"<space>n  (reader)", "append open email's sender to notify.txt (desktop notifications opt-in)"},
@@ -110,6 +111,7 @@ var HelpSections = []HelpSection{
 		{"a  (pre-send)", "attach file via yazi file picker (or $NEOMD_FILE_PICKER)"},
 		{"D  (pre-send)", "remove last attachment"},
 		{"d  (pre-send)", "save to Drafts folder (IMAP APPEND with \\Draft flag)"},
+		{"l  (pre-send)", "send later — queue in Scheduled folder (+2h, 17:30, tomorrow 09:00, …); the headless daemon delivers it"},
 		{"s  (pre-send)", "spell check — open in nvim with spell on, jump to first error"},
 		{"p  (pre-send)", "preview email in $BROWSER (images rendered, same as recipient sees)"},
 		{"e  (pre-send)", "re-open editor to edit body"},

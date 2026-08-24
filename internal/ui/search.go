@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sspaeti/neomd/internal/contacts"
 	"github.com/sspaeti/neomd/internal/imap"
 )
 
@@ -30,6 +31,9 @@ type imapSearchResultMsg struct {
 }
 
 // imapSearchAllCmd runs IMAP SEARCH across all configured folders.
+// The query is expanded with addresses of known contacts whose display name
+// matches (see expandSearchQueries) so searching "louise" also finds messages
+// that only carry her bare address in the headers.
 func (m Model) imapSearchAllCmd(query string) tea.Cmd {
 	cli := m.imapCli()
 	f := m.cfg.Folders
@@ -41,10 +45,48 @@ func (m Model) imapSearchAllCmd(query string) tea.Cmd {
 	if f.Work != "" {
 		folders = append(folders, f.Work)
 	}
+	queries := expandSearchQueries(query, m.contacts)
 	return func() tea.Msg {
-		emails, err := cli.SearchAllFolders(nil, folders, query)
-		return imapSearchResultMsg{emails: emails, query: query, err: err}
+		var all []imap.Email
+		seen := make(map[string]bool)
+		var firstErr error
+		for i, q := range queries {
+			emails, err := cli.SearchAllFolders(nil, folders, q)
+			if err != nil && i == 0 {
+				firstErr = err // only the user's literal query reports errors
+			}
+			for _, e := range emails {
+				key := fmt.Sprintf("%s\x00%d", e.Folder, e.UID)
+				if !seen[key] {
+					seen[key] = true
+					all = append(all, e)
+				}
+			}
+		}
+		return imapSearchResultMsg{emails: all, query: query, err: firstErr}
 	}
+}
+
+// expandSearchQueries returns the original query plus per-address queries for
+// known contacts whose display name matches it. IMAP SEARCH can only match
+// header text, and messages neomd sent carry bare addresses — without this a
+// name search finds nothing in Sent. subject: queries are never expanded.
+func expandSearchQueries(query string, cs *contacts.Store) []string {
+	queries := []string{query}
+	q := strings.TrimSpace(query)
+	prefix := ""
+	switch lower := strings.ToLower(q); {
+	case strings.HasPrefix(lower, "subject:"):
+		return queries
+	case strings.HasPrefix(lower, "from:"):
+		prefix, q = "from:", strings.TrimSpace(q[5:])
+	case strings.HasPrefix(lower, "to:"):
+		prefix, q = "to:", strings.TrimSpace(q[3:])
+	}
+	for _, addr := range cs.AddrsMatchingName(q, 3) {
+		queries = append(queries, prefix+addr)
+	}
+	return queries
 }
 
 // updateIMAPSearch handles key input while the IMAP search prompt is active.

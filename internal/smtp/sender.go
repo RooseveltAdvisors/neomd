@@ -300,16 +300,23 @@ func BuildMessageWithThreading(from, to, cc, subject, markdownBody string, attac
 			htmlBody = htmlBody[:idx] + "\n" + htmlSignature + "\n" + htmlBody[idx:]
 		}
 	}
-	// Build References chain: append inReplyTo to existing references
-	refChain := references
-	if inReplyTo != "" {
-		if refChain != "" {
-			refChain = refChain + " " + inReplyTo
-		} else {
-			refChain = inReplyTo
-		}
+	return buildMessageWithBCC(from, to, cc, "", subject, plainText, htmlBody, attachments, inReplyTo, buildRefChain(references, inReplyTo))
+}
+
+// buildRefChain appends inReplyTo to the original message's References chain,
+// skipping the append when the chain already ends with it (defends against
+// senders that include their own Message-ID in References).
+func buildRefChain(references, inReplyTo string) string {
+	if inReplyTo == "" {
+		return references
 	}
-	return buildMessageWithBCC(from, to, cc, "", subject, plainText, htmlBody, attachments, inReplyTo, refChain)
+	if references == "" {
+		return inReplyTo
+	}
+	if strings.HasSuffix(references, inReplyTo) {
+		return references
+	}
+	return references + " " + inReplyTo
 }
 
 // BuildDraftMessage constructs a raw MIME draft for IMAP APPEND.
@@ -334,18 +341,9 @@ func BuildReactionMessage(from, to, cc, subject, markdownBody, inReplyTo, refere
 		return nil, err
 	}
 
-	// Build References chain: append inReplyTo to existing references
-	refChain := references
-	if inReplyTo != "" {
-		if refChain != "" {
-			refChain = refChain + " " + inReplyTo
-		} else {
-			refChain = inReplyTo
-		}
-	}
 	// No attachments for reactions
 	// Use formatted plain text for text/plain part, rendered HTML for text/html part (same as regular replies)
-	return buildMessageWithBCC(from, to, cc, "", subject, plainText, htmlBody, nil, inReplyTo, refChain)
+	return buildMessageWithBCC(from, to, cc, "", subject, plainText, htmlBody, nil, inReplyTo, buildRefChain(references, inReplyTo))
 }
 
 // inlineImage holds either a local file path or pre-fetched remote image data.
@@ -434,7 +432,12 @@ func buildMessageWithBCC(from, to, cc, bcc, subject, plainText, htmlBody string,
 	}
 
 	var b bytes.Buffer
-	hdr := func(k, v string) { fmt.Fprintf(&b, "%s: %s\r\n", k, v) }
+	// Every header value is stripped of CR/LF before writing: address fields
+	// and threading IDs can carry attacker-influenced text (harvested contact
+	// names, forwarded-message headers), and a smuggled newline would inject
+	// arbitrary headers into the outgoing message. Subject is safe by
+	// construction (QEncoding encodes control characters) but sanitized anyway.
+	hdr := func(k, v string) { fmt.Fprintf(&b, "%s: %s\r\n", k, sanitizeHeaderValue(v)) }
 
 	writeHeaders := func(contentType string) {
 		hdr("From", from)
@@ -648,6 +651,7 @@ func writeInlineImage(b *bytes.Buffer, boundary string, img inlineImage) error {
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
+	filename = sanitizeFilenameParam(filename)
 
 	fmt.Fprintf(b, "--%s\r\n", boundary)
 	fmt.Fprintf(b, "Content-Type: %s; name=\"%s\"\r\n", mimeType, filename)
@@ -687,13 +691,33 @@ func writeAltParts(b *bytes.Buffer, boundary, plainText, htmlBody string) {
 	fmt.Fprintf(b, "--%s--\r\n", boundary)
 }
 
+// sanitizeHeaderValue removes CR/LF so no value can terminate its header line
+// and inject additional headers (RFC 5322 header smuggling).
+func sanitizeHeaderValue(v string) string {
+	if !strings.ContainsAny(v, "\r\n") {
+		return v
+	}
+	v = strings.ReplaceAll(v, "\r", "")
+	return strings.ReplaceAll(v, "\n", " ")
+}
+
+// sanitizeFilenameParam makes a filename safe to embed in a quoted MIME
+// parameter: CR/LF would smuggle headers, a double quote would terminate the
+// parameter early. Filenames can be attacker-controlled (forwarding or
+// re-sending a draft re-attaches parts under their original names).
+func sanitizeFilenameParam(name string) string {
+	name = strings.ReplaceAll(name, "\r", "")
+	name = strings.ReplaceAll(name, "\n", " ")
+	return strings.ReplaceAll(name, `"`, "'")
+}
+
 // writeAttachment appends a single file as a base64-encoded MIME part.
 func writeAttachment(b *bytes.Buffer, boundary, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	filename := filepath.Base(path)
+	filename := sanitizeFilenameParam(filepath.Base(path))
 	mimeType := mime.TypeByExtension(filepath.Ext(path))
 	if mimeType == "" {
 		mimeType = "application/octet-stream"

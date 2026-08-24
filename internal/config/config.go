@@ -24,6 +24,14 @@ type SenderConfig struct {
 	Account string `toml:"account"` // optional: account name whose SMTP to use
 }
 
+// ContactsConfig points at an optional user-maintained contacts file merged
+// into the harvested address→name cache at startup. Two formats are accepted:
+// simple lines ("addr,name", "addr<TAB>name", or "Name <addr>") and a Google
+// Contacts CSV export (contacts.google.com → Export → Google CSV).
+type ContactsConfig struct {
+	File string `toml:"file"`
+}
+
 // AccountConfig holds IMAP/SMTP connection settings.
 type AccountConfig struct {
 	Name        string `toml:"name"`
@@ -340,6 +348,7 @@ type Config struct {
 	Senders []SenderConfig `toml:"senders"`
 
 	Screener      ScreenerConfig      `toml:"screener"`
+	Contacts      ContactsConfig      `toml:"contacts"`
 	Folders       FoldersConfig       `toml:"folders"`
 	UI            UIConfig            `toml:"ui"`
 	Notifications NotificationsConfig `toml:"notifications"`
@@ -458,6 +467,17 @@ func SpyPixelCachePath() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_spy_pixels", os.Getuid()))
 }
 
+// ContactsCachePath returns the path for the harvested address→name cache
+// used to match name searches and decorate outgoing To/Cc headers.
+func ContactsCachePath() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName)
+		_ = os.MkdirAll(p, 0o700)
+		return filepath.Join(p, "contacts")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_contacts", os.Getuid()))
+}
+
 // NotifyStatePath returns the path for the per-folder last-seen-UID baseline
 // used by the notification system to decide which messages count as "new".
 func NotifyStatePath() string {
@@ -521,6 +541,7 @@ func Load(path string) (*Config, error) {
 	cfg.Screener.PaperTrail = expandPath(cfg.Screener.PaperTrail)
 	cfg.Screener.Spam = expandPath(cfg.Screener.Spam)
 	cfg.Screener.Notify = expandPath(cfg.Screener.Notify)
+	cfg.Contacts.File = expandPath(cfg.Contacts.File)
 
 	// Ensure screener list directories and files exist so appending (I/O/F/P/$)
 	// works on a fresh install without manual mkdir or touching files.

@@ -20,6 +20,85 @@ Build commands, architecture, and API quirks live in `CLAUDE.md`. Feature docs l
 
 ---
 
+## Hardening Suite — run after ANY change to sending or IMAP
+
+neomd is used for business email: a mangled recipient, subject, attachment name, or
+leaked Bcc reaches real clients. The hardening suite is the safety net that catches
+this class of regression. **After any change touching `internal/smtp`, `internal/imap`,
+`internal/schedule`, `internal/contacts`, or the send path in `internal/ui`, run:**
+
+```sh
+go test ./... -run Hardening          # unit: full build→wire→parse-back, no network
+make test-integration                 # live: real SMTP+IMAP fidelity (demo account)
+```
+
+What it pins (all byte-exact, not substring checks):
+
+- **`internal/imap/roundtrip_hardening_test.go`** — every message the builders produce
+  is parsed back with go-message (what the recipient's client does) *and* `parseBody`
+  (what neomd itself does): From/To/Cc/Subject decode exactly, plain part before HTML,
+  body lines survive quoted-printable (umlauts), attachment names AND bytes identical
+  (0–255 binary fixture), Message-ID uses sender domain, threading headers only on
+  replies (never duplicated), drafts keep Bcc + literal markdown + attachments,
+  send-later delivers byte-identical messages with no `X-Neomd-*` leak. Also:
+  long multi-encoded-word subjects and emoji decode back exactly
+  (`TestHardening_RoundTrip_SubjectExtremes`), 20+ recipients keep order and count
+  (`_ManyRecipients`), body edge cases survive — two-space hard breaks, lone `.`
+  and `--` lines, header-lookalike lines, 2000-char lines, CRLF input, no wire
+  line ends in literal whitespace (`_BodyEdgeCases`), inline image + file
+  attachment combined shape with byte-exact payloads both views
+  (`_InlineImagePlusAttachment`), wire format — strict CRLF, ≤998-char lines,
+  parseable Date, unique Message-IDs (`TestHardening_WireFormat`), and emoji
+  reactions parse back with exact To/threading/body (`_ReactionMessage`).
+- **`TestHardening_HeaderInjection`** — CRLF in subject/recipients/threading IDs and
+  hostile attachment filenames (`"`/newline) can never smuggle headers
+  (`sanitizeHeaderValue`, `sanitizeFilenameParam` in `internal/smtp/sender.go`;
+  control-char rejection in `contacts.Add`).
+- **`internal/ui/workflow_hardening_test.go`** — WORKFLOW-level: drives the real
+  bubbletea Update handlers end-to-end (reply-all → real `neomd-*.md` compose
+  file → editorDoneMsg → pre-send → enter) and delivers to a fake in-process
+  TLS SMTP server, asserting only what the outside world sees (auth user,
+  MAIL FROM, RCPT TO, delivered wire bytes). This catches composition/wiring
+  bugs that per-function tests can't (e.g. swapped cc/bcc arguments in
+  `sendEmailCmd` = Bcc leak — verified by mutation test).
+  `TestHardening_Workflow_ReplyAllUsesReceivingAccount`: reply goes out via the
+  account whose address received the email (auth + MAIL FROM + From header),
+  reply-all Cc excludes every own address (logins, account Froms, sender
+  aliases), auto_bcc reaches RCPT but never headers, threading headers point at
+  the original, `·`-indicator data survives.
+  `TestHardening_Workflow_MarkdownFileToWire`: a real markdown compose file
+  (`# [neomd: ...]` headers, `[attach]`, `[html-signature]`, signature block)
+  arrives with To/Cc/Bcc routing, umlaut subject, literal-markdown plain part,
+  rendered HTML (bold/link/callout), text sig in both parts, HTML sig in HTML
+  only, attachment bytes identical, and no internal marker delivered.
+- **`internal/ui/send_hardening_test.go`** — RCPT TO is complete (To+Cc+Bcc), deduped,
+  bare addresses only, and unchanged by contact-name decoration; messy input
+  (double/trailing commas, whitespace) never yields empty or malformed RCPT
+  entries (`TestHardening_RcptNoEmptyOrMalformedEntries`); auto_bcc merges
+  case-insensitively against decorated forms and reaches RCPT exactly once
+  (`TestHardening_AutoBccPipeline`).
+- **`internal/integration_hardening_test.go`** (live) — draft attachment round-trip
+  under its original filename with identical bytes (the 2026-08 rename incident),
+  full send fidelity through a real server (umlaut subject + binary attachment,
+  no Bcc/X-Neomd header on the delivered message), scheduled-queue APPEND/FETCH
+  round-trip, reply threading through the server (delivered In-Reply-To/References
+  match the original's real Message-ID, envelope view included —
+  `TestIntegration_Hardening_ReplyThreadingThroughServer`), and body fidelity as
+  the recipient decodes it (hard breaks, dot-stuffed `.` line, 1200-char line,
+  umlauts/emoji — `TestIntegration_Hardening_BodyFidelityThroughServer`).
+
+When you add a new field or path to outgoing messages, extend the round-trip suite in
+the same commit — a field that isn't parse-back-asserted is a field that can silently
+break.
+
+**Hardening assertions may only be extended, never weakened.** If a hardening test
+fails after a code change, the default assumption is that the CODE broke a
+user-visible contract — investigate the code first. Relaxing, deleting, or rewriting
+a hardening assertion to make a change pass requires the user's explicit approval in
+that conversation; "the test was too strict" is not a decision an agent makes alone.
+
+---
+
 ## Reply & Threading
 
 - **`·` reply indicator** — after sending a reply, the original email gets the IMAP
@@ -82,6 +161,25 @@ Build commands, architecture, and API quirks live in `CLAUDE.md`. Feature docs l
 - **Drafts** — saved as plain text only (multipart caused round-trip corruption), keep
   `Bcc`; every compose session is backed up to `~/.cache/neomd/drafts/` (`:recover`);
   discarding unsent mail always asks y/n confirmation.
+- **Draft attachments keep their original filename** — continuing a draft writes
+  extracted attachments into a fresh temp dir under their real basename (never a
+  mangled `CreateTemp` name — the sent filename is the path's basename). Duplicates
+  dedupe as `name-2.ext`; traversal/empty names sanitized (`writeAttachmentsTemp`,
+  `internal/ui/model.go`). Test: `TestWriteAttachmentsTempPreservesFilename`.
+- **Contact-name decoration is headers-only** — bare To/Cc addresses with a harvested
+  contact name become `Name <addr>` in message headers at send time, but
+  `collectRcptTo` always uses the raw undecorated fields and Bcc is never decorated
+  (BCC privacy + comma-split RCPT must not break). Unsafe names (`,<>"`), and any
+  part already containing `<`, are left untouched; `first.last@` derivation never
+  fires for role mailboxes (`contacts.Decorate`, `contacts.DeriveName`). Tests:
+  `TestHarvestNameAndDecorate`, `TestAddRejectsUnsafeNames`, `TestDeriveName`.
+- **Send later never double-delivers** — the daemon claims a due Scheduled message
+  with `\Flagged` *before* SMTP; flagged leftovers are skipped and logged, never
+  retried automatically (`processScheduled`, `internal/daemon/daemon.go`). The
+  delivered message and its Sent copy must carry **no** `X-Neomd-*` headers
+  (`X-Neomd-Rcpt` contains Bcc!); messages without `X-Neomd-Send-At` in the
+  Scheduled folder (GTD items) are never touched. Tests:
+  `TestInjectExtractRoundTrip`, `TestExtractIgnoresRegularMail`, `TestSMTPConfigFor`.
 - **Callouts** — `> [!note]` / `> [!tip]` / `> [!warning]` (with or without space after
   `>`) render as styled boxes in the HTML part and as emoji text (no blockquote markers)
   in the plain part. Tests: `TestToHTML_Callout_*`, `TestFormatCalloutsForPlainText_*`.
@@ -120,6 +218,21 @@ Build commands, architecture, and API quirks live in `CLAUDE.md`. Feature docs l
 - **Undo (`u`)** — reverses the last move/delete using UIDPLUS destination UIDs captured
   on move; batch operations preserve partial-undo info on failure. Integration test:
   `TestIntegration_IMAPMoveAndUndo`.
+
+- **Search matches contact names** — `internal/contacts` harvests `Name <addr>` pairs
+  from loaded headers into `~/.cache/neomd/contacts`; the local `/` filter appends
+  resolved names to its haystack, and server-side search (`space /`) expands a name
+  query into per-address queries (never for `subject:`), deduped by folder+UID.
+  Envelope To/CC/BCC keep display names (`formatEnvelopeAddr`) — names that would
+  break comma-splitting fall back to the bare address. Tests:
+  `TestFormatEnvelopeAddr`, `TestExpandSearchQueries`,
+  `TestContactNamesForResolvesBareAddresses`.
+- **The user's `[contacts]` file is read-only** — `contacts.MergeFile` only reads;
+  neomd persists exclusively to its own cache (`config.ContactsCachePath()`), so the
+  cache can be deleted anytime and rebuilds from harvesting + the file. The picker
+  (`space c`, `internal/ui/contacts_picker.go`) copies via external clipboard tools
+  and never mutates the store. Tests: `TestMergeFileGoogleCSVRealExport`,
+  `TestContactsPickerFilterAndSelect`.
 
 ## Reading & Security
 

@@ -24,11 +24,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sspaeti/neomd/internal/calendar"
 	"github.com/sspaeti/neomd/internal/config"
+	"github.com/sspaeti/neomd/internal/contacts"
 	"github.com/sspaeti/neomd/internal/editor"
 	"github.com/sspaeti/neomd/internal/imap"
 	"github.com/sspaeti/neomd/internal/listmonk"
 	"github.com/sspaeti/neomd/internal/notify"
 	"github.com/sspaeti/neomd/internal/render"
+	"github.com/sspaeti/neomd/internal/schedule"
 	"github.com/sspaeti/neomd/internal/screener"
 	"github.com/sspaeti/neomd/internal/smtp"
 )
@@ -44,6 +46,7 @@ const (
 	stateHelp               // help overlay
 	stateWelcome            // first-run welcome popup
 	stateReaction           // emoji reaction picker
+	stateContacts           // contacts picker (space c)
 )
 
 // async message types
@@ -151,7 +154,12 @@ type (
 		moved, total int
 		label        string
 	}
-	saveDraftDoneMsg  struct{ err error }
+	saveDraftDoneMsg struct{ err error }
+	// scheduleDoneMsg reports the result of queuing a send-later message.
+	scheduleDoneMsg struct {
+		at  time.Time
+		err error
+	}
 	attachOpenDoneMsg struct {
 		path      string
 		err       error
@@ -561,6 +569,10 @@ type Model struct {
 	aiPromptActive bool
 	aiPromptInput  textinput.Model
 
+	// Send-later time prompt on the pre-send screen (`l`).
+	sendLaterActive bool
+	sendLaterInput  textinput.Model
+
 	// Reaction
 	reactionEmail    *imap.Email // email being reacted to
 	reactionSelected int         // selected emoji index (0-7)
@@ -585,6 +597,11 @@ type Model struct {
 	// Used to skip already-scanned emails in :scan-spy-pixels.
 	spyScannedKeys map[string]bool
 
+	// contacts maps harvested email addresses to display names — used to match
+	// name searches (sent mail carries bare addresses) and to decorate
+	// outgoing To/Cc headers. Nil-safe: all Store methods accept a nil receiver.
+	contacts *contacts.Store
+
 	// Undo stack: each entry is a batch of moves that can be reversed with u.
 	// Screener operations (I/O/F/P/$) are not undoable — they also modify .txt files.
 	undoStack [][]undoMove
@@ -607,6 +624,11 @@ type Model struct {
 	helpSearch       string
 	helpSearchActive bool
 	helpScroll       int
+
+	// Contacts picker (space c) state.
+	contactsFilter       string
+	contactsFilterActive bool
+	contactsCursor       int
 
 	// cmdMode / cmdText / cmdTabI implement vim-style ":" command line.
 	cmdMode    bool
@@ -686,6 +708,13 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener, mail
 	}
 
 	spyKeys, scannedKeys := loadSpyPixelCache()
+	// Contacts: harvested cache + optional user-maintained [contacts] file
+	// (simple addr,name lines or a Google Contacts CSV export).
+	cs := contacts.Load(config.ContactsCachePath())
+	notice := detectStartupNotice()
+	if err := cs.MergeFile(cfg.Contacts.File); err != nil {
+		notice = "[contacts] file: " + err.Error()
+	}
 	return Model{
 		cfg:         cfg,
 		accounts:    cfg.ActiveAccounts(),
@@ -704,7 +733,8 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener, mail
 		markedUIDs:     make(map[uint32]bool),
 		spyPixelKeys:   spyKeys,
 		spyScannedKeys: scannedKeys,
-		startupNotice:  detectStartupNotice(),
+		contacts:       cs,
+		startupNotice:  notice,
 		sortField:      "date",
 		sortReverse:    true, // newest first
 		mailto:         mp,
@@ -917,10 +947,15 @@ func (m Model) sendEmailCmd(smtpAcct config.AccountConfig, from, to, cc, bcc, su
 	if includeHTMLSig {
 		htmlSignature = m.cfg.Signature(smtpAcct).HTML
 	}
+	// Decorate bare To/Cc addresses with known contact names — headers only.
+	// collectRcptTo below keeps using the raw comma-separated fields, and Bcc
+	// stays undecorated (it never appears in headers).
+	hdrTo := m.contacts.Decorate(to)
+	hdrCC := m.contacts.Decorate(cc)
 	return func() tea.Msg {
 		// Build raw MIME once — reused for both SMTP delivery and Sent copy.
 		// BCC is intentionally excluded from headers but included in RCPT TO.
-		raw, err := smtp.BuildMessageWithThreading(from, to, cc, subject, body, attachments, htmlSignature, inReplyTo, references)
+		raw, err := smtp.BuildMessageWithThreading(from, hdrTo, hdrCC, subject, body, attachments, htmlSignature, inReplyTo, references)
 		if err != nil {
 			return sendDoneMsg{err: fmt.Errorf("build message: %w", err)}
 		}
@@ -942,6 +977,36 @@ func (m Model) sendEmailCmd(smtpAcct config.AccountConfig, from, to, cc, bcc, su
 			_ = replyCli.MarkAnswered(nil, replyToFolder, replyToUID)
 		}
 		return sendDoneMsg{replyToUID: replyToUID, replyToFolder: replyToFolder}
+	}
+}
+
+// scheduleSendCmd builds the message exactly like sendEmailCmd, injects the
+// send-later headers (X-Neomd-Send-At + full RCPT list), and APPENDs it to the
+// Scheduled folder. Delivery happens in the headless daemon (`neomd
+// --headless`) — see internal/schedule. Reply \Answered marking is skipped:
+// the TUI may be long gone when the message actually goes out.
+func (m Model) scheduleSendCmd(smtpAcct config.AccountConfig, from, to, cc, bcc, subject, body string, attachments []string, includeHTMLSig bool, inReplyTo, references string, sendAt time.Time) tea.Cmd {
+	cli := m.presendIMAPClient()
+	folder := m.cfg.Folders.Scheduled
+	htmlSignature := ""
+	if includeHTMLSig {
+		htmlSignature = m.cfg.Signature(smtpAcct).HTML
+	}
+	hdrTo := m.contacts.Decorate(to)
+	hdrCC := m.contacts.Decorate(cc)
+	return func() tea.Msg {
+		if cli == nil {
+			return scheduleDoneMsg{err: fmt.Errorf("no IMAP-enabled account available to store the scheduled message")}
+		}
+		raw, err := smtp.BuildMessageWithThreading(from, hdrTo, hdrCC, subject, body, attachments, htmlSignature, inReplyTo, references)
+		if err != nil {
+			return scheduleDoneMsg{err: fmt.Errorf("build message: %w", err)}
+		}
+		queued := schedule.Inject(raw, sendAt, collectRcptTo(to, cc, bcc))
+		if err := cli.SaveSent(nil, folder, queued); err != nil {
+			return scheduleDoneMsg{err: err}
+		}
+		return scheduleDoneMsg{at: sendAt}
 	}
 }
 
@@ -1149,28 +1214,73 @@ func normalizedSender(from string) string {
 }
 
 func writeAttachmentsTemp(files []imap.Attachment) ([]string, error) {
+	// Each attachment keeps its original filename inside a fresh unique
+	// directory — the sent filename is derived from the path's basename, so a
+	// mangled temp name would be sent as-is (e.g. "draft-Offer.pdf-718599635").
+	dir, err := os.MkdirTemp(neomdTempDir(), "draft-attachments-*")
+	if err != nil {
+		return nil, err
+	}
 	paths := make([]string, 0, len(files))
+	used := make(map[string]bool)
 	for _, a := range files {
 		base := filepath.Base(a.Filename)
-		if base == "." || base == string(filepath.Separator) || base == "" {
+		if base == "" || base == "." || base == ".." || base == "/" || strings.ContainsRune(base, os.PathSeparator) {
 			base = "attachment"
 		}
-		f, err := os.CreateTemp(neomdTempDir(), "draft-"+base+"-*")
-		if err != nil {
+		name := base
+		for n := 2; used[name]; n++ {
+			ext := filepath.Ext(base)
+			name = fmt.Sprintf("%s-%d%s", strings.TrimSuffix(base, ext), n, ext)
+		}
+		used[name] = true
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, a.Data, 0o600); err != nil {
+			os.RemoveAll(dir)
 			return nil, err
 		}
-		if _, err := f.Write(a.Data); err != nil {
-			f.Close()
-			os.Remove(f.Name())
-			return nil, err
-		}
-		if err := f.Close(); err != nil {
-			os.Remove(f.Name())
-			return nil, err
-		}
-		paths = append(paths, f.Name())
+		paths = append(paths, path)
 	}
 	return paths, nil
+}
+
+// harvestContacts records "Name <addr>" pairs from loaded headers and
+// persists them in the background. The names later match searches and
+// decorate outgoing To/Cc headers (see the contacts package).
+func (m *Model) harvestContacts(emails []imap.Email) {
+	if m.contacts == nil {
+		return
+	}
+	for _, e := range emails {
+		m.contacts.HarvestField(e.From)
+		m.contacts.HarvestField(e.To)
+		m.contacts.HarvestField(e.CC)
+	}
+	cs := m.contacts
+	safeGo(func() { _ = cs.SaveIfDirty() })
+}
+
+// contactNamesFor returns the known display names (lower-cased) for every
+// address in the given header fields, for inclusion in the local filter
+// haystack — sent mail often carries bare addresses without the name.
+func (m Model) contactNamesFor(fields ...string) string {
+	if m.contacts == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, f := range fields {
+		for _, addr := range imap.SplitAddrs(f) {
+			n := m.contacts.Name(addr)
+			if n == "" {
+				n = contacts.DeriveName(addr) // first.last@ → "First Last"
+			}
+			if n != "" {
+				b.WriteString(" ")
+				b.WriteString(strings.ToLower(n))
+			}
+		}
+	}
+	return b.String()
 }
 
 // validateScreenerSafety wraps the shared screener validation logic.
@@ -1944,6 +2054,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case emailsLoadedMsg:
 		m.loading = false
 		m.emails = msg.emails
+		m.harvestContacts(msg.emails)
 		m.markedUIDs = make(map[uint32]bool) // clear marks on folder reload
 		m.filterActive = false
 		m.filterText = ""
@@ -2215,6 +2326,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingSend = nil
 			m.state = stateInbox
 			m.status = "Saved to Drafts."
+			m.isError = false
+		}
+		return m, nil
+
+	case clipboardDoneMsg:
+		if msg.err != nil {
+			m.status = "Copy failed: " + msg.err.Error()
+			m.isError = true
+		} else {
+			m.status = "Copied to clipboard: " + msg.text
+			m.isError = false
+		}
+		return m, nil
+
+	case scheduleDoneMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.status = "Send later error: " + msg.err.Error()
+			m.isError = true
+		} else {
+			m.status = fmt.Sprintf("Scheduled for %s — delivered by the headless daemon (gc to review, delete to cancel).", msg.at.Format("Mon 2006-01-02 15:04"))
 			m.isError = false
 		}
 		return m, nil
@@ -2638,6 +2770,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case stateReaction:
 			return m.updateReaction(msg)
+		case stateContacts:
+			return m.updateContacts(msg)
 		}
 	}
 
@@ -2819,7 +2953,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case " ": // leader key — wait for digit or shortcut
 		m.pendingKey = " "
-		m.status = "leader:  1-9 folder tab  / IMAP search  S scan spy pixels  w welcome  (esc to cancel)"
+		m.status = "leader:  1-9 folder tab  / IMAP search  c contacts  S scan spy pixels  w welcome  (esc to cancel)"
 		return m, nil
 
 	case "M":
@@ -3363,11 +3497,13 @@ func (m *Model) applyFilter() tea.Cmd {
 		if m.filterText != "" {
 			query := strings.ToLower(m.filterText)
 			// In Sent folder, search To/CC/BCC instead of From — From is always us.
+			// Known contact names are appended so searching a person's name
+			// matches even when the header only carries the bare address.
 			var hay string
 			if len(m.folders) > 0 && m.activeFolder() == m.cfg.Folders.Sent {
-				hay = strings.ToLower(e.To + " " + e.CC + " " + e.BCC + " " + e.Subject)
+				hay = strings.ToLower(e.To+" "+e.CC+" "+e.BCC+" "+e.Subject) + m.contactNamesFor(e.To, e.CC, e.BCC)
 			} else {
-				hay = strings.ToLower(e.From + " " + e.Subject)
+				hay = strings.ToLower(e.From+" "+e.Subject) + m.contactNamesFor(e.From)
 			}
 			if !strings.Contains(hay, query) {
 				continue
@@ -3398,6 +3534,14 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 		}
 		if key == "w" {
 			m.state = stateWelcome
+			return m, nil
+		}
+		if key == "c" { // contacts picker
+			m.prevState = m.state
+			m.contactsFilter = ""
+			m.contactsFilterActive = false
+			m.contactsCursor = 0
+			m.state = stateContacts
 			return m, nil
 		}
 		if key == "S" {
@@ -4559,6 +4703,36 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.aiPromptInput, cmd = m.aiPromptInput.Update(msg)
 		return m, cmd
 	}
+	// Send-later time prompt: typed when the user pressed `l`. Enter queues
+	// the message in the Scheduled folder; esc cancels back to pre-send.
+	if m.sendLaterActive {
+		switch msg.String() {
+		case "esc":
+			m.sendLaterActive = false
+			return m, nil
+		case "enter":
+			at, err := schedule.ParseSendAt(m.sendLaterInput.Value(), time.Now())
+			if err != nil {
+				m.sendLaterInput.SetValue("")
+				m.sendLaterInput.Placeholder = err.Error()
+				return m, nil
+			}
+			m.sendLaterActive = false
+			m.loading = true
+			m.state = stateInbox
+			from := m.presendFrom()
+			smtpAcct := m.presendSMTPAccount()
+			attachments := m.attachments
+			includeHTMLSig, cleanBody := extractHTMLSignatureMarker(ps.body)
+			m.attachments = nil
+			m.pendingSend = nil
+			m.pendingIsReply = false
+			return m, tea.Batch(m.spinner.Tick, m.scheduleSendCmd(smtpAcct, from, ps.to, ps.cc, ps.bcc, ps.subject, cleanBody, attachments, includeHTMLSig, ps.inReplyTo, ps.references, at))
+		}
+		var cmd tea.Cmd
+		m.sendLaterInput, cmd = m.sendLaterInput.Update(msg)
+		return m, cmd
+	}
 	switch msg.String() {
 	case "enter":
 		m.loading = true
@@ -4631,6 +4805,21 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		// Save to Drafts without sending.
 		return m, m.saveDraftCmd(m.presendIMAPClient(), m.presendFrom(), ps.to, ps.cc, ps.bcc, ps.subject, ps.body, m.attachments)
+	case "l":
+		// Send later: prompt for a delivery time. The message is queued in
+		// the Scheduled folder and delivered by the headless daemon.
+		if m.cfg.ListmonkEnabled() && len(listmonk.ResolveListIDs(m.listmonkTriggers(), ps.to)) > 0 {
+			m.status = "Send later is not available for Listmonk campaigns — Listmonk already schedules with its own delay."
+			m.isError = true
+			return m, nil
+		}
+		ti := textinput.New()
+		ti.Placeholder = "+2h · 17:30 · tomorrow 09:00 · 2026-08-25 17:30"
+		ti.CharLimit = 40
+		ti.Focus()
+		m.sendLaterInput = ti
+		m.sendLaterActive = true
+		return m, nil
 	case "ctrl+b":
 		// Toggle CC/BCC fields — show input prompts to add/edit them.
 		m.compose.extraVisible = !m.compose.extraVisible
@@ -5522,6 +5711,8 @@ func (m Model) View() string {
 		return m.viewWelcome()
 	case stateReaction:
 		return m.viewReaction()
+	case stateContacts:
+		return m.viewContacts()
 	}
 	return ""
 }
@@ -5593,6 +5784,9 @@ func (m Model) viewPresend() string {
 		// One-line instruction prompt active — replaces the help footer
 		// until the user submits (Enter) or cancels (Esc).
 		b.WriteString(styleInputLabel.Render("AI prompt:") + " " + m.aiPromptInput.View())
+	} else if m.sendLaterActive {
+		b.WriteString(styleInputLabel.Render("Send at:") + " " + m.sendLaterInput.View() +
+			styleHelp.Render("  · enter schedule · esc cancel"))
 	} else if m.status != "" {
 		b.WriteString(statusBar(m.status, m.isError))
 	} else {
@@ -5603,7 +5797,7 @@ func (m Model) viewPresend() string {
 			if strings.TrimSpace(m.cfg.AI.Command) != "" {
 				aiHint = " · i AI (quit to return)"
 			}
-			b.WriteString(styleHelp.Render("  enter send · e edit · s spell · p preview · a attach · D remove attach" + aiHint + " · ctrl+f from · ctrl+b cc/bcc · d draft · esc cancel · x discard"))
+			b.WriteString(styleHelp.Render("  enter send · l later · e edit · s spell · p preview · a attach · D remove attach" + aiHint + " · ctrl+f from · ctrl+b cc/bcc · d draft · esc cancel · x discard"))
 		}
 	}
 	return b.String()
