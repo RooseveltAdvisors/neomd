@@ -152,11 +152,13 @@ docs-clean:
 
 ## sync-headless: deploy FreeBSD binary to ti server and restart daemon
 sync-headless: build
+	@echo "Stopping daemon (FreeBSD refuses to overwrite a running binary)..."
+	ssh ti "pkill neomd || true; sleep 2"
 	@echo "Copying binary and Makefile to ti..."
 	scp neomd-freebsd ti:~/.local/bin/neomd
 	scp scripts/headless-server/Makefile ti:~/Makefile
-	@echo "Restarting daemon..."
-	ssh ti "pkill neomd || true; sleep 2; mkdir -p ~/.local/share/neomd; nohup ~/.local/bin/neomd --headless >> ~/.local/share/neomd/daemon.log 2>&1 &"
+	@echo "Starting daemon (sourcing ~/.profile so env vars like the IMAP password are loaded)..."
+	ssh ti ". ~/.profile; mkdir -p ~/.local/share/neomd; make run-headless"
 	@echo "Waiting for daemon to start..."
 	@sleep 2
 	@echo "Checking status..."
