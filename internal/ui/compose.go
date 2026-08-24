@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sspaeti/neomd/internal/contacts"
 )
 
 // composeStep tracks which field is active in the compose form.
@@ -29,9 +30,10 @@ type composeModel struct {
 	fromPresend  bool // true when ctrl+b was pressed from the pre-send screen (CC-only edit)
 
 	// Address autocomplete
-	knownAddrs  []string // all addresses from screener lists (set once)
-	suggestions []string // current matching suggestions
-	suggestI    int      // selected suggestion index (-1 = none)
+	knownAddrs  []string        // all addresses from screener lists (set once)
+	contacts    *contacts.Store // harvested + [contacts]-file names (nil-safe); matched by name AND address
+	suggestions []string        // current matching suggestions
+	suggestI    int             // selected suggestion index (-1 = none)
 }
 
 func newComposeModel() composeModel {
@@ -101,10 +103,14 @@ func (c *composeModel) isAddrField() bool {
 }
 
 // updateSuggestions refreshes the suggestion list based on the current input.
+// Candidates come from two sources: the contacts store (harvested names +
+// [contacts] file), matched by display name OR address and suggested as
+// "Name <addr>", and the screener lists (bare addresses), decorated with a
+// known name when the store has one. Deduped by bare address, contacts first.
 func (c *composeModel) updateSuggestions() {
 	c.suggestI = -1
 	c.suggestions = nil
-	if !c.isAddrField() || len(c.knownAddrs) == 0 {
+	if !c.isAddrField() {
 		return
 	}
 	// Get the last address being typed (after the last comma)
@@ -117,9 +123,28 @@ func (c *composeModel) updateSuggestions() {
 		return
 	}
 	query := strings.ToLower(lastPart)
+	seen := map[string]bool{}
+	for _, e := range c.contacts.All() {
+		if strings.Contains(strings.ToLower(e.Name), query) || strings.Contains(strings.ToLower(e.Addr), query) {
+			c.suggestions = append(c.suggestions, e.Name+" <"+e.Addr+">")
+			seen[strings.ToLower(e.Addr)] = true
+		}
+	}
 	for _, addr := range c.knownAddrs {
+		if seen[strings.ToLower(addr)] {
+			continue
+		}
+		if name := c.contacts.Name(addr); name != "" {
+			// Screener address with a known name: match on either, suggest decorated.
+			if strings.Contains(strings.ToLower(name), query) || strings.Contains(strings.ToLower(addr), query) {
+				c.suggestions = append(c.suggestions, name+" <"+addr+">")
+				seen[strings.ToLower(addr)] = true
+			}
+			continue
+		}
 		if strings.Contains(strings.ToLower(addr), query) {
 			c.suggestions = append(c.suggestions, addr)
+			seen[strings.ToLower(addr)] = true
 		}
 	}
 	// Sort: prefix matches first, then alphabetical

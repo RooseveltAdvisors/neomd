@@ -119,6 +119,7 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	if e.displaySubj != "" {
 		subjectText = e.displaySubj
 	}
+	subjectText = sendLaterPrefix(e.email) + subjectText
 	subject := truncate(displaySafe(subjectText), subjectMax)
 
 	if isSelected {
@@ -214,6 +215,18 @@ func fmtDate(t time.Time) string {
 		return t.Format("Jan 02")
 	}
 	return t.Format("Jan 06")
+}
+
+// sendLaterPrefix returns the display-only "[send-later …]" marker for
+// messages queued by the send-later feature (identified by their
+// X-Neomd-Send-At header). The stored subject is never mutated — it is what
+// gets delivered — so regular GTD mail sharing the Scheduled folder stays
+// visually distinct without any wire change.
+func sendLaterPrefix(e imap.Email) string {
+	if e.SendAt.IsZero() {
+		return ""
+	}
+	return "[send-later " + e.SendAt.Local().Format("Jan 2 15:04") + "] "
 }
 
 // displaySafe collapses every run of characters from scripts whose

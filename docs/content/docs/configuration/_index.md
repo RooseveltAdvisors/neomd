@@ -285,6 +285,10 @@ Contacts from other sources (e.g. Obsidian frontmatter) can be converted to the 
 
 **Precedence**: at startup your file is merged on top of the cache, but if neomd later sees a real `Name <addr>` header for the same address, that harvested name overwrites the entry *in the cache only*. Since your file is re-applied on every launch, the freshest of "your file" vs. "last harvested header name" wins per session. Delete the cache file anytime — it is simply rebuilt from harvesting plus your file.
 
+### Backing up / syncing the cache
+
+The harvested cache is per-machine and lives outside your config, so it is easy to forget in backups. Names re-harvest automatically from loaded mail, so losing it is never fatal — but names you only ever *typed* (recipients who never emailed you back) exist solely in this file. If you already sync your screener lists across devices with [Syncthing](https://syncthing.net/) (see [Headless → Multi-Device Setup](headless#multi-device-setup-with-syncthing)), adding `~/.cache/neomd/contacts` to a synced folder gives every device the same address book. One caveat: both machines write this file, so concurrent writes resolve last-writer-wins (Syncthing may leave a `.sync-conflict` copy) — a name lost that way simply re-harvests the next time that person's mail is loaded, so in practice this is harmless. Alternatively just include the file in your regular backup.
+
 ### Contacts picker (`space c`)
 
 Press `space c` in the inbox to browse the merged address book:

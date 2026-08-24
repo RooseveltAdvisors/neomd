@@ -24,6 +24,7 @@ import (
 	"github.com/emersion/go-message/mail"
 	"github.com/sspaeti/neomd/internal/mailtls"
 	"github.com/sspaeti/neomd/internal/oauth2"
+	"github.com/sspaeti/neomd/internal/schedule"
 )
 
 // Email is a fully parsed email message.
@@ -49,11 +50,12 @@ type Email struct {
 	Answered      bool // \Answered flag — set when replied to from any client
 	Flagged       bool // \Flagged — the send-later daemon uses it as a claim marker
 	Folder        string
-	Size          uint32 // RFC822 size in bytes
-	HasAttachment bool   // true if BODYSTRUCTURE contains an attachment part
-	MessageID     string // Message-ID from envelope (for threading)
-	InReplyTo     string // first In-Reply-To message ID (for threading)
-	References    string // References header (space-separated Message-IDs for threading)
+	Size          uint32    // RFC822 size in bytes
+	HasAttachment bool      // true if BODYSTRUCTURE contains an attachment part
+	MessageID     string    // Message-ID from envelope (for threading)
+	InReplyTo     string    // first In-Reply-To message ID (for threading)
+	References    string    // References header (space-separated Message-IDs for threading)
+	SendAt        time.Time // parsed X-Neomd-Send-At — non-zero only for send-later queued messages
 }
 
 // Config holds connection parameters.
@@ -272,6 +274,33 @@ func (c *Client) Ping(ctx context.Context) error {
 }
 
 // FetchHeaders fetches the latest n message summaries from folder.
+// sendAtHeaderSection requests only the X-Neomd-Send-At header field (peek,
+// so \Seen is untouched) — it identifies send-later queued messages so the UI
+// can mark them, without ever mutating the stored message.
+func sendAtHeaderSection() []*imap.FetchItemBodySection {
+	return []*imap.FetchItemBodySection{{
+		Specifier:    imap.PartSpecifierHeader,
+		HeaderFields: []string{schedule.HeaderSendAt},
+		Peek:         true,
+	}}
+}
+
+// parseSendAtSection extracts the RFC 3339 time from a fetched
+// X-Neomd-Send-At header-fields section. Zero time when absent.
+func parseSendAtSection(sections []imapclient.FetchBodySectionBuffer) time.Time {
+	if len(sections) == 0 {
+		return time.Time{}
+	}
+	for _, line := range strings.Split(string(sections[0].Bytes), "\r\n") {
+		if i := strings.IndexByte(line, ':'); i > 0 && strings.EqualFold(strings.TrimSpace(line[:i]), schedule.HeaderSendAt) {
+			if at, err := time.Parse(time.RFC3339, strings.TrimSpace(line[i+1:])); err == nil {
+				return at
+			}
+		}
+	}
+	return time.Time{}
+}
+
 func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Email, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -318,6 +347,7 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
+			BodySection:   sendAtHeaderSection(),
 		}).Collect()
 		if err != nil {
 			return fmt.Errorf("FETCH headers: %w", err)
@@ -333,7 +363,7 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 			if !ok {
 				continue
 			}
-			e := Email{UID: uint32(m.UID), Folder: folder}
+			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.BodySection)}
 			for _, f := range m.Flags {
 				if f == imap.FlagSeen {
 					e.Seen = true
@@ -733,12 +763,13 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
+			BodySection:   sendAtHeaderSection(),
 		}).Collect()
 		if err != nil {
 			return fmt.Errorf("FETCH headers: %w", err)
 		}
 		for _, m := range msgs {
-			e := Email{UID: uint32(m.UID), Folder: folder}
+			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.BodySection)}
 			for _, f := range m.Flags {
 				if f == imap.FlagSeen {
 					e.Seen = true

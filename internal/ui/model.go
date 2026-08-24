@@ -715,6 +715,9 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener, mail
 	if err := cs.MergeFile(cfg.Contacts.File); err != nil {
 		notice = "[contacts] file: " + err.Error()
 	}
+	// Autocomplete matches contact names ("max muster" → Max Muster <max@…>),
+	// not just screener-list addresses.
+	compose.contacts = cs
 	return Model{
 		cfg:         cfg,
 		accounts:    cfg.ActiveAccounts(),
@@ -1255,6 +1258,23 @@ func (m *Model) harvestContacts(emails []imap.Email) {
 		m.contacts.HarvestField(e.From)
 		m.contacts.HarvestField(e.To)
 		m.contacts.HarvestField(e.CC)
+	}
+	cs := m.contacts
+	safeGo(func() { _ = cs.SaveIfDirty() })
+}
+
+// harvestTypedRecipients records "Name <addr>" pairs the user typed into
+// To/Cc/Bcc at send/schedule time, so a manually written name (e.g. from
+// autocomplete or typed once by hand) persists in the contacts cache without
+// waiting for that person to email back. Bare addresses carry no name and are
+// skipped by HarvestField. The cache is local-only, so Bcc names never leave
+// the machine.
+func (m *Model) harvestTypedRecipients(fields ...string) {
+	if m.contacts == nil {
+		return
+	}
+	for _, f := range fields {
+		m.contacts.HarvestField(f)
 	}
 	cs := m.contacts
 	safeGo(func() { _ = cs.SaveIfDirty() })
@@ -4727,6 +4747,7 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.attachments = nil
 			m.pendingSend = nil
 			m.pendingIsReply = false
+			m.harvestTypedRecipients(ps.to, ps.cc, ps.bcc)
 			return m, tea.Batch(m.spinner.Tick, m.scheduleSendCmd(smtpAcct, from, ps.to, ps.cc, ps.bcc, ps.subject, cleanBody, attachments, includeHTMLSig, ps.inReplyTo, ps.references, at))
 		}
 		var cmd tea.Cmd
@@ -4746,6 +4767,9 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.attachments = nil
 		m.pendingSend = nil
 		m.pendingIsReply = false
+		// Harvest user-typed "Name <addr>" recipients so the name persists in
+		// the contacts cache (autocomplete + search) without a contacts file.
+		m.harvestTypedRecipients(ps.to, ps.cc, ps.bcc)
 		// Route to Listmonk if the To address matches a configured trigger.
 		if m.cfg.ListmonkEnabled() {
 			triggers := m.listmonkTriggers()

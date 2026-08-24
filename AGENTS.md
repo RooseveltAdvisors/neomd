@@ -173,6 +173,19 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   part already containing `<`, are left untouched; `first.last@` derivation never
   fires for role mailboxes (`contacts.Decorate`, `contacts.DeriveName`). Tests:
   `TestHarvestNameAndDecorate`, `TestAddRejectsUnsafeNames`, `TestDeriveName`.
+- **Compose autocomplete matches contact names** — To/Cc/Bcc suggestions come from
+  the contacts store (matched by display name OR address, suggested as
+  `Name <addr>`) plus screener-list addresses (decorated when the name is known);
+  nil store never panics. Typed `Name <addr>` recipients are harvested into the
+  cache at send/schedule time (`harvestTypedRecipients`) so a name typed once
+  persists. Tests: `TestComposeSuggestions_*`, `TestHarvestTypedRecipients`.
+- **Send-later queue marker is display-only** — queued messages are identified by
+  a peek'd `X-Neomd-Send-At` header-fields fetch (`Email.SendAt`,
+  `parseSendAtSection`) and shown with a `[send-later …]` subject prefix at
+  render time only; the stored subject/message is NEVER mutated (it is what gets
+  delivered) and GTD mail sharing the Scheduled folder stays unmarked. Tests:
+  `TestParseSendAtSection`, `TestSendLaterPrefix`, live assert in
+  `TestIntegration_Hardening_ScheduledQueueRoundTrip`.
 - **Send later never double-delivers** — the daemon claims a due Scheduled message
   with `\Flagged` *before* SMTP; flagged leftovers are skipped and logged, never
   retried automatically (`processScheduled`, `internal/daemon/daemon.go`). The

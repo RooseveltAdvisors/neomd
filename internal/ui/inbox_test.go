@@ -223,3 +223,19 @@ func TestSendDoneMsgUpdatesAnsweredFlag(t *testing.T) {
 		}
 	}
 }
+
+// Queued send-later messages get a display-only "[send-later …]" prefix;
+// regular GTD mail in the same folder stays unmarked and the stored subject
+// is never mutated.
+func TestSendLaterPrefix(t *testing.T) {
+	queued := imap.Email{Subject: "Ängebot", SendAt: time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)}
+	if got := sendLaterPrefix(queued); !strings.HasPrefix(got, "[send-later ") {
+		t.Errorf("queued prefix = %q", got)
+	}
+	if queued.Subject != "Ängebot" {
+		t.Error("subject mutated")
+	}
+	if got := sendLaterPrefix(imap.Email{Subject: "GTD item"}); got != "" {
+		t.Errorf("regular mail must have no prefix: %q", got)
+	}
+}

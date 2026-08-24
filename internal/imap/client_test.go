@@ -8,7 +8,31 @@ import (
 	"time"
 
 	imap "github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 )
+
+// Send-later queued messages are identified in header fetches by their
+// X-Neomd-Send-At header (fetched as a peek'd header-fields section) so the
+// UI can mark them without mutating the stored message.
+func TestParseSendAtSection(t *testing.T) {
+	at := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
+	sec := []imapclient.FetchBodySectionBuffer{{
+		Bytes: []byte("X-Neomd-Send-At: " + at.Format(time.RFC3339) + "\r\n\r\n"),
+	}}
+	if got := parseSendAtSection(sec); !got.Equal(at) {
+		t.Errorf("SendAt = %v, want %v", got, at)
+	}
+	// Regular mail (no section content) and garbage must yield zero time.
+	if got := parseSendAtSection(nil); !got.IsZero() {
+		t.Errorf("nil section: %v", got)
+	}
+	if got := parseSendAtSection([]imapclient.FetchBodySectionBuffer{{Bytes: []byte("\r\n")}}); !got.IsZero() {
+		t.Errorf("empty header: %v", got)
+	}
+	if got := parseSendAtSection([]imapclient.FetchBodySectionBuffer{{Bytes: []byte("X-Neomd-Send-At: not-a-time\r\n")}}); !got.IsZero() {
+		t.Errorf("garbage time: %v", got)
+	}
+}
 
 func TestBuildSearchCriteria(t *testing.T) {
 	tests := []struct {

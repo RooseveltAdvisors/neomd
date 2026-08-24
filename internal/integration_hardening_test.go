@@ -317,6 +317,12 @@ func TestIntegration_Hardening_ScheduledQueueRoundTrip(t *testing.T) {
 	email := waitForEmail(t, cli, "Scheduled", subject, 30*time.Second)
 	defer cleanupEmail(t, cli, "Scheduled", email.UID)
 
+	// FetchHeaders must surface the queue time (drives the display-only
+	// "[send-later …]" marker that separates queued mail from GTD mail).
+	if !email.SendAt.Equal(sendAt) {
+		t.Errorf("FetchHeaders SendAt = %v, want %v", email.SendAt, sendAt)
+	}
+
 	rawBack, err := cli.FetchRaw(ctx, "Scheduled", email.UID)
 	if err != nil {
 		t.Fatalf("FetchRaw: %v", err)

@@ -283,10 +283,21 @@ Press `l` on the pre-send screen to schedule delivery instead of sending immedia
 
 The fully built message (attachments, signatures, threading headers included) is stored in your **Scheduled** folder with an `X-Neomd-Send-At` header. Delivery is done by the **headless daemon** (`neomd --headless`) — typically running on an always-on server — which checks the Scheduled folder on its regular sync cycle (`[ui].background_sync_interval`, default 5 minutes) and sends due messages via SMTP, saves a copy to Sent, and removes the queue entry.
 
+Queued messages show a display-only `[send-later Aug 25 09:00]` prefix in the Scheduled list, so they stay distinguishable from regular emails you moved there for GTD purposes.
+
 - **Cancel**: go to the Scheduled folder (`gc`) and delete the message (`x`).
 - **Requirement**: a running headless daemon. Without one, the message simply waits in Scheduled — nothing is lost, but nothing is sent. The TUI itself never delivers scheduled mail, so a laptop that's asleep at send time is fine as long as the daemon runs elsewhere.
 - **Safety**: the daemon claims a message with the IMAP `\Flagged` flag *before* the SMTP send, so a crash mid-delivery can never send twice. If delivery fails, the message stays flagged in Scheduled and the daemon logs it — remove the flag to retry, or delete the message to cancel.
 - Regular emails you move to Scheduled for GTD purposes are untouched — only messages queued via `l` carry the scheduling header.
+
+### Reschedule or Edit a Queued Message
+
+There is no dedicated reschedule key yet — use the continue-draft flow:
+
+1. `gc` — jump to the Scheduled folder and open the queued message (`enter`).
+2. `E` — re-open it as an editable compose (To/Cc/Bcc, subject, body, and attachments are pre-filled; `E` works on any email, not just Drafts).
+3. Close the editor, then on the pre-send screen press `l` and enter the new time — this queues a **new** copy in Scheduled. (Or press `enter` to send it immediately instead.)
+4. **Delete the old queued copy** (`x` on it in Scheduled) — the original is *not* removed automatically, and the daemon would otherwise deliver both.
 
 ## Recipient Names
 
