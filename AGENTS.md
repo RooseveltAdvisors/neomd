@@ -40,18 +40,35 @@ What it pins (all byte-exact, not substring checks):
   body lines survive quoted-printable (umlauts), attachment names AND bytes identical
   (0–255 binary fixture), Message-ID uses sender domain, threading headers only on
   replies (never duplicated), drafts keep Bcc + literal markdown + attachments,
-  send-later delivers byte-identical messages with no `X-Neomd-*` leak.
+  send-later delivers byte-identical messages with no `X-Neomd-*` leak. Also:
+  long multi-encoded-word subjects and emoji decode back exactly
+  (`TestHardening_RoundTrip_SubjectExtremes`), 20+ recipients keep order and count
+  (`_ManyRecipients`), body edge cases survive — two-space hard breaks, lone `.`
+  and `--` lines, header-lookalike lines, 2000-char lines, CRLF input, no wire
+  line ends in literal whitespace (`_BodyEdgeCases`), inline image + file
+  attachment combined shape with byte-exact payloads both views
+  (`_InlineImagePlusAttachment`), wire format — strict CRLF, ≤998-char lines,
+  parseable Date, unique Message-IDs (`TestHardening_WireFormat`), and emoji
+  reactions parse back with exact To/threading/body (`_ReactionMessage`).
 - **`TestHardening_HeaderInjection`** — CRLF in subject/recipients/threading IDs and
   hostile attachment filenames (`"`/newline) can never smuggle headers
   (`sanitizeHeaderValue`, `sanitizeFilenameParam` in `internal/smtp/sender.go`;
   control-char rejection in `contacts.Add`).
 - **`internal/ui/send_hardening_test.go`** — RCPT TO is complete (To+Cc+Bcc), deduped,
-  bare addresses only, and unchanged by contact-name decoration.
+  bare addresses only, and unchanged by contact-name decoration; messy input
+  (double/trailing commas, whitespace) never yields empty or malformed RCPT
+  entries (`TestHardening_RcptNoEmptyOrMalformedEntries`); auto_bcc merges
+  case-insensitively against decorated forms and reaches RCPT exactly once
+  (`TestHardening_AutoBccPipeline`).
 - **`internal/integration_hardening_test.go`** (live) — draft attachment round-trip
   under its original filename with identical bytes (the 2026-08 rename incident),
   full send fidelity through a real server (umlaut subject + binary attachment,
   no Bcc/X-Neomd header on the delivered message), scheduled-queue APPEND/FETCH
-  round-trip.
+  round-trip, reply threading through the server (delivered In-Reply-To/References
+  match the original's real Message-ID, envelope view included —
+  `TestIntegration_Hardening_ReplyThreadingThroughServer`), and body fidelity as
+  the recipient decodes it (hard breaks, dot-stuffed `.` line, 1200-char line,
+  umlauts/emoji — `TestIntegration_Hardening_BodyFidelityThroughServer`).
 
 When you add a new field or path to outgoing messages, extend the round-trip suite in
 the same commit — a field that isn't parse-back-asserted is a field that can silently
