@@ -54,6 +54,23 @@ What it pins (all byte-exact, not substring checks):
   hostile attachment filenames (`"`/newline) can never smuggle headers
   (`sanitizeHeaderValue`, `sanitizeFilenameParam` in `internal/smtp/sender.go`;
   control-char rejection in `contacts.Add`).
+- **`internal/ui/workflow_hardening_test.go`** — WORKFLOW-level: drives the real
+  bubbletea Update handlers end-to-end (reply-all → real `neomd-*.md` compose
+  file → editorDoneMsg → pre-send → enter) and delivers to a fake in-process
+  TLS SMTP server, asserting only what the outside world sees (auth user,
+  MAIL FROM, RCPT TO, delivered wire bytes). This catches composition/wiring
+  bugs that per-function tests can't (e.g. swapped cc/bcc arguments in
+  `sendEmailCmd` = Bcc leak — verified by mutation test).
+  `TestHardening_Workflow_ReplyAllUsesReceivingAccount`: reply goes out via the
+  account whose address received the email (auth + MAIL FROM + From header),
+  reply-all Cc excludes every own address (logins, account Froms, sender
+  aliases), auto_bcc reaches RCPT but never headers, threading headers point at
+  the original, `·`-indicator data survives.
+  `TestHardening_Workflow_MarkdownFileToWire`: a real markdown compose file
+  (`# [neomd: ...]` headers, `[attach]`, `[html-signature]`, signature block)
+  arrives with To/Cc/Bcc routing, umlaut subject, literal-markdown plain part,
+  rendered HTML (bold/link/callout), text sig in both parts, HTML sig in HTML
+  only, attachment bytes identical, and no internal marker delivered.
 - **`internal/ui/send_hardening_test.go`** — RCPT TO is complete (To+Cc+Bcc), deduped,
   bare addresses only, and unchanged by contact-name decoration; messy input
   (double/trailing commas, whitespace) never yields empty or malformed RCPT
@@ -73,6 +90,12 @@ What it pins (all byte-exact, not substring checks):
 When you add a new field or path to outgoing messages, extend the round-trip suite in
 the same commit — a field that isn't parse-back-asserted is a field that can silently
 break.
+
+**Hardening assertions may only be extended, never weakened.** If a hardening test
+fails after a code change, the default assumption is that the CODE broke a
+user-visible contract — investigate the code first. Relaxing, deleting, or rewriting
+a hardening assertion to make a change pass requires the user's explicit approval in
+that conversation; "the test was too strict" is not a decision an agent makes alone.
 
 ---
 
