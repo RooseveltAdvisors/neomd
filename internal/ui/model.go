@@ -494,6 +494,17 @@ type pendingSendData struct {
 	references string
 }
 
+// requeueRef points at a queued send-later message being replaced via E
+// (continue draft). Zero value = no requeue in progress.
+type requeueRef struct {
+	uid     uint32
+	folder  string
+	account string
+}
+
+// requeueCleanupDoneMsg reports removal of the superseded queued copy.
+type requeueCleanupDoneMsg struct{ err error }
+
 // undoMove records one IMAP move so it can be reversed with u.
 type undoMove struct {
 	uid        uint32
@@ -562,6 +573,13 @@ type Model struct {
 	pendingSend    *pendingSendData
 	presendFromI   int  // index into presendFroms() for the From field cycle
 	pendingIsReply bool // true when the active editor session was launched as a reply (not forward/new)
+	// requeue tracks the ORIGINAL queued send-later message when the compose
+	// session was started from it via E (continue draft on a message with
+	// X-Neomd-Send-At). Once the replacement is safely stored (schedule) or
+	// sent, the original is moved to Trash so the daemon can't deliver both.
+	// Cleared without cleanup whenever the session ends any other way
+	// (abort/discard/error/new compose) — the original then stays valid.
+	requeue requeueRef
 
 	// AI handoff (pre-send `i`) — when active, shows a one-line input for the
 	// instruction that gets substituted into [ai].args via {prompt}. Empty
@@ -2264,9 +2282,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sendDoneMsg:
 		m.loading = false
+		// Sent instead of rescheduled: the queued original is superseded too.
+		var requeueCleanup tea.Cmd
+		if msg.err == nil && m.requeue.uid != 0 {
+			r := m.requeue
+			m.requeue = requeueRef{}
+			requeueCleanup = m.cleanupRequeuedCmd(r)
+		}
 		if msg.err != nil {
 			m.status = msg.err.Error()
 			m.isError = true
+			m.requeue = requeueRef{} // original queued copy stays valid
 		} else if msg.warning != "" {
 			m.status = msg.warning
 			m.isError = true // show in red so user notices
@@ -2292,7 +2318,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.inbox.SetItems(items)
 		}
-		return m, nil
+		return m, requeueCleanup
 
 	case attachOpenDoneMsg:
 		if msg.err != nil {
@@ -2365,9 +2391,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "Send later error: " + msg.err.Error()
 			m.isError = true
-		} else {
-			m.status = fmt.Sprintf("Scheduled for %s — delivered by the headless daemon (gc to review, delete to cancel).", msg.at.Format("Mon 2006-01-02 15:04"))
-			m.isError = false
+			m.requeue = requeueRef{} // original queued copy stays valid
+			return m, nil
+		}
+		m.status = fmt.Sprintf("Scheduled for %s — delivered by the headless daemon (gc to review, delete to cancel).", msg.at.Format("Mon 2006-01-02 15:04"))
+		m.isError = false
+		// Replacement stored — now (and only now) remove the superseded copy.
+		if m.requeue.uid != 0 {
+			r := m.requeue
+			m.requeue = requeueRef{}
+			m.status += " Replaced the previous schedule."
+			return m, m.cleanupRequeuedCmd(r)
+		}
+		return m, nil
+
+	case requeueCleanupDoneMsg:
+		if msg.err != nil {
+			m.status = "Rescheduled, but the OLD queued copy could not be removed — delete it in Scheduled (gc) or it will also be delivered: " + msg.err.Error()
+			m.isError = true
+			return m, nil
+		}
+		// Refresh if the user is looking at the folder the old copy left.
+		if m.state == stateInbox && m.activeFolder() == m.cfg.Folders.Scheduled {
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
 		}
 		return m, nil
 
@@ -2682,6 +2729,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		isReply := m.pendingIsReply
 		if msg.err != nil {
 			m.pendingIsReply = false
+			m.requeue = requeueRef{}
 			m.attachments = nil
 			m.status = msg.err.Error()
 			m.isError = true
@@ -2690,6 +2738,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.aborted {
 			m.pendingIsReply = false
+			m.requeue = requeueRef{}
 			m.attachments = nil
 			m.status = "Aborted (no changes saved). Use :recover to reopen the latest backup."
 			m.state = stateInbox
@@ -2697,6 +2746,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if strings.TrimSpace(msg.body) == "" {
 			m.pendingIsReply = false
+			m.requeue = requeueRef{}
 			m.attachments = nil
 			m.status = "Cancelled (empty body). Use :recover if you want the latest backup."
 			m.state = stateInbox
@@ -4510,14 +4560,36 @@ func (m Model) openInNeovim() (tea.Model, tea.Cmd) {
 	})
 }
 
+// cleanupRequeuedCmd moves the superseded queued send-later message to Trash
+// (recoverable — never expunged) once its replacement is safely stored or sent.
+func (m Model) cleanupRequeuedCmd(r requeueRef) tea.Cmd {
+	cli := m.imapCliForAccount(r.account)
+	trash := m.cfg.Folders.Trash
+	return func() tea.Msg {
+		if cli == nil {
+			return requeueCleanupDoneMsg{err: fmt.Errorf("no IMAP client for account %q", r.account)}
+		}
+		_, err := cli.MoveMessage(nil, r.folder, r.uid, trash)
+		return requeueCleanupDoneMsg{err: err}
+	}
+}
+
 // continueDraft opens the current email as an editable compose session,
 // pre-filling To/CC/Subject and body from the saved draft. Saving in the
 // editor goes through the normal pre-send review (enter to send, d to re-save).
+// Continuing a QUEUED send-later message (X-Neomd-Send-At present) remembers
+// the original so a successful re-schedule or send replaces it instead of
+// leaving two copies for the daemon to deliver.
 func (m Model) continueDraft() (tea.Model, tea.Cmd) {
 	if m.openEmail == nil {
 		return m, nil
 	}
 	e := m.openEmail
+	if !e.SendAt.IsZero() {
+		m.requeue = requeueRef{uid: e.UID, folder: e.Folder, account: m.activeAccount().Name}
+	} else {
+		m.requeue = requeueRef{}
+	}
 	to := e.To
 	cc := e.CC
 	bcc := e.BCC
@@ -4616,6 +4688,7 @@ func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "y":
 			m.pendingDiscard = false
 			m.pendingIsReply = false
+			m.requeue = requeueRef{}
 			m.attachments = nil
 			m.pendingSend = nil
 			m.state = stateInbox
@@ -4693,6 +4766,7 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "y":
 			m.pendingDiscard = false
 			m.pendingIsReply = false
+			m.requeue = requeueRef{}
 			m.attachments = nil
 			m.pendingSend = nil
 			m.state = stateInbox
@@ -5096,6 +5170,7 @@ func (m Model) saveDraftCmd(imapCli *imap.Client, from, to, cc, bcc, subject, bo
 
 func (m Model) launchEditorCmd() (tea.Model, tea.Cmd) {
 	m.pendingIsReply = false
+	m.requeue = requeueRef{}
 	to := m.compose.to.Value()
 	cc := m.compose.cc.Value()
 	bcc := m.compose.bcc.Value()
@@ -5298,6 +5373,7 @@ func (m Model) enterReactionMode(e *imap.Email) (tea.Model, tea.Cmd) {
 
 func (m Model) launchForwardCmd() (tea.Model, tea.Cmd) {
 	m.pendingIsReply = false
+	m.requeue = requeueRef{}
 	e := m.openEmail
 	if e == nil {
 		return m, nil
@@ -5413,6 +5489,7 @@ func (m Model) launchReplyWithCC(extraCC string, replyAll bool) (tea.Model, tea.
 	prelude := editor.ReplyPrelude(to, cc, subject, m.presendFrom(), e.From, m.openBody)
 
 	m.pendingIsReply = true
+	m.requeue = requeueRef{}
 	f, err := os.CreateTemp(neomdTempDir(), "neomd-*.md")
 	if err != nil {
 		m.status = err.Error()

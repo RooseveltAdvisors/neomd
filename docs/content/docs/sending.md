@@ -292,12 +292,13 @@ Queued messages show a display-only `[send-later Aug 25 09:00]` prefix in the Sc
 
 ### Reschedule or Edit a Queued Message
 
-There is no dedicated reschedule key yet — use the continue-draft flow:
+Use the continue-draft flow:
 
 1. `gc` — jump to the Scheduled folder and open the queued message (`enter`).
 2. `E` — re-open it as an editable compose (To/Cc/Bcc, subject, body, and attachments are pre-filled; `E` works on any email, not just Drafts).
-3. Close the editor, then on the pre-send screen press `l` and enter the new time — this queues a **new** copy in Scheduled. (Or press `enter` to send it immediately instead.)
-4. **Delete the old queued copy** (`x` on it in Scheduled) — the original is *not* removed automatically, and the daemon would otherwise deliver both.
+3. Close the editor, then on the pre-send screen press `l` and enter the new time — or press `enter` to send it immediately instead.
+
+The original queued copy is **replaced automatically**: once the new version is safely stored (or sent), the old one is moved to Trash — recoverable, never expunged. If you instead abort the editor or discard on pre-send, the original stays queued untouched. Should the automatic removal ever fail (connection drop), neomd warns you loudly so you can delete the old copy manually — otherwise the daemon would deliver both.
 
 ## Recipient Names
 

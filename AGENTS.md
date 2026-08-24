@@ -186,6 +186,14 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   delivered) and GTD mail sharing the Scheduled folder stays unmarked. Tests:
   `TestParseSendAtSection`, `TestSendLaterPrefix`, live assert in
   `TestIntegration_Hardening_ScheduledQueueRoundTrip`.
+- **Rescheduling replaces, never duplicates — and never deletes early** — continuing
+  a queued send-later message via `E` tracks the original (`requeue` in
+  `internal/ui/model.go`); it is moved to Trash (recoverable) ONLY after the
+  replacement is successfully scheduled or sent. Abort/discard/error paths clear
+  the tracking without touching the original; a failed cleanup warns loudly
+  (double-delivery risk). Tests: `TestContinueDraftTracksQueuedOriginal`,
+  `TestScheduleDoneReplacesQueuedOriginal`, `TestSendDoneReplacesQueuedOriginal`,
+  `TestEditorAbortKeepsQueuedOriginal`, `TestRequeueCleanupFailureWarns`.
 - **Send later never double-delivers** — the daemon claims a due Scheduled message
   with `\Flagged` *before* SMTP; flagged leftovers are skipped and logged, never
   retried automatically (`processScheduled`, `internal/daemon/daemon.go`). The
