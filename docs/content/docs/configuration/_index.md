@@ -274,9 +274,29 @@ lnachname@domain.io,Louise Nachname
 Bob Builder <bob@x.io>
 ```
 
-**Google Contacts export** — point `file` directly at an unmodified export from [contacts.google.com](https://contacts.google.com) → Export → **Google CSV**. Names and every `E-mail N` column are imported. Re-export whenever your contacts change; the file is re-read on every start.
+**Google Contacts export** — point `file` directly at an unmodified export from [contacts.google.com](https://contacts.google.com) → Export → **Google CSV**. First/Middle/Last names, every `E-mail N` column, `:::`-separated multi-address cells, multi-line Notes fields, and the UTF-8 BOM are all handled. Re-export whenever your contacts change; the file is re-read on every start.
 
 Contacts from other sources (e.g. Obsidian frontmatter) can be converted to the simple `addr,name` format with a small script — neomd deliberately reads one flat file instead of integrating per-source APIs.
+
+### Your file is read-only — how the two files relate
+
+- **Your `[contacts]` file**: read once at every startup and merged into the in-memory address book. neomd **never modifies, appends to, or reformats it** — you (or your export/conversion script) are the only writer. Treat it as your curated source of truth.
+- **`~/.cache/neomd/contacts`** (harvested cache): the file neomd *does* write. Names harvested from email headers land there automatically (background save, atomic write). Entries merged from your file also end up persisted there as a side effect — your file stays untouched.
+
+**Precedence**: at startup your file is merged on top of the cache, but if neomd later sees a real `Name <addr>` header for the same address, that harvested name overwrites the entry *in the cache only*. Since your file is re-applied on every launch, the freshest of "your file" vs. "last harvested header name" wins per session. Delete the cache file anytime — it is simply rebuilt from harvesting plus your file.
+
+### Contacts picker (`space c`)
+
+Press `space c` in the inbox to browse the merged address book:
+
+| Key | Action |
+|-----|--------|
+| `/` | filter by name or address (type to narrow, `enter` to confirm, `esc` to clear) |
+| `j` / `k` | move selection |
+| `y` | copy the selected address to the clipboard (`wl-copy`/`xclip`/`xsel`/`pbcopy`) |
+| `Y` | copy `Name <addr>` |
+| `enter` | start a compose with the contact as `To:` |
+| `esc` / `q` | close |
 
 ## Signature
 

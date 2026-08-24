@@ -99,6 +99,7 @@ To update both the help overlay and this document at once, edit that file and ru
 |-----|--------|
 | `<space>1 … <space>9` | jump to folder tab by number (Inbox=1, ToScreen=2, …) |
 | `<space>/` | IMAP search ALL emails on server (From + Subject) |
+| `<space>c` | contacts picker — browse harvested + [contacts] file names; / filter, y copy address, Y copy "Name <addr>", enter compose to contact |
 | `<space>S` | scan current folder for spy pixels (skips already scanned) |
 | `<space>d  (reader)` | download raw email source (.eml) to ~/Downloads |
 | `<space>n  (reader)` | append open email's sender to notify.txt (desktop notifications opt-in) |

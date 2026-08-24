@@ -35,8 +35,8 @@ func TestWriteAttachmentsTempPreservesFilename(t *testing.T) {
 	wantNames := []string{
 		"All issues - Ssp.pdf",
 		"All issues - Ssp-2.pdf", // duplicate deduped, extension kept
-		"evil.sh",    // path traversal stripped
-		"attachment", // empty name fallback
+		"evil.sh",                // path traversal stripped
+		"attachment",             // empty name fallback
 	}
 	for i, p := range paths {
 		if got := filepath.Base(p); got != wantNames[i] {

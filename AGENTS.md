@@ -20,6 +20,45 @@ Build commands, architecture, and API quirks live in `CLAUDE.md`. Feature docs l
 
 ---
 
+## Hardening Suite — run after ANY change to sending or IMAP
+
+neomd is used for business email: a mangled recipient, subject, attachment name, or
+leaked Bcc reaches real clients. The hardening suite is the safety net that catches
+this class of regression. **After any change touching `internal/smtp`, `internal/imap`,
+`internal/schedule`, `internal/contacts`, or the send path in `internal/ui`, run:**
+
+```sh
+go test ./... -run Hardening          # unit: full build→wire→parse-back, no network
+make test-integration                 # live: real SMTP+IMAP fidelity (demo account)
+```
+
+What it pins (all byte-exact, not substring checks):
+
+- **`internal/imap/roundtrip_hardening_test.go`** — every message the builders produce
+  is parsed back with go-message (what the recipient's client does) *and* `parseBody`
+  (what neomd itself does): From/To/Cc/Subject decode exactly, plain part before HTML,
+  body lines survive quoted-printable (umlauts), attachment names AND bytes identical
+  (0–255 binary fixture), Message-ID uses sender domain, threading headers only on
+  replies (never duplicated), drafts keep Bcc + literal markdown + attachments,
+  send-later delivers byte-identical messages with no `X-Neomd-*` leak.
+- **`TestHardening_HeaderInjection`** — CRLF in subject/recipients/threading IDs and
+  hostile attachment filenames (`"`/newline) can never smuggle headers
+  (`sanitizeHeaderValue`, `sanitizeFilenameParam` in `internal/smtp/sender.go`;
+  control-char rejection in `contacts.Add`).
+- **`internal/ui/send_hardening_test.go`** — RCPT TO is complete (To+Cc+Bcc), deduped,
+  bare addresses only, and unchanged by contact-name decoration.
+- **`internal/integration_hardening_test.go`** (live) — draft attachment round-trip
+  under its original filename with identical bytes (the 2026-08 rename incident),
+  full send fidelity through a real server (umlaut subject + binary attachment,
+  no Bcc/X-Neomd header on the delivered message), scheduled-queue APPEND/FETCH
+  round-trip.
+
+When you add a new field or path to outgoing messages, extend the round-trip suite in
+the same commit — a field that isn't parse-back-asserted is a field that can silently
+break.
+
+---
+
 ## Reply & Threading
 
 - **`·` reply indicator** — after sending a reply, the original email gets the IMAP
@@ -148,6 +187,12 @@ Build commands, architecture, and API quirks live in `CLAUDE.md`. Feature docs l
   break comma-splitting fall back to the bare address. Tests:
   `TestFormatEnvelopeAddr`, `TestExpandSearchQueries`,
   `TestContactNamesForResolvesBareAddresses`.
+- **The user's `[contacts]` file is read-only** — `contacts.MergeFile` only reads;
+  neomd persists exclusively to its own cache (`config.ContactsCachePath()`), so the
+  cache can be deleted anytime and rebuilds from harvesting + the file. The picker
+  (`space c`, `internal/ui/contacts_picker.go`) copies via external clipboard tools
+  and never mutates the store. Tests: `TestMergeFileGoogleCSVRealExport`,
+  `TestContactsPickerFilterAndSelect`.
 
 ## Reading & Security
 

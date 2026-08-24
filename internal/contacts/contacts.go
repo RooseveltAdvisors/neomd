@@ -62,6 +62,14 @@ func (s *Store) Add(addr, name string) {
 		name == "" || strings.EqualFold(name, addr) || strings.ContainsAny(name, `,<>"`) {
 		return
 	}
+	// Names end up in outgoing To/Cc headers (Decorate) — control characters
+	// (CR/LF above all) would allow header injection from a hostile sender's
+	// display name. Reject the whole name rather than trying to repair it.
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.names[addr] != name {
@@ -95,6 +103,33 @@ func (s *Store) Name(addr string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.names[strings.ToLower(strings.TrimSpace(addr))]
+}
+
+// Entry is one address book row.
+type Entry struct {
+	Addr string
+	Name string
+}
+
+// All returns every known contact, sorted by name then address (for the
+// contacts picker).
+func (s *Store) All() []Entry {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	out := make([]Entry, 0, len(s.names))
+	for addr, name := range s.names {
+		out = append(out, Entry{Addr: addr, Name: name})
+	}
+	s.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+		}
+		return out[i].Addr < out[j].Addr
+	})
+	return out
 }
 
 // AddrsMatchingName returns up to limit addresses whose display name contains
@@ -197,7 +232,7 @@ func (s *Store) MergeFile(path string) error {
 		}
 		return err
 	}
-	text := string(data)
+	text := strings.TrimPrefix(string(data), "\ufeff") // Google exports may carry a UTF-8 BOM
 	if strings.Contains(strings.SplitN(text, "\n", 2)[0], "E-mail 1 - Value") {
 		return s.mergeGoogleCSV(text)
 	}
@@ -232,7 +267,7 @@ func (s *Store) mergeGoogleCSV(text string) error {
 	if len(rows) < 2 {
 		return nil
 	}
-	nameCol, firstCol, lastCol := -1, -1, -1
+	nameCol, firstCol, middleCol, lastCol := -1, -1, -1, -1
 	var mailCols []int
 	for i, h := range rows[0] {
 		switch {
@@ -240,6 +275,8 @@ func (s *Store) mergeGoogleCSV(text string) error {
 			nameCol = i
 		case h == "First Name":
 			firstCol = i
+		case h == "Middle Name":
+			middleCol = i
 		case h == "Last Name":
 			lastCol = i
 		case strings.HasPrefix(h, "E-mail ") && strings.HasSuffix(h, "- Value"):
@@ -255,7 +292,8 @@ func (s *Store) mergeGoogleCSV(text string) error {
 	for _, row := range rows[1:] {
 		name := cell(row, nameCol)
 		if name == "" {
-			name = strings.TrimSpace(cell(row, firstCol) + " " + cell(row, lastCol))
+			name = strings.Join(strings.Fields(
+				cell(row, firstCol)+" "+cell(row, middleCol)+" "+cell(row, lastCol)), " ")
 		}
 		if name == "" {
 			continue

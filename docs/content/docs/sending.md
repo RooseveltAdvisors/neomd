@@ -298,6 +298,8 @@ When you type a bare address (`louise@domain.io`), neomd automatically upgrades 
 
 The same names power search: filtering (`/`) and server search (`space /`) match a person's name even when the stored message only carries their bare address.
 
+Browse the address book with the **contacts picker** (`space c` in the inbox): `/` filters, `y` copies the address to the clipboard, `Y` copies `Name <addr>`, `enter` starts a compose to the contact — see [Configuration → Contacts](configuration#contacts-picker-space-c).
+
 ## HTML Signatures
 
 neomd supports dual-format signatures for professional email layouts with logos, tables, and styled text.

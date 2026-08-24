@@ -46,6 +46,7 @@ const (
 	stateHelp               // help overlay
 	stateWelcome            // first-run welcome popup
 	stateReaction           // emoji reaction picker
+	stateContacts           // contacts picker (space c)
 )
 
 // async message types
@@ -623,6 +624,11 @@ type Model struct {
 	helpSearch       string
 	helpSearchActive bool
 	helpScroll       int
+
+	// Contacts picker (space c) state.
+	contactsFilter       string
+	contactsFilterActive bool
+	contactsCursor       int
 
 	// cmdMode / cmdText / cmdTabI implement vim-style ":" command line.
 	cmdMode    bool
@@ -2324,6 +2330,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case clipboardDoneMsg:
+		if msg.err != nil {
+			m.status = "Copy failed: " + msg.err.Error()
+			m.isError = true
+		} else {
+			m.status = "Copied to clipboard: " + msg.text
+			m.isError = false
+		}
+		return m, nil
+
 	case scheduleDoneMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -2754,6 +2770,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case stateReaction:
 			return m.updateReaction(msg)
+		case stateContacts:
+			return m.updateContacts(msg)
 		}
 	}
 
@@ -2935,7 +2953,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case " ": // leader key — wait for digit or shortcut
 		m.pendingKey = " "
-		m.status = "leader:  1-9 folder tab  / IMAP search  S scan spy pixels  w welcome  (esc to cancel)"
+		m.status = "leader:  1-9 folder tab  / IMAP search  c contacts  S scan spy pixels  w welcome  (esc to cancel)"
 		return m, nil
 
 	case "M":
@@ -3516,6 +3534,14 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 		}
 		if key == "w" {
 			m.state = stateWelcome
+			return m, nil
+		}
+		if key == "c" { // contacts picker
+			m.prevState = m.state
+			m.contactsFilter = ""
+			m.contactsFilterActive = false
+			m.contactsCursor = 0
+			m.state = stateContacts
 			return m, nil
 		}
 		if key == "S" {
@@ -5685,6 +5711,8 @@ func (m Model) View() string {
 		return m.viewWelcome()
 	case stateReaction:
 		return m.viewReaction()
+	case stateContacts:
+		return m.viewContacts()
 	}
 	return ""
 }
