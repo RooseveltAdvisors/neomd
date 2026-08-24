@@ -355,21 +355,21 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 				if len(m.Envelope.To) > 0 {
 					to := make([]string, 0, len(m.Envelope.To))
 					for _, a := range m.Envelope.To {
-						to = append(to, a.Addr())
+						to = append(to, formatEnvelopeAddr(a))
 					}
 					e.To = strings.Join(to, ", ")
 				}
 				if len(m.Envelope.Cc) > 0 {
 					cc := make([]string, 0, len(m.Envelope.Cc))
 					for _, a := range m.Envelope.Cc {
-						cc = append(cc, a.Addr())
+						cc = append(cc, formatEnvelopeAddr(a))
 					}
 					e.CC = strings.Join(cc, ", ")
 				}
 				if len(m.Envelope.Bcc) > 0 {
 					bcc := make([]string, 0, len(m.Envelope.Bcc))
 					for _, a := range m.Envelope.Bcc {
-						bcc = append(bcc, a.Addr())
+						bcc = append(bcc, formatEnvelopeAddr(a))
 					}
 					e.BCC = strings.Join(bcc, ", ")
 				}
@@ -586,6 +586,19 @@ func participantMatch(e Email, participants map[string]bool) bool {
 	return false
 }
 
+// formatEnvelopeAddr renders an envelope address as "Name <addr>" when a
+// display name is present, falling back to the bare address. Names containing
+// characters that would break naive comma-splitting of the joined field
+// (",", "<", ">", `"`) are dropped so SplitAddrs and RCPT extraction stay safe.
+func formatEnvelopeAddr(a imap.Address) string {
+	addr := a.Addr()
+	name := strings.TrimSpace(a.Name)
+	if name == "" || name == addr || strings.ContainsAny(name, `,<>"`) {
+		return addr
+	}
+	return name + " <" + addr + ">"
+}
+
 // SplitAddrs splits a comma-separated address field and extracts bare lowercase addresses.
 func SplitAddrs(field string) []string {
 	var out []string
@@ -744,21 +757,21 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 				if len(m.Envelope.To) > 0 {
 					to := make([]string, 0, len(m.Envelope.To))
 					for _, a := range m.Envelope.To {
-						to = append(to, a.Addr())
+						to = append(to, formatEnvelopeAddr(a))
 					}
 					e.To = strings.Join(to, ", ")
 				}
 				if len(m.Envelope.Cc) > 0 {
 					cc := make([]string, 0, len(m.Envelope.Cc))
 					for _, a := range m.Envelope.Cc {
-						cc = append(cc, a.Addr())
+						cc = append(cc, formatEnvelopeAddr(a))
 					}
 					e.CC = strings.Join(cc, ", ")
 				}
 				if len(m.Envelope.Bcc) > 0 {
 					bcc := make([]string, 0, len(m.Envelope.Bcc))
 					for _, a := range m.Envelope.Bcc {
-						bcc = append(bcc, a.Addr())
+						bcc = append(bcc, formatEnvelopeAddr(a))
 					}
 					e.BCC = strings.Join(bcc, ", ")
 				}

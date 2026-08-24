@@ -458,6 +458,17 @@ func SpyPixelCachePath() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_spy_pixels", os.Getuid()))
 }
 
+// ContactsCachePath returns the path for the harvested address→name cache
+// used to match name searches and decorate outgoing To/Cc headers.
+func ContactsCachePath() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName)
+		_ = os.MkdirAll(p, 0o700)
+		return filepath.Join(p, "contacts")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_contacts", os.Getuid()))
+}
+
 // NotifyStatePath returns the path for the per-folder last-seen-UID baseline
 // used by the notification system to decide which messages count as "new".
 func NotifyStatePath() string {

@@ -24,6 +24,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sspaeti/neomd/internal/calendar"
 	"github.com/sspaeti/neomd/internal/config"
+	"github.com/sspaeti/neomd/internal/contacts"
 	"github.com/sspaeti/neomd/internal/editor"
 	"github.com/sspaeti/neomd/internal/imap"
 	"github.com/sspaeti/neomd/internal/listmonk"
@@ -585,6 +586,11 @@ type Model struct {
 	// Used to skip already-scanned emails in :scan-spy-pixels.
 	spyScannedKeys map[string]bool
 
+	// contacts maps harvested email addresses to display names — used to match
+	// name searches (sent mail carries bare addresses) and to decorate
+	// outgoing To/Cc headers. Nil-safe: all Store methods accept a nil receiver.
+	contacts *contacts.Store
+
 	// Undo stack: each entry is a batch of moves that can be reversed with u.
 	// Screener operations (I/O/F/P/$) are not undoable — they also modify .txt files.
 	undoStack [][]undoMove
@@ -704,6 +710,7 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener, mail
 		markedUIDs:     make(map[uint32]bool),
 		spyPixelKeys:   spyKeys,
 		spyScannedKeys: scannedKeys,
+		contacts:       contacts.Load(config.ContactsCachePath()),
 		startupNotice:  detectStartupNotice(),
 		sortField:      "date",
 		sortReverse:    true, // newest first
@@ -917,10 +924,15 @@ func (m Model) sendEmailCmd(smtpAcct config.AccountConfig, from, to, cc, bcc, su
 	if includeHTMLSig {
 		htmlSignature = m.cfg.Signature(smtpAcct).HTML
 	}
+	// Decorate bare To/Cc addresses with known contact names — headers only.
+	// collectRcptTo below keeps using the raw comma-separated fields, and Bcc
+	// stays undecorated (it never appears in headers).
+	hdrTo := m.contacts.Decorate(to)
+	hdrCC := m.contacts.Decorate(cc)
 	return func() tea.Msg {
 		// Build raw MIME once — reused for both SMTP delivery and Sent copy.
 		// BCC is intentionally excluded from headers but included in RCPT TO.
-		raw, err := smtp.BuildMessageWithThreading(from, to, cc, subject, body, attachments, htmlSignature, inReplyTo, references)
+		raw, err := smtp.BuildMessageWithThreading(from, hdrTo, hdrCC, subject, body, attachments, htmlSignature, inReplyTo, references)
 		if err != nil {
 			return sendDoneMsg{err: fmt.Errorf("build message: %w", err)}
 		}
@@ -1149,28 +1161,69 @@ func normalizedSender(from string) string {
 }
 
 func writeAttachmentsTemp(files []imap.Attachment) ([]string, error) {
+	// Each attachment keeps its original filename inside a fresh unique
+	// directory — the sent filename is derived from the path's basename, so a
+	// mangled temp name would be sent as-is (e.g. "draft-Offer.pdf-718599635").
+	dir, err := os.MkdirTemp(neomdTempDir(), "draft-attachments-*")
+	if err != nil {
+		return nil, err
+	}
 	paths := make([]string, 0, len(files))
+	used := make(map[string]bool)
 	for _, a := range files {
 		base := filepath.Base(a.Filename)
-		if base == "." || base == string(filepath.Separator) || base == "" {
+		if base == "" || base == "." || base == ".." || base == "/" || strings.ContainsRune(base, os.PathSeparator) {
 			base = "attachment"
 		}
-		f, err := os.CreateTemp(neomdTempDir(), "draft-"+base+"-*")
-		if err != nil {
+		name := base
+		for n := 2; used[name]; n++ {
+			ext := filepath.Ext(base)
+			name = fmt.Sprintf("%s-%d%s", strings.TrimSuffix(base, ext), n, ext)
+		}
+		used[name] = true
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, a.Data, 0o600); err != nil {
+			os.RemoveAll(dir)
 			return nil, err
 		}
-		if _, err := f.Write(a.Data); err != nil {
-			f.Close()
-			os.Remove(f.Name())
-			return nil, err
-		}
-		if err := f.Close(); err != nil {
-			os.Remove(f.Name())
-			return nil, err
-		}
-		paths = append(paths, f.Name())
+		paths = append(paths, path)
 	}
 	return paths, nil
+}
+
+// harvestContacts records "Name <addr>" pairs from loaded headers and
+// persists them in the background. The names later match searches and
+// decorate outgoing To/Cc headers (see the contacts package).
+func (m *Model) harvestContacts(emails []imap.Email) {
+	if m.contacts == nil {
+		return
+	}
+	for _, e := range emails {
+		m.contacts.HarvestField(e.From)
+		m.contacts.HarvestField(e.To)
+		m.contacts.HarvestField(e.CC)
+	}
+	cs := m.contacts
+	safeGo(func() { _ = cs.SaveIfDirty() })
+}
+
+// contactNamesFor returns the known display names (lower-cased) for every
+// address in the given header fields, for inclusion in the local filter
+// haystack — sent mail often carries bare addresses without the name.
+func (m Model) contactNamesFor(fields ...string) string {
+	if m.contacts == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, f := range fields {
+		for _, addr := range imap.SplitAddrs(f) {
+			if n := m.contacts.Name(addr); n != "" {
+				b.WriteString(" ")
+				b.WriteString(strings.ToLower(n))
+			}
+		}
+	}
+	return b.String()
 }
 
 // validateScreenerSafety wraps the shared screener validation logic.
@@ -1944,6 +1997,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case emailsLoadedMsg:
 		m.loading = false
 		m.emails = msg.emails
+		m.harvestContacts(msg.emails)
 		m.markedUIDs = make(map[uint32]bool) // clear marks on folder reload
 		m.filterActive = false
 		m.filterText = ""
@@ -3363,11 +3417,13 @@ func (m *Model) applyFilter() tea.Cmd {
 		if m.filterText != "" {
 			query := strings.ToLower(m.filterText)
 			// In Sent folder, search To/CC/BCC instead of From — From is always us.
+			// Known contact names are appended so searching a person's name
+			// matches even when the header only carries the bare address.
 			var hay string
 			if len(m.folders) > 0 && m.activeFolder() == m.cfg.Folders.Sent {
-				hay = strings.ToLower(e.To + " " + e.CC + " " + e.BCC + " " + e.Subject)
+				hay = strings.ToLower(e.To+" "+e.CC+" "+e.BCC+" "+e.Subject) + m.contactNamesFor(e.To, e.CC, e.BCC)
 			} else {
-				hay = strings.ToLower(e.From + " " + e.Subject)
+				hay = strings.ToLower(e.From+" "+e.Subject) + m.contactNamesFor(e.From)
 			}
 			if !strings.Contains(hay, query) {
 				continue

@@ -82,6 +82,17 @@ Build commands, architecture, and API quirks live in `CLAUDE.md`. Feature docs l
 - **Drafts** — saved as plain text only (multipart caused round-trip corruption), keep
   `Bcc`; every compose session is backed up to `~/.cache/neomd/drafts/` (`:recover`);
   discarding unsent mail always asks y/n confirmation.
+- **Draft attachments keep their original filename** — continuing a draft writes
+  extracted attachments into a fresh temp dir under their real basename (never a
+  mangled `CreateTemp` name — the sent filename is the path's basename). Duplicates
+  dedupe as `name-2.ext`; traversal/empty names sanitized (`writeAttachmentsTemp`,
+  `internal/ui/model.go`). Test: `TestWriteAttachmentsTempPreservesFilename`.
+- **Contact-name decoration is headers-only** — bare To/Cc addresses with a harvested
+  contact name become `Name <addr>` in message headers at send time, but
+  `collectRcptTo` always uses the raw undecorated fields and Bcc is never decorated
+  (BCC privacy + comma-split RCPT must not break). Unsafe names (`,<>"`), and any
+  part already containing `<`, are left untouched (`contacts.Decorate`). Tests:
+  `TestHarvestNameAndDecorate`, `TestAddRejectsUnsafeNames`.
 - **Callouts** — `> [!note]` / `> [!tip]` / `> [!warning]` (with or without space after
   `>`) render as styled boxes in the HTML part and as emoji text (no blockquote markers)
   in the plain part. Tests: `TestToHTML_Callout_*`, `TestFormatCalloutsForPlainText_*`.
@@ -120,6 +131,15 @@ Build commands, architecture, and API quirks live in `CLAUDE.md`. Feature docs l
 - **Undo (`u`)** — reverses the last move/delete using UIDPLUS destination UIDs captured
   on move; batch operations preserve partial-undo info on failure. Integration test:
   `TestIntegration_IMAPMoveAndUndo`.
+
+- **Search matches contact names** — `internal/contacts` harvests `Name <addr>` pairs
+  from loaded headers into `~/.cache/neomd/contacts`; the local `/` filter appends
+  resolved names to its haystack, and server-side search (`space /`) expands a name
+  query into per-address queries (never for `subject:`), deduped by folder+UID.
+  Envelope To/CC/BCC keep display names (`formatEnvelopeAddr`) — names that would
+  break comma-splitting fall back to the bare address. Tests:
+  `TestFormatEnvelopeAddr`, `TestExpandSearchQueries`,
+  `TestContactNamesForResolvesBareAddresses`.
 
 ## Reading & Security
 
