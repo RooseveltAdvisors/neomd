@@ -154,7 +154,7 @@ type (
 		moved, total int
 		label        string
 	}
-	saveDraftDoneMsg  struct{ err error }
+	saveDraftDoneMsg struct{ err error }
 	// scheduleDoneMsg reports the result of queuing a send-later message.
 	scheduleDoneMsg struct {
 		at  time.Time

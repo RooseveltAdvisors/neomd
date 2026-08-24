@@ -1159,8 +1159,8 @@ func TestIntegration_SendMultiScriptDisplay(t *testing.T) {
 		"こんにちは世界", "カタカナ",
 		"你好世界", "漢字",
 		"আপনার", "नमस्ते", // Bengali + Devanagari
-		"مرحبا",          // Arabic
-		"สวัสดี",         // Thai
+		"مرحبا",  // Arabic
+		"สวัสดี", // Thai
 		"Ünïcödé", "Späti",
 		"Привет",
 	} {
