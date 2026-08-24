@@ -40,7 +40,9 @@ What it pins (all byte-exact, not substring checks):
   body lines survive quoted-printable (umlauts), attachment names AND bytes identical
   (0–255 binary fixture), Message-ID uses sender domain, threading headers only on
   replies (never duplicated), drafts keep Bcc + literal markdown + attachments,
-  send-later delivers byte-identical messages with no `X-Neomd-*` leak. Also:
+  send-later delivers byte-identical messages with no `X-Neomd-*` leak — except
+  the Date header, which the daemon stamps with the ACTUAL delivery time via
+  `schedule.RewriteDate` (changing any other byte fails the test). Also:
   long multi-encoded-word subjects and emoji decode back exactly
   (`TestHardening_RoundTrip_SubjectExtremes`), 20+ recipients keep order and count
   (`_ManyRecipients`), body edge cases survive — two-space hard breaks, lone `.`
@@ -199,8 +201,12 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   retried automatically (`processScheduled`, `internal/daemon/daemon.go`). The
   delivered message and its Sent copy must carry **no** `X-Neomd-*` headers
   (`X-Neomd-Rcpt` contains Bcc!); messages without `X-Neomd-Send-At` in the
-  Scheduled folder (GTD items) are never touched. Tests:
-  `TestInjectExtractRoundTrip`, `TestExtractIgnoresRegularMail`, `TestSMTPConfigFor`.
+  Scheduled folder (GTD items) are never touched. At delivery the Date header
+  is rewritten to the actual send time (`schedule.RewriteDate` — only that one
+  line may change), so recipients and the Sent copy show when the mail went
+  out, not when it was queued. Tests:
+  `TestInjectExtractRoundTrip`, `TestExtractIgnoresRegularMail`,
+  `TestSMTPConfigFor`, `TestRewriteDate`.
 - **Callouts** — `> [!note]` / `> [!tip]` / `> [!warning]` (with or without space after
   `>`) render as styled boxes in the HTML part and as emoji text (no blockquote markers)
   in the plain part. Tests: `TestToHTML_Callout_*`, `TestFormatCalloutsForPlainText_*`.

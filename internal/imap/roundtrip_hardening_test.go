@@ -331,6 +331,33 @@ func TestHardening_RoundTrip_SendLaterDeliversIdenticalBytes(t *testing.T) {
 	if hasHeaderLine(pm.rawHead, "X-Neomd") {
 		t.Error("delivered message leaks X-Neomd header (contains Bcc!)")
 	}
+
+	// At delivery the daemon stamps the ACTUAL send time into Date — and must
+	// change nothing else (a build-time Date makes the recipient see the
+	// moment the user queued the message, not when it was sent).
+	deliveredAt := time.Date(2026, 8, 25, 9, 0, 3, 0, time.UTC)
+	stamped := schedule.RewriteDate(cleaned, deliveredAt)
+	pm2 := parseBuilt(t, stamped)
+	if got, err := time.Parse(time.RFC1123Z, headerValue(pm2.rawHead, "Date")); err != nil || !got.Equal(deliveredAt) {
+		t.Errorf("delivered Date = %q, want %v (err=%v)", headerValue(pm2.rawHead, "Date"), deliveredAt, err)
+	}
+	if !bytes.Equal(stripDateLine(stamped), stripDateLine(cleaned)) {
+		t.Error("RewriteDate changed bytes other than the Date header")
+	}
+}
+
+// stripDateLine removes the Date header line so before/after delivery-stamp
+// messages can be compared byte-exact on everything else.
+func stripDateLine(raw []byte) []byte {
+	lines := bytes.Split(raw, []byte("\r\n"))
+	out := make([][]byte, 0, len(lines))
+	for _, l := range lines {
+		if len(l) >= 5 && strings.EqualFold(string(l[:5]), "Date:") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return bytes.Join(out, []byte("\r\n"))
 }
 
 // A long non-ASCII subject is split across multiple RFC 2047 encoded-words —

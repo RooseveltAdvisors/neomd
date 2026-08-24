@@ -1,6 +1,7 @@
 package schedule
 
 import (
+	"bytes"
 	"reflect"
 	"strings"
 	"testing"
@@ -88,5 +89,29 @@ func TestParseSendAt(t *testing.T) {
 		if _, err := ParseSendAt(bad, now); err == nil {
 			t.Errorf("ParseSendAt(%q): expected error", bad)
 		}
+	}
+}
+
+// The Date header is stamped when the user queues the message; delivery may
+// be days later. RewriteDate must stamp the actual send time while leaving
+// every other byte untouched — and leave non-conforming input alone.
+func TestRewriteDate(t *testing.T) {
+	raw := []byte("From: a@b.io\r\nDate: Mon, 24 Aug 2026 19:50:18 +0200\r\nSubject: s\r\n\r\nbody line\r\n.\r\n")
+	at := time.Date(2026, 8, 24, 19, 55, 0, 0, time.FixedZone("CEST", 2*3600))
+	got := RewriteDate(raw, at)
+
+	want := []byte("From: a@b.io\r\nDate: " + at.Format(time.RFC1123Z) + "\r\nSubject: s\r\n\r\nbody line\r\n.\r\n")
+	if !bytes.Equal(got, want) {
+		t.Errorf("RewriteDate changed more than the Date line:\ngot  %q\nwant %q", got, want)
+	}
+
+	// No Date header → unchanged. No header/body separator → unchanged.
+	noDate := []byte("From: a@b.io\r\n\r\nbody")
+	if !bytes.Equal(RewriteDate(noDate, at), noDate) {
+		t.Error("message without Date header must be returned unchanged")
+	}
+	junk := []byte("not a mime message")
+	if !bytes.Equal(RewriteDate(junk, at), junk) {
+		t.Error("non-message input must be returned unchanged")
 	}
 }

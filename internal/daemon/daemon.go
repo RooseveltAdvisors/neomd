@@ -217,6 +217,10 @@ func (d *Daemon) processScheduled(ctx context.Context) error {
 			d.logger.Error("send-later: claim (\\Flagged) failed, skipping", "uid", e.UID, "error", err)
 			continue
 		}
+		// Stamp the ACTUAL delivery time — the Date set at build time is when
+		// the user queued the message, which recipients (and neomd's Sent
+		// view) would otherwise show as the send time.
+		cleaned = schedule.RewriteDate(cleaned, time.Now())
 		if err := smtp.SendRaw(smtpCfg, job.Rcpt, cleaned); err != nil {
 			d.logger.Error("send-later: SMTP delivery failed — message stays flagged in Scheduled; unflag to retry", "uid", e.UID, "subject", e.Subject, "error", err)
 			continue

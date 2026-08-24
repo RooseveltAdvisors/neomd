@@ -101,6 +101,46 @@ func Extract(raw []byte) (job Job, cleaned []byte, found bool, err error) {
 	return job, b.Bytes(), true, nil
 }
 
+// RewriteDate replaces the message's Date header with t (RFC 5322 format).
+// The Date is stamped at BUILD time, but a queued message is delivered
+// minutes to days later — without this, the recipient's client (and neomd's
+// own Sent view) shows the moment the user pressed `l`, not when the email
+// was actually sent. Only the Date header line changes; every other byte is
+// preserved. A message without a Date header is returned unchanged.
+func RewriteDate(raw []byte, t time.Time) []byte {
+	sep, sepLen := []byte("\r\n\r\n"), 4
+	idx := bytes.Index(raw, sep)
+	if idx < 0 {
+		sep, sepLen = []byte("\n\n"), 2
+		idx = bytes.Index(raw, sep)
+	}
+	if idx < 0 {
+		return raw
+	}
+	head, body := raw[:idx], raw[idx+sepLen:]
+	lines := strings.Split(string(head), "\n")
+	replaced := false
+	for i, line := range lines {
+		trimmed := strings.TrimRight(line, "\r")
+		if key, _, ok := strings.Cut(trimmed, ":"); ok && strings.EqualFold(key, "Date") {
+			lines[i] = "Date: " + t.Format(time.RFC1123Z)
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		return raw
+	}
+	var b bytes.Buffer
+	for _, line := range lines {
+		b.WriteString(strings.TrimRight(line, "\r"))
+		b.WriteString("\r\n")
+	}
+	b.WriteString("\r\n")
+	b.Write(body)
+	return b.Bytes()
+}
+
 var (
 	durationRe = regexp.MustCompile(`^\+?(?:(\d+)d)?(\d+[hm].*)?$`)
 	clockRe    = regexp.MustCompile(`^(\d{1,2}):(\d{2})$`)
