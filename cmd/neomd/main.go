@@ -145,6 +145,25 @@ func main() {
 		os.Exit(code)
 	}
 
+	// `neomd read --folder <label> --uid <n>` — one message body as JSON for
+	// the widget's in-panel reader. BODY.PEEK: never marks the mail as read.
+	if flag.NArg() > 0 && flag.Arg(0) == "read" {
+		var readCli *goIMAP.Client
+		for _, c := range imapClients {
+			if c != nil {
+				readCli = c
+				break
+			}
+		}
+		if readCli == nil {
+			writeReadJSON(os.Stdout, readOutput{Error: "no IMAP-enabled account configured"})
+			os.Exit(0)
+		}
+		code := runRead(ctx, cfg.Folders, readCli, flag.Args()[1:], os.Stdout)
+		readCli.Close()
+		os.Exit(code)
+	}
+
 	// Screener (shared across accounts — same allowlist files).
 	sc, err := screener.New(screener.Config{
 		ScreenedIn:  cfg.Screener.ScreenedIn,

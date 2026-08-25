@@ -246,10 +246,13 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 - **External classify goes through `neomd screen`** (`cmd/neomd/screen.go`) — the CLI
   subcommand for widgets (omarchy bar plugin) must keep TUI parity: list update BEFORE
   any move, sender-level expansion over all queued ToScreen mail, and the
-  `ValidateScreenerSafety` Trash gate. Its read-only sibling `neomd list`
-  (`cmd/neomd/list.go`) must never mutate flags or folders. Both always emit one JSON
-  object and exit 0 even on failure. Tests: `TestRunScreen_ApproveMovesAllFromSender`,
-  `TestRunScreen_RefusesTrashDestination`, `TestRunList_JSONShape`.
+  `ValidateScreenerSafety` Trash gate. Its read-only siblings `neomd list`
+  (`cmd/neomd/list.go`) and `neomd read` (`cmd/neomd/read.go`) must never mutate flags
+  or folders — `read` goes through `FetchBody`'s `BODY.PEEK`, so a widget glance can
+  never set `\Seen`. All three always emit one JSON object and exit 0 even on failure.
+  Tests: `TestRunScreen_ApproveMovesAllFromSender`,
+  `TestRunScreen_RefusesTrashDestination`, `TestRunList_JSONShape`,
+  `TestRunRead_JSONShape`.
 
 ## Inbox Display
 
