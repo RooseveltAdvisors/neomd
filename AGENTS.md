@@ -188,14 +188,23 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   delivered) and GTD mail sharing the Scheduled folder stays unmarked. Tests:
   `TestParseSendAtSection`, `TestSendLaterPrefix`, live assert in
   `TestIntegration_Hardening_ScheduledQueueRoundTrip`.
-- **Rescheduling replaces, never duplicates — and never deletes early** — continuing
-  a queued send-later message via `E` tracks the original (`requeue` in
-  `internal/ui/model.go`); it is moved to Trash (recoverable) ONLY after the
-  replacement is successfully scheduled or sent. Abort/discard/error paths clear
-  the tracking without touching the original; a failed cleanup warns loudly
-  (double-delivery risk). Tests: `TestContinueDraftTracksQueuedOriginal`,
-  `TestScheduleDoneReplacesQueuedOriginal`, `TestSendDoneReplacesQueuedOriginal`,
-  `TestEditorAbortKeepsQueuedOriginal`, `TestRequeueCleanupFailureWarns`.
+- **Re-saving a working copy replaces, never duplicates — and never deletes
+  early** — continuing a queued send-later message OR a saved draft via `E`
+  tracks the original (`requeue` in `internal/ui/model.go`); it is moved to
+  Trash (recoverable) ONLY after the replacement is successfully scheduled,
+  saved, or sent. Regular emails opened with `E` are NEVER tracked (a received
+  mail must never be trashed by sending an edit of it). Abort/discard/error
+  paths clear the tracking without touching the original; a failed cleanup
+  warns loudly (double-delivery risk). Tests:
+  `TestContinueDraftTracksQueuedOriginal`, `TestScheduleDoneReplacesQueuedOriginal`,
+  `TestSendDoneReplacesQueuedOriginal`, `TestSaveDraftReplacesPreviousVersion`,
+  `TestContinueRegularEmailNeverTracked`, `TestEditorAbortKeepsQueuedOriginal`,
+  `TestRequeueCleanupFailureWarns`.
+- **Send-later watchdog** — the TUI checks Scheduled on startup and every
+  background sync; queued messages more than 10 min past due (`overdueGrace`)
+  raise a red OVERDUE status warning — a down daemon must never silently
+  swallow a scheduled email. Fetch errors are silent (retried next tick).
+  Tests: `TestCountOverdueScheduled`, `TestOverdueScheduledWarns`.
 - **Send later never double-delivers** — the daemon claims a due Scheduled message
   with `\Flagged` *before* SMTP; flagged leftovers are skipped and logged, never
   retried automatically (`processScheduled`, `internal/daemon/daemon.go`). The

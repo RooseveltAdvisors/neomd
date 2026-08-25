@@ -502,8 +502,12 @@ type requeueRef struct {
 	account string
 }
 
-// requeueCleanupDoneMsg reports removal of the superseded queued copy.
-type requeueCleanupDoneMsg struct{ err error }
+// requeueCleanupDoneMsg reports removal of the superseded original
+// (previous draft version or queued send-later copy).
+type requeueCleanupDoneMsg struct {
+	folder string // folder the original was removed from
+	err    error
+}
 
 // undoMove records one IMAP move so it can be reversed with u.
 type undoMove struct {
@@ -882,11 +886,53 @@ func (m Model) Init() tea.Cmd {
 		m.spinner.Tick,
 		m.fetchFolderCmd(m.activeFolder()),
 		m.scheduleBgSync(),
+		m.checkOverdueScheduledCmd(),
 	}
 	if config.IsFirstRun() {
 		cmds = append(cmds, m.ensureFoldersCmd())
 	}
 	return tea.Batch(cmds...)
+}
+
+// overdueScheduledMsg reports send-later messages whose delivery time passed
+// more than overdueGrace ago without the daemon picking them up.
+type overdueScheduledMsg struct{ count int }
+
+// overdueGrace absorbs the daemon's normal sync cadence (default 5 min) so a
+// message due 2 minutes ago is not a false alarm.
+const overdueGrace = 10 * time.Minute
+
+// countOverdueScheduled counts queued send-later messages (SendAt set) whose
+// delivery time lies more than overdueGrace in the past — including claimed
+// (\Flagged) leftovers, which are equally undelivered.
+func countOverdueScheduled(emails []imap.Email, now time.Time) int {
+	n := 0
+	for _, e := range emails {
+		if !e.SendAt.IsZero() && now.After(e.SendAt.Add(overdueGrace)) {
+			n++
+		}
+	}
+	return n
+}
+
+// checkOverdueScheduledCmd is the send-later watchdog: the TUI cannot rely on
+// the headless daemon to report its own absence, so on startup and on every
+// background sync it scans the Scheduled folder for overdue queued messages
+// and warns loudly — a down daemon must never silently swallow an important
+// email. Fetch errors are silent (network hiccups resolve on the next tick).
+func (m Model) checkOverdueScheduledCmd() tea.Cmd {
+	cli := m.sentDraftsIMAPClient()
+	folder := m.cfg.Folders.Scheduled
+	return func() tea.Msg {
+		if cli == nil || folder == "" {
+			return overdueScheduledMsg{}
+		}
+		emails, err := cli.FetchHeaders(nil, folder, 0)
+		if err != nil {
+			return overdueScheduledMsg{}
+		}
+		return overdueScheduledMsg{count: countOverdueScheduled(emails, time.Now())}
+	}
 }
 
 // activeFolder maps the active tab label to an IMAP mailbox name.
@@ -2367,12 +2413,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "Draft error: " + msg.err.Error()
 			m.isError = true
-		} else {
-			m.attachments = nil
-			m.pendingSend = nil
-			m.state = stateInbox
-			m.status = "Saved to Drafts."
-			m.isError = false
+			m.requeue = requeueRef{} // original draft/queued copy stays valid
+			return m, nil
+		}
+		m.attachments = nil
+		m.pendingSend = nil
+		m.state = stateInbox
+		m.status = "Saved to Drafts."
+		m.isError = false
+		// New draft safely stored — remove the superseded original
+		// (previous draft version, or the queued copy it was continued from).
+		if m.requeue.uid != 0 {
+			r := m.requeue
+			m.requeue = requeueRef{}
+			m.status = "Saved to Drafts (replaced the previous version)."
+			return m, m.cleanupRequeuedCmd(r)
 		}
 		return m, nil
 
@@ -2405,14 +2460,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case overdueScheduledMsg:
+		if msg.count > 0 {
+			m.status = fmt.Sprintf("⚠ %d send-later email(s) OVERDUE in Scheduled — is the headless daemon running? (gc to review)", msg.count)
+			m.isError = true
+		}
+		return m, nil
+
 	case requeueCleanupDoneMsg:
 		if msg.err != nil {
-			m.status = "Rescheduled, but the OLD queued copy could not be removed — delete it in Scheduled (gc) or it will also be delivered: " + msg.err.Error()
+			m.status = fmt.Sprintf("Stored, but the OLD copy in %s could not be removed — delete it manually (a queued copy would also be delivered): %s", msg.folder, msg.err.Error())
 			m.isError = true
 			return m, nil
 		}
 		// Refresh if the user is looking at the folder the old copy left.
-		if m.state == stateInbox && m.activeFolder() == m.cfg.Folders.Scheduled {
+		if m.state == stateInbox && m.activeFolder() == msg.folder {
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
 		}
@@ -2663,7 +2725,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Also poll any extra notification folders (e.g. PaperTrail, Feed)
 		// so VIP mail screened out of Inbox by the daemon still notifies.
 		m.bgSyncInProgress = true
-		cmds := []tea.Cmd{m.bgFetchInboxCmd(), m.scheduleBgSync()}
+		cmds := []tea.Cmd{m.bgFetchInboxCmd(), m.scheduleBgSync(), m.checkOverdueScheduledCmd()}
 		for _, f := range m.vipNotifyFolders() {
 			cmds = append(cmds, m.bgFetchVipFolderCmd(f))
 		}
@@ -4567,10 +4629,10 @@ func (m Model) cleanupRequeuedCmd(r requeueRef) tea.Cmd {
 	trash := m.cfg.Folders.Trash
 	return func() tea.Msg {
 		if cli == nil {
-			return requeueCleanupDoneMsg{err: fmt.Errorf("no IMAP client for account %q", r.account)}
+			return requeueCleanupDoneMsg{folder: r.folder, err: fmt.Errorf("no IMAP client for account %q", r.account)}
 		}
 		_, err := cli.MoveMessage(nil, r.folder, r.uid, trash)
-		return requeueCleanupDoneMsg{err: err}
+		return requeueCleanupDoneMsg{folder: r.folder, err: err}
 	}
 }
 
@@ -4585,7 +4647,10 @@ func (m Model) continueDraft() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	e := m.openEmail
-	if !e.SendAt.IsZero() {
+	// Track the original when it is a WORKING COPY — a queued send-later
+	// message or a saved draft. A successful re-save/schedule/send replaces
+	// it; regular emails opened with E are never deleted.
+	if !e.SendAt.IsZero() || e.Folder == m.cfg.Folders.Drafts {
 		m.requeue = requeueRef{uid: e.UID, folder: e.Folder, account: m.activeAccount().Name}
 	} else {
 		m.requeue = requeueRef{}

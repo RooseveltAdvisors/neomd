@@ -267,6 +267,8 @@ For configuration (`[ai].command`, `[ai].args`, placeholders), see [Configuratio
 
 Press `d` in the pre-send screen to save to Drafts instead of sending. Navigate to Drafts with `gd`. To resume a saved draft, open it and press `E` — it re-opens in the editor with all fields pre-filled, and saving goes through the normal pre-send review.
 
+Re-saving (`d`) or sending a continued draft **replaces the previous version automatically**: the old draft is moved to Trash (recoverable) once the new copy is safely stored or sent. Aborting the editor or discarding leaves the original draft untouched.
+
 **Note:** Drafts are stored as plain text only (not multipart/alternative) to preserve markdown formatting when reopening. This prevents formatting corruption like line break addition, pipe escaping, and italic style changes.
 
 ## Send Later
@@ -287,6 +289,7 @@ Queued messages show a display-only `[send-later Aug 25 09:00]` prefix in the Sc
 
 - **Cancel**: go to the Scheduled folder (`gc`) and delete the message (`x`).
 - **Requirement**: a running headless daemon. Without one, the message simply waits in Scheduled — nothing is lost, but nothing is sent. The TUI itself never delivers scheduled mail, so a laptop that's asleep at send time is fine as long as the daemon runs elsewhere.
+- **Watchdog**: the TUI checks the Scheduled folder on startup and on every background sync — if a queued message is more than 10 minutes past its delivery time (daemon down, delivery stuck), a red `⚠ … OVERDUE` warning appears in the status bar so an important email can never be silently swallowed.
 - **Safety**: the daemon claims a message with the IMAP `\Flagged` flag *before* the SMTP send, so a crash mid-delivery can never send twice. If delivery fails, the message stays flagged in Scheduled and the daemon logs it — remove the flag to retry, or delete the message to cancel.
 - Regular emails you move to Scheduled for GTD purposes are untouched — only messages queued via `l` carry the scheduling header.
 
