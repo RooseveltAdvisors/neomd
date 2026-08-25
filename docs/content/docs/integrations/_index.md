@@ -5,4 +5,5 @@ sidebar:
   open: false
 ---
 
-Specific integration for neomd, e.g. Listmonk as first one.
+Specific integrations for neomd: Listmonk newsletters and the
+[Omarchy bar plugin](omarchy-plugin) ([repo](https://github.com/sspaeti/omarchy-neomd-plugin)).
