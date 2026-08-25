@@ -123,6 +123,28 @@ func main() {
 		}
 	}()
 
+	// `neomd list ...` — read-only JSON dump of folder headers for external
+	// widgets (e.g. the omarchy bar plugin). Uses the first IMAP-enabled
+	// account, prints one JSON object, exits 0 even on failure.
+	if flag.NArg() > 0 && flag.Arg(0) == "list" {
+		var listCli *goIMAP.Client
+		accName := ""
+		for i, c := range imapClients {
+			if c != nil {
+				listCli = c
+				accName = accounts[i].Name
+				break
+			}
+		}
+		if listCli == nil {
+			writeListJSON(os.Stdout, listOutput{Error: "no IMAP-enabled account configured"})
+			os.Exit(0)
+		}
+		code := runList(ctx, cfg.Folders, accName, listCli, flag.Args()[1:], os.Stdout)
+		listCli.Close()
+		os.Exit(code)
+	}
+
 	// Screener (shared across accounts — same allowlist files).
 	sc, err := screener.New(screener.Config{
 		ScreenedIn:  cfg.Screener.ScreenedIn,
@@ -135,6 +157,26 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "neomd: screener error: %v\n", err)
 		os.Exit(1)
+	}
+
+	// `neomd screen --from <addr> --action in|out|feed|paper` — classify a
+	// sender from an external widget: screener list update + sender-level
+	// ToScreen move, same semantics as the TUI's I/O/F/P keys.
+	if flag.NArg() > 0 && flag.Arg(0) == "screen" {
+		var screenCli *goIMAP.Client
+		for _, c := range imapClients {
+			if c != nil {
+				screenCli = c
+				break
+			}
+		}
+		if screenCli == nil {
+			writeScreenJSON(os.Stdout, screenOutput{Error: "no IMAP-enabled account configured"})
+			os.Exit(0)
+		}
+		code := runScreen(ctx, cfg.Folders, sc, screenCli, flag.Args()[1:], os.Stdout)
+		screenCli.Close()
+		os.Exit(code)
 	}
 
 	// Fork: run either headless daemon or TUI

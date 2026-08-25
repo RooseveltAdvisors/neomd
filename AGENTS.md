@@ -243,6 +243,13 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   queued mail from that sender.
 - **Lists are line-based with `#` comments** (full-line and inline); daemon only reads
   lists and moves mail, never writes classifications.
+- **External classify goes through `neomd screen`** (`cmd/neomd/screen.go`) — the CLI
+  subcommand for widgets (omarchy bar plugin) must keep TUI parity: list update BEFORE
+  any move, sender-level expansion over all queued ToScreen mail, and the
+  `ValidateScreenerSafety` Trash gate. Its read-only sibling `neomd list`
+  (`cmd/neomd/list.go`) must never mutate flags or folders. Both always emit one JSON
+  object and exit 0 even on failure. Tests: `TestRunScreen_ApproveMovesAllFromSender`,
+  `TestRunScreen_RefusesTrashDestination`, `TestRunList_JSONShape`.
 
 ## Inbox Display
 
