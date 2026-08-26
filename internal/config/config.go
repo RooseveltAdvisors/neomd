@@ -362,6 +362,13 @@ type Config struct {
 	// composer and pre-send review so it's never a silent BCC.
 	AutoBCC string `toml:"auto_bcc"`
 
+	// DefaultFrom, if set, is the email address (bare or "Name <addr>") that
+	// new compose and no-match reply/forward should default the From field
+	// to, overriding the usual "first configured account" fallback. Matched
+	// against accounts first, then senders. Empty (the default) preserves
+	// prior behavior: the first account wins.
+	DefaultFrom string `toml:"default_from"`
+
 	Listmonk ListmonkConfig `toml:"listmonk"`
 }
 

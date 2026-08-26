@@ -39,6 +39,13 @@ oauth2_scopes = ["", ""]
 
 # Root-level settings
 store_sent_drafts_in_sending_account = false  # default: Sent/Drafts stay in the first IMAP account
+default_from = ""  # default: "" = new composes/replies use the first [[accounts]] block.
+                    # Set to an address (e.g. "simon@ssp.sh") to default the From
+                    # field to a different account or [[senders]] alias without
+                    # reordering accounts or changing which account's inbox loads
+                    # on startup. Matched against accounts first, then senders.
+                    # Falls back to the first account if the address doesn't match
+                    # anything configured. Cycle with ctrl+f as usual regardless.
 
 # Optional: SMTP-only aliases — cycle with ctrl+f in compose/pre-send
 # [[senders]]

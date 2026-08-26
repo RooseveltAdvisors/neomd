@@ -143,7 +143,7 @@ func (m Model) updateContacts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		addr := entries[m.contactsCursor].Addr
 		m.attachments = nil
 		m.compose.reset()
-		m.presendFromI = 0
+		m.presendFromI = m.defaultFromIndex()
 		m.compose.to.SetValue(addr)
 		m.state = stateCompose
 		m.status = ""

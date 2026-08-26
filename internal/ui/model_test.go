@@ -147,6 +147,63 @@ func TestPresendSMTPAccount(t *testing.T) {
 	})
 }
 
+// TestDefaultFromIndex covers the default_from config option: empty config
+// (or a config with no default_from set) preserves the historic "first
+// account" fallback, while a matching default_from picks that account or
+// sender alias regardless of its position in config order.
+func TestDefaultFromIndex(t *testing.T) {
+	cfg := &config.Config{
+		Accounts: []config.AccountConfig{
+			{Name: "Personal", From: "Simon Späti <simu@sspaeti.com>"},
+			{Name: "Work", From: "Simon Späti <simon@ssp.sh>"},
+		},
+		Senders: []config.SenderConfig{
+			{Name: "Alias", From: "Simon Späti <s@ssp.sh>", Account: "Personal"},
+		},
+	}
+
+	t.Run("no default_from falls back to first account", func(t *testing.T) {
+		m := Model{cfg: cfg, accounts: cfg.ActiveAccounts()}
+		if got := m.defaultFromIndex(); got != 0 {
+			t.Fatalf("defaultFromIndex() = %d, want 0", got)
+		}
+	})
+
+	t.Run("default_from matches a later account", func(t *testing.T) {
+		c := *cfg
+		c.DefaultFrom = "simon@ssp.sh"
+		m := Model{cfg: &c, accounts: c.ActiveAccounts()}
+		if got := m.defaultFromIndex(); got != 1 {
+			t.Fatalf("defaultFromIndex() = %d, want 1 (Work)", got)
+		}
+	})
+
+	t.Run("default_from matches a sender alias", func(t *testing.T) {
+		c := *cfg
+		c.DefaultFrom = "s@ssp.sh"
+		m := Model{cfg: &c, accounts: c.ActiveAccounts()}
+		if got := m.defaultFromIndex(); got != 2 {
+			t.Fatalf("defaultFromIndex() = %d, want 2 (Alias)", got)
+		}
+	})
+
+	t.Run("default_from with no match falls back to first account", func(t *testing.T) {
+		c := *cfg
+		c.DefaultFrom = "nobody@example.com"
+		m := Model{cfg: &c, accounts: c.ActiveAccounts()}
+		if got := m.defaultFromIndex(); got != 0 {
+			t.Fatalf("defaultFromIndex() = %d, want 0", got)
+		}
+	})
+
+	t.Run("nil cfg falls back to first account", func(t *testing.T) {
+		m := Model{}
+		if got := m.defaultFromIndex(); got != 0 {
+			t.Fatalf("defaultFromIndex() = %d, want 0", got)
+		}
+	})
+}
+
 // TestReactionAutoSelectsCorrectFromAndSMTP covers the full ctrl+e path:
 // matchFromIndex picks the From based on which of our addresses received the
 // email, and presendSMTPAccount() — used by sendReaction — must return the

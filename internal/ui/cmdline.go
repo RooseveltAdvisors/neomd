@@ -205,7 +205,7 @@ func init() {
 
 				// Pre-fill compose fields.
 				m.compose.reset()
-				m.presendFromI = 0
+				m.presendFromI = m.defaultFromIndex()
 				if idx := m.matchFromAddress(from); idx >= 0 {
 					m.presendFromI = idx
 				}

@@ -801,6 +801,20 @@ func (m Model) presendFroms() []string {
 	return froms
 }
 
+// defaultFromIndex returns the presendFroms() index to use for new composes
+// and no-match replies. If cfg.DefaultFrom is set and matches a configured
+// account or sender, that index is used; otherwise falls back to 0 (the
+// first account), preserving behavior for configs without default_from.
+func (m Model) defaultFromIndex() int {
+	if m.cfg == nil || m.cfg.DefaultFrom == "" {
+		return 0
+	}
+	if idx := m.matchFromAddress(m.cfg.DefaultFrom); idx >= 0 {
+		return idx
+	}
+	return 0
+}
+
 // presendFrom returns the currently selected From address.
 func (m Model) presendFrom() string {
 	froms := m.presendFroms()
@@ -3377,7 +3391,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		m.isError = false
 		m.compose.reset()
-		m.presendFromI = 0
+		m.presendFromI = m.defaultFromIndex()
 		return m, nil
 
 	case "R":
@@ -4666,7 +4680,7 @@ func (m Model) continueDraft() (tea.Model, tea.Cmd) {
 	if idx := m.matchFromAddress(from); idx >= 0 {
 		m.presendFromI = idx
 	} else {
-		m.presendFromI = 0
+		m.presendFromI = m.defaultFromIndex()
 	}
 	m.compose.to.SetValue(to)
 	m.compose.cc.SetValue(cc)
