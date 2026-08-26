@@ -129,6 +129,13 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 - **Threaded inbox rendering** — threads grouped via `In-Reply-To`/`Message-ID` with
   subject+participant fallback, `│`/`╰` connectors, newest on top; the Sent folder is
   intentionally **not** threaded. Tests: `TestNormalizeSubject`, `TestParticipantMatch`.
+- **Sender view (`V`)** — from the inbox list, searches `from:<addr>` (bare address
+  from the selected email) across every configured folder via the same
+  `SearchAllFolders` IMAP infra as `/`-search, opening results in a `Sender` off-tab
+  (`internal/ui/search.go`: `senderAddr`, `fetchSenderCmd`, `handleSenderResult`).
+  `V` was chosen over `E`/`F` — both already bound (`E` = continue draft in the reader,
+  `F` = mark as Feed). Tests: `TestSenderAddr`, `TestHandleSenderResultSetsOffTabAndEmails`,
+  `TestHandleSenderResultNoMatches`.
 
 ## Compose → Pre-send → Send Pipeline
 

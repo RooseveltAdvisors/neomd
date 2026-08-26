@@ -2550,6 +2550,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case conversationResultMsg:
 		return m.handleConversationResult(msg)
 
+	case senderResultMsg:
+		return m.handleSenderResult(msg)
+
 	case batchDoneMsg:
 		m.loading = false
 		m.bulkProgress = nil
@@ -3462,6 +3465,14 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchConversationCmd(e))
 
+	case "V":
+		e := selectedEmail(m.inbox)
+		if e == nil {
+			return m, nil
+		}
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, m.fetchSenderCmd(e))
+
 	case "m": // mark/unmark current email for batch, advance cursor
 		e := selectedEmail(m.inbox)
 		if e == nil {
@@ -3601,7 +3612,7 @@ func copyMap(m map[string]bool) map[string]bool {
 
 func (m Model) shouldPrefixFolderInSubject() bool {
 	switch m.offTabFolder {
-	case "Search", "Everything", "Thread":
+	case "Search", "Everything", "Thread", "Sender":
 		return true
 	default:
 		return false

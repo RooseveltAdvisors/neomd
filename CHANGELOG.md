@@ -2,6 +2,8 @@
 
 # 2026-08-26
 
+
+- **Sender view (`V`)** — from the inbox list, hit `V` on any email to see every message from that sender across every folder (Inbox, Sent, Archive, ToScreen, Feed, PaperTrail, ScreenedOut, Waiting, Scheduled, Someday, Spam, Drafts, Trash, Work), not just the current folder. Reuses the existing `from:` IMAP SEARCH infra (`SearchAllFolders`) that already powers `space+/` search — no new IMAP capability needed. Results open in a `Sender` off-tab exactly like `Search`/`Everything`/`Thread`; `esc` closes it. `V` was picked over `E` (already bound to "continue draft" in the reader) and `F` (already bound to "mark as Feed"). New `senderAddr`, `fetchSenderCmd`, `handleSenderResult` in `internal/ui/search.go`. Tests: `TestSenderAddr`, `TestHandleSenderResultSetsOffTabAndEmails`, `TestHandleSenderResultNoMatches`
 - **`neomd list` caps sender-controlled header fields** — From/Subject in the JSON output are now truncated UTF-8-safely at 500 bytes (`listHeaderMaxBytes`, via the existing `truncateUTF8`), so a hostile mail with a multi-hundred-KB crafted Subject can no longer inflate the output that widgets (e.g. the omarchy bar plugin) buffer whole in shell variables and cache files. `read` bodies were already bounded by `--max-bytes` (default 64 KB). `cmd/neomd/list.go`. Test: `TestRunList_TruncatesHostileHeaders`
 
 # 2026-08-25

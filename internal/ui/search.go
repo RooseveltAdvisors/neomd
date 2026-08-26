@@ -267,6 +267,67 @@ func (m *Model) handleConversationResult(msg conversationResultMsg) (tea.Model, 
 	return m, m.sortEmails()
 }
 
+// senderAddr returns the first bare address from an email's From header,
+// or "" if the header is empty or unparseable.
+func senderAddr(e *imap.Email) string {
+	addrs := imap.SplitAddrs(e.From)
+	if len(addrs) == 0 {
+		return ""
+	}
+	return addrs[0]
+}
+
+// senderResultMsg carries results from a per-sender search across folders.
+type senderResultMsg struct {
+	addr   string
+	emails []imap.Email
+	err    error
+}
+
+// fetchSenderCmd searches all folders for every email from the given
+// email's sender address.
+func (m Model) fetchSenderCmd(e *imap.Email) tea.Cmd {
+	addr := senderAddr(e)
+	cli := m.imapCli()
+	f := m.cfg.Folders
+	folders := []string{
+		f.Inbox, f.Sent, f.Trash, f.Drafts,
+		f.ToScreen, f.Feed, f.PaperTrail, f.ScreenedOut,
+		f.Archive, f.Waiting, f.Scheduled, f.Someday, f.Spam,
+	}
+	if f.Work != "" {
+		folders = append(folders, f.Work)
+	}
+	return func() tea.Msg {
+		if addr == "" {
+			return senderResultMsg{addr: addr}
+		}
+		emails, err := cli.SearchAllFolders(nil, folders, "from:"+addr)
+		return senderResultMsg{addr: addr, emails: emails, err: err}
+	}
+}
+
+// handleSenderResult displays the "Sender" view — every email from one address.
+func (m *Model) handleSenderResult(msg senderResultMsg) (tea.Model, tea.Cmd) {
+	m.loading = false
+	if msg.err != nil {
+		m.status = "Sender: " + msg.err.Error()
+		m.isError = true
+		return m, nil
+	}
+	if len(msg.emails) == 0 {
+		m.status = fmt.Sprintf("No emails found from %q.", msg.addr)
+		return m, nil
+	}
+	m.offTabFolder = "Sender"
+	m.emails = msg.emails
+	m.markedUIDs = make(map[uint32]bool)
+	m.filterActive = false
+	m.filterText = ""
+	m.status = fmt.Sprintf("Sender — %d email(s) from %s across all folders. esc to close.", len(msg.emails), msg.addr)
+	return m, m.sortEmails()
+}
+
 // viewIMAPSearchBar renders the search prompt at the bottom of the inbox.
 func (m Model) viewIMAPSearchBar() string {
 	cursor := ""

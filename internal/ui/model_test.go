@@ -679,6 +679,62 @@ func TestHandleEverythingResultKeepsRealSubject(t *testing.T) {
 	}
 }
 
+func TestSenderAddr(t *testing.T) {
+	tests := []struct {
+		name string
+		from string
+		want string
+	}{
+		{"name and address", "Kristen K. <kristen@rilldata.com>", "kristen@rilldata.com"},
+		{"bare address", "kristen@rilldata.com", "kristen@rilldata.com"},
+		{"multiple addresses uses first", "a@x.com, b@x.com", "a@x.com"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &imap.Email{From: tt.from}
+			if got := senderAddr(e); got != tt.want {
+				t.Fatalf("senderAddr(%q) = %q, want %q", tt.from, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleSenderResultSetsOffTabAndEmails(t *testing.T) {
+	m := Model{
+		inbox: newInboxList(80, 20, "", ""),
+	}
+	msg := senderResultMsg{
+		addr:   "kristen@rilldata.com",
+		emails: []imap.Email{{UID: 1, Folder: "Sent", Subject: "Quarterly update", From: "kristen@rilldata.com"}},
+	}
+
+	next, _ := m.handleSenderResult(msg)
+	got := next.(*Model)
+	if got.offTabFolder != "Sender" {
+		t.Fatalf("offTabFolder = %q, want %q", got.offTabFolder, "Sender")
+	}
+	if len(got.emails) != 1 || got.emails[0].Subject != "Quarterly update" {
+		t.Fatalf("emails = %+v, want unchanged real subject", got.emails)
+	}
+}
+
+func TestHandleSenderResultNoMatches(t *testing.T) {
+	m := Model{
+		inbox: newInboxList(80, 20, "", ""),
+	}
+	msg := senderResultMsg{addr: "nobody@example.com"}
+
+	next, _ := m.handleSenderResult(msg)
+	got := next.(*Model)
+	if got.offTabFolder == "Sender" {
+		t.Fatalf("offTabFolder should not be set to Sender when there are no results")
+	}
+	if !strings.Contains(got.status, "nobody@example.com") {
+		t.Fatalf("status = %q, want it to mention the address", got.status)
+	}
+}
+
 func TestReplyAllExcludesAllOwnAddresses(t *testing.T) {
 	tests := []struct {
 		name     string
