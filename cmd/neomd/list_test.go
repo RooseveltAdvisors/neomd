@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,6 +153,25 @@ func TestRunList_JSONShape(t *testing.T) {
 	}
 	if emails[0].Date != "2026-08-25T10:30:00Z" {
 		t.Errorf("date = %q, want RFC3339 UTC", emails[0].Date)
+	}
+}
+
+func TestRunList_TruncatesHostileHeaders(t *testing.T) {
+	huge := strings.Repeat("A", 100_000)
+	fetcher := &fakeFetcher{byFolder: map[string][]goIMAP.Email{
+		"Feed": {{UID: 1, From: huge, Subject: huge, Date: time.Now()}},
+	}}
+	var buf bytes.Buffer
+	runList(context.Background(), testFolders(), "Personal", fetcher,
+		[]string{"--folders", "Feed"}, &buf)
+	var out listOutput
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	e := out.Folders[0].Emails[0]
+	if len(e.From) > listHeaderMaxBytes || len(e.Subject) > listHeaderMaxBytes {
+		t.Errorf("headers not truncated: from=%d subject=%d bytes (max %d)",
+			len(e.From), len(e.Subject), listHeaderMaxBytes)
 	}
 }
 

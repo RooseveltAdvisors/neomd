@@ -64,23 +64,7 @@ o.bind("SUPER + CTRL + ALT + M", "neomd Mail panel",
   "omarchy-shell shell toggle io.github.sspaeti.neomd")
 ```
 
-## Demo account
-
-For screen recordings, point the plugin at a demo config instead of your real
-mail via the `configPath` setting in `~/.config/omarchy/shell.json`. Widget
-settings are inline keys next to `id` (no nested `"settings"` object):
-
-```json
-{
-  "id": "io.github.sspaeti.neomd",
-  "configPath": "~/.config/neomd-demo-hostpoint/config.toml"
-}
-```
-
-This uses the **installed** `neomd` binary with `-config`, so unlike
-`make demo-hp` (which runs the locally built `./neomd`), it works from
-anywhere. Each config gets its own on-disk cache, so demo and real mail never
-mix. Remove the setting to switch back.
-
 See the [plugin README](https://github.com/sspaeti/omarchy-neomd-plugin) for
-all settings (icon, folders, default tab, poll cadence, jump command).
+all settings (icon, folders, default tab, poll cadence, jump command). Widget
+settings are inline keys next to `id` in `~/.config/omarchy/shell.json` — no
+nested `"settings"` object.

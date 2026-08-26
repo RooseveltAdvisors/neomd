@@ -1,5 +1,9 @@
 # Changelog
 
+# 2026-08-26
+
+- **`neomd list` caps sender-controlled header fields** — From/Subject in the JSON output are now truncated UTF-8-safely at 500 bytes (`listHeaderMaxBytes`, via the existing `truncateUTF8`), so a hostile mail with a multi-hundred-KB crafted Subject can no longer inflate the output that widgets (e.g. the omarchy bar plugin) buffer whole in shell variables and cache files. `read` bodies were already bounded by `--max-bytes` (default 64 KB). `cmd/neomd/list.go`. Test: `TestRunList_TruncatesHostileHeaders`
+
 # 2026-08-25
 
 - **`neomd list` + `neomd screen` subcommands — JSON data source for the omarchy bar plugin** — two headless one-shot subcommands so external widgets can read and triage mail without a second IMAP setup. `neomd list --folders Inbox,ToScreen,Feed,PaperTrail --limit 15` prints one JSON object (`{ok, account, folders:[{name, emails:[{uid, from, subject, date, unread}]}]}`, dates RFC 3339 UTC, first IMAP-enabled account) — strictly read-only via `FetchHeaders`. `neomd screen --from <addr> --action in|out|feed|paper` classifies a sender exactly like the TUI's `I`/`O`/`F`/`P` keys: screener list update first (atomic cross-list cleanup via `Approve`/`Block`/`MarkFeed`/`MarkPaperTrail`), then the sender-level move of ALL queued ToScreen mail from that sender, gated by the same `ValidateScreenerSafety` Trash check. Both always print JSON and exit 0 on failure (`{"ok":false,"error":...}`) — a bar widget that gets no JSON has nothing to show but a crash. `cmd/neomd/list.go`, `cmd/neomd/screen.go`, wiring in `cmd/neomd/main.go`. Tests: `TestRunList_JSONShape`, `TestRunList_ResolvesConfiguredIMAPName`, `TestRunList_FetchErrorJSON`, `TestRunScreen_ApproveMovesAllFromSender`, `TestRunScreen_ActionDestinations`, `TestRunScreen_RefusesTrashDestination`

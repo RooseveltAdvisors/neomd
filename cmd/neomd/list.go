@@ -18,6 +18,10 @@ import (
 // object, exit. Failures also print JSON and exit 0 — a widget that gets no
 // JSON has nothing to show but a crash.
 
+// listHeaderMaxBytes caps sender-controlled header fields so a hostile
+// Subject/From can't blow up the JSON that widgets buffer whole in memory.
+const listHeaderMaxBytes = 500
+
 type listOpts struct {
 	folders []string
 	limit   int
@@ -114,10 +118,12 @@ func runList(ctx context.Context, folders config.FoldersConfig, account string, 
 		}
 		lf := listFolder{Name: label, Emails: make([]listEmail, 0, len(emails))}
 		for _, e := range emails {
+			from, _ := truncateUTF8(e.From, listHeaderMaxBytes)
+			subject, _ := truncateUTF8(e.Subject, listHeaderMaxBytes)
 			lf.Emails = append(lf.Emails, listEmail{
 				UID:     e.UID,
-				From:    e.From,
-				Subject: e.Subject,
+				From:    from,
+				Subject: subject,
 				Date:    e.Date.UTC().Format(time.RFC3339),
 				Unread:  !e.Seen,
 			})
