@@ -10,6 +10,7 @@ Neomd can run in headless daemon mode to continuously screen emails in the backg
 When running in headless mode, neomd:
 - **Screens emails automatically** every `bg_sync_interval` minutes
 - **Delivers "send later" messages** queued in the Scheduled folder (see below)
+- **Sends out-of-office auto-replies** to screened-in senders when `[ooo]` is enabled (see below)
 - **Watches screener list files** and reloads when they change (via Syncthing)
 - **Runs in the background** as a standard process
 - **Logs to stdout** for monitoring
@@ -40,6 +41,77 @@ The daemon is the delivery vehicle for the TUI's [Send Later](../../sending#send
 4. **Deletes** the queue entry from Scheduled.
 
 Failed deliveries stay flagged in Scheduled and are logged — remove the flag (from any mail client) to retry, or delete the message to cancel. Regular emails moved to Scheduled for GTD purposes have no scheduling header and are never touched. OAuth2 accounts: token refresh is only available for the daemon's own login account; password/keyring accounts work for any identity.
+
+## Out-of-Office Auto-Replies
+
+Going on vacation? The daemon can answer incoming mail with an out-of-office reply — but **only to senders you have screened in**. Spam, sales pitches, newsletters, and anyone still waiting in ToScreen never learn you're away. This is something a server-side autoresponder (Hostpoint, Gmail vacation responder, Sieve) can't do: those reply to everyone.
+
+### Configuration: `ooo.toml` (recommended)
+
+Put the OOO settings in their own file, `ooo.toml`, **next to `config.toml`**. When that file exists it replaces the whole `[ooo]` block of the main config, and the daemon **re-reads it on every sync cycle** — enable, edit, or disable OOO without ever restarting the daemon or touching the server's main config:
+
+```toml
+# ~/.config/neomd/ooo.toml  (note: top-level keys, no [ooo] header)
+enabled = true
+accounts = ["Work", "WorkInfo"] # optional: [[accounts]] names whose inboxes get auto-replies, each replying from its own From address; empty = the daemon's own account
+timezone = "Europe/Zurich"      # optional: from/until mean THIS timezone, wherever the daemon runs; empty = the daemon machine's local time (often UTC on servers!)
+from    = "2026-08-31 16:00"    # optional: activate in advance — "YYYY-MM-DD" (midnight) or "YYYY-MM-DD HH:MM"; empty = immediately
+until   = "2026-09-07"          # "YYYY-MM-DD" = through the END of this day, or exact "YYYY-MM-DD HH:MM"; empty = until enabled = false
+subject = "Out of Office"       # reply subject, used verbatim; default "Out of Office"
+body    = """
+Hi,
+
+I'm out of office until **September 7** with limited email access.
+I'll get back to you after my return.
+
+Best regards
+Simon
+"""
+# body_file = "~/.config/neomd/ooo.md"   # alternative: read the body from a markdown file (overrides body)
+```
+
+Because it's a single self-contained file, syncing it to the server is one command:
+
+```sh
+make ooo   # scp ~/.config/neomd/ooo.toml → server; daemon picks it up on the next cycle
+```
+
+Workflow: edit your **local** `ooo.toml` (in your dotfiles), run `make ooo`, done. Coming back early? Set `enabled = false` locally, `make ooo` again. No SSH into server configs, no Syncthing dependency, no daemon restart. (An invalid `ooo.toml` is logged and fails safe: no replies are sent.)
+
+Alternatively you can still configure a `[ooo]` block directly in the daemon's `config.toml` with the same keys — `ooo.toml` wins when both exist.
+
+### What the recipient sees
+
+The reply subject is your configured `subject` verbatim (default **`Out of Office`**) — the original subject is not appended, but the reply still lands inside the sender's conversation thanks to the threading headers. The body is **markdown, rendered exactly like a composed neomd email**: same `multipart/alternative` MIME structure (plain text + goldmark HTML), your account's text signature appended, your HTML signature injected — recipients can't tell it apart from a hand-written neomd mail. Replies also thread correctly (`In-Reply-To`/`References`), so they appear inside the original conversation.
+
+### How it works
+
+Each sync cycle (`bg_sync_interval`), after screening, the daemon scans the Inbox and replies when **all** of these hold:
+
+1. The sender is on your **screened-in list** (`screened_in.txt`, including `@domain` entries)
+2. The mail arrived **after** OOO started (the `from` day's midnight when set, otherwise the moment of activation) — old inbox mail is never answered
+3. The sender has **not already received** a reply this OOO period
+4. The mail is **not auto-generated** (mailing lists, bounces, other auto-responders)
+5. The sender is not one of your own configured addresses
+
+The reply goes **only to the sender** (`Reply-To` if set, otherwise `From`) — never to Cc recipients. If you were only Cc'd on the mail, the sender still gets the reply (the daemon can't distinguish To from Cc delivery), but nobody else does.
+
+### Reply-once guarantee
+
+Each sender gets **exactly one reply per OOO period**, tracked in `~/.cache/neomd/ooo_replied`. The address is recorded *before* the SMTP send, so a crash or daemon restart can never produce duplicates. Changing `from` or `until` starts a new period and resets the cache (everyone may get one fresh reply on your next vacation). To re-send to a specific address, delete its line from the cache file.
+
+### Loop protection (RFC 3834)
+
+Outgoing replies carry `Auto-Submitted: auto-replied` and `X-Auto-Response-Suppress: All` headers, and incoming mail with `Auto-Submitted`, `Precedence: bulk/junk/list`, `List-Id`, or `List-Unsubscribe` headers is skipped — so two auto-responders can never ping-pong each other.
+
+### Notes
+
+- **Daemon-only**: the TUI ignores the `[ooo]` block entirely; you need `neomd --headless` running (e.g. on your homeserver/NAS) for replies to go out.
+- **Multiple identities/mailboxes**: with `accounts = ["Work", "WorkInfo"]` the daemon opens each listed account's inbox (extra lazy IMAP connections) and replies **from that account's own From address** with its own signature; the Sent copy lands in that account's Sent folder. Unknown or `imap_disabled` names are a hard error — a typo can't silently skip an inbox. The reply-once cache is shared: a sender who emails several of your addresses still gets only **one** reply per OOO period.
+- **From identity** (no `accounts` set): replies are sent from `default_from` if configured, otherwise from the daemon's IMAP account; a copy is saved to your Sent folder.
+- **Latency**: replies go out on the next sync cycle, so at most `bg_sync_interval` minutes after a mail arrives.
+- **Auto-expiry**: after the `until` date has passed the daemon stops replying on its own — no need to rush to your config on the first day back.
+- **Trade-off vs. server-side autoresponders**: if your homeserver is down, no replies are sent. In exchange you get the screened-in-only filter.
 
 ## Multi-Device Setup with Syncthing
 

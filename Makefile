@@ -3,8 +3,11 @@ CMD     := ./cmd/neomd
 INSTALL := $(HOME)/.local/bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
+# Headless server host. Default "ti" (LAN, via ~/.ssh/config); away from home:
+#   make sync-headless TI_HOST=ti.sspaeti.duckdns.org
+TI_HOST ?= ti
 
-.PHONY: build run install daemon clean test test-integration send-test vet fmt fmt-check tidy release docs help check-go demo demo-reset demo-hp demo-hp-reset benchmark
+.PHONY: build run install daemon clean test test-integration send-test vet fmt fmt-check tidy release docs help check-go demo demo-reset demo-hp demo-hp-reset benchmark ooo
 
 
 .DEFAULT_GOAL := install
@@ -150,22 +153,30 @@ docs-build:
 docs-clean:
 	$(MAKE) -C docs clean
 
-## sync-headless: deploy FreeBSD binary to ti server and restart daemon
+## ooo: sync out-of-office config (~/.config/neomd/ooo.toml) to the ti server (override host: TI_HOST=...) — daemon hot-reloads it, no restart needed
+ooo:
+	@test -f ~/.config/neomd/ooo.toml || { echo "ERROR: ~/.config/neomd/ooo.toml not found — create it first (enabled/until/subject/body, see docs headless page)"; exit 1; }
+	scp ~/.config/neomd/ooo.toml $(TI_HOST):~/.config/neomd/ooo.toml
+	@echo ""
+	@echo "OOO config synced — daemon applies it on the next sync cycle (bg_sync_interval min at most). Current state on server:"
+	@ssh $(TI_HOST) "grep -E '^(enabled|from|until|subject)' ~/.config/neomd/ooo.toml || true"
+
+## sync-headless: deploy FreeBSD binary to the ti server (override host: TI_HOST=...) and restart daemon
 sync-headless: build
 	@echo "Stopping daemon (FreeBSD refuses to overwrite a running binary)..."
-	ssh ti "pkill neomd || true; sleep 2"
+	ssh $(TI_HOST) "pkill neomd || true; sleep 2"
 	@echo "Copying binary and Makefile to ti..."
-	scp neomd-freebsd ti:~/.local/bin/neomd
-	scp scripts/headless-server/Makefile ti:~/Makefile
+	scp neomd-freebsd $(TI_HOST):~/.local/bin/neomd
+	scp scripts/headless-server/Makefile $(TI_HOST):~/Makefile
 	@echo "Starting daemon (sourcing ~/.profile so env vars like the IMAP password are loaded)..."
-	ssh ti ". ~/.profile; mkdir -p ~/.local/share/neomd; make run-headless"
+	ssh $(TI_HOST) ". ~/.profile; mkdir -p ~/.local/share/neomd; make run-headless"
 	@echo "Waiting for daemon to start..."
 	@sleep 2
 	@echo "Checking status..."
-	@ssh ti "ps aux | grep '[n]eomd' || echo 'ERROR: neomd is not running'"
+	@ssh $(TI_HOST) "ps aux | grep '[n]eomd' || echo 'ERROR: neomd is not running'"
 	@echo ""
 	@echo "Checking logs for errors..."
-	@ssh ti "tail -20 ~/.local/share/neomd/daemon.log"
+	@ssh $(TI_HOST) "tail -20 ~/.local/share/neomd/daemon.log"
 
 ## syncthing-tunnel: start syncthing on ti (if not running) and open SSH tunnel → http://localhost:8385
 syncthing-tunnel:

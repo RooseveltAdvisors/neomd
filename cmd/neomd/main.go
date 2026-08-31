@@ -308,17 +308,5 @@ func parseMailtoQuery(raw string) func(string) string {
 }
 
 func inferIMAPSecurity(port string, userSTARTTLS bool) (useTLS, useSTARTTLS bool) {
-	if userSTARTTLS {
-		// User explicitly set starttls=true in config — honor it.
-		return false, true
-	}
-	switch port {
-	case "993":
-		return true, false // Standard IMAPS (implicit TLS)
-	case "143":
-		return false, true // Standard IMAP (STARTTLS upgrade)
-	default:
-		// Non-standard port (e.g., Proton Mail Bridge): default to TLS for security.
-		return true, false
-	}
+	return goIMAP.InferSecurity(port, userSTARTTLS)
 }

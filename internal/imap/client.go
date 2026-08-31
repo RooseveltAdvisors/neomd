@@ -86,6 +86,23 @@ func New(cfg Config) *Client {
 	return &Client{cfg: cfg, logger: slog.Default()}
 }
 
+// InferSecurity determines TLS/STARTTLS for an IMAP port: explicit
+// starttls=true is honored; 993 = implicit TLS, 143 = STARTTLS; non-standard
+// ports (e.g. Proton Mail Bridge) default to TLS for security.
+func InferSecurity(port string, userSTARTTLS bool) (useTLS, useSTARTTLS bool) {
+	if userSTARTTLS {
+		return false, true
+	}
+	switch port {
+	case "993":
+		return true, false
+	case "143":
+		return false, true
+	default:
+		return true, false
+	}
+}
+
 func (c *Client) addr() string {
 	return c.cfg.Host + ":" + c.cfg.Port
 }

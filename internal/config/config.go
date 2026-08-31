@@ -370,6 +370,31 @@ type Config struct {
 	DefaultFrom string `toml:"default_from"`
 
 	Listmonk ListmonkConfig `toml:"listmonk"`
+
+	// OOO configures out-of-office auto-replies, processed by the headless
+	// daemon (--headless) only. Replies go solely to screened-in senders,
+	// once per sender per OOO period.
+	OOO OOOConfig `toml:"ooo"`
+
+	// OOOFile is the path to the optional ooo.toml sitting next to the
+	// loaded config.toml. When that file exists its contents replace the
+	// whole [ooo] block — it is the single file `make ooo` syncs to the
+	// headless server, and the daemon re-reads it every pass (hot reload,
+	// no restart needed). Set during Load(), not a TOML field.
+	OOOFile string `toml:"-"`
+}
+
+// OOOConfig holds out-of-office auto-reply settings ([ooo] in config.toml).
+// Only the headless daemon acts on it; the TUI ignores this block.
+type OOOConfig struct {
+	Enabled  bool     `toml:"enabled"`
+	Accounts []string `toml:"accounts"` // [[accounts]] names whose inboxes get auto-replies, each from its own address (e.g. ["Work", "WorkInfo"]); empty = the daemon's own account
+	Timezone string   `toml:"timezone"` // IANA name (e.g. "Europe/Zurich") that from/until are interpreted in; empty = the daemon machine's local time
+	From     string `toml:"from"`      // "YYYY-MM-DD" — active starting at 00:00 of this day (local time); empty = active immediately
+	Until    string `toml:"until"`     // "YYYY-MM-DD" — active through the END of this day (local time); empty = active until enabled=false
+	Subject  string `toml:"subject"`   // reply subject; default "Out of Office"
+	Body     string `toml:"body"`      // reply body in markdown (same rendering as composed emails)
+	BodyFile string `toml:"body_file"` // optional path to a markdown file; overrides body when set
 }
 
 // ListmonkTrigger maps a virtual email address to Listmonk list IDs.
@@ -464,6 +489,36 @@ func CrashLogPath() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_crash.log", os.Getuid()))
 }
 
+// LoadOOOOverride parses an ooo.toml file holding a bare OOO block (top-level
+// enabled/until/subject/body/body_file keys). Returns nil when the file does
+// not exist, an error when it exists but is invalid TOML — the daemon logs
+// that and fails safe (no replies).
+func LoadOOOOverride(path string) (*OOOConfig, error) {
+	if path == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	}
+	var o OOOConfig
+	if _, err := toml.DecodeFile(path, &o); err != nil {
+		return nil, fmt.Errorf("parse ooo config %s: %w", path, err)
+	}
+	o.BodyFile = expandPath(o.BodyFile)
+	return &o, nil
+}
+
+// OOOCachePath returns the path for the out-of-office reply cache file
+// (which senders already received an auto-reply in the current OOO period).
+func OOOCachePath() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName)
+		_ = os.MkdirAll(p, 0o700)
+		return filepath.Join(p, "ooo_replied")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_ooo_replied", os.Getuid()))
+}
+
 // SpyPixelCachePath returns the path for the spy pixel cache file.
 func SpyPixelCachePath() string {
 	if dir, err := os.UserCacheDir(); err == nil {
@@ -549,6 +604,16 @@ func Load(path string) (*Config, error) {
 	cfg.Screener.Spam = expandPath(cfg.Screener.Spam)
 	cfg.Screener.Notify = expandPath(cfg.Screener.Notify)
 	cfg.Contacts.File = expandPath(cfg.Contacts.File)
+	cfg.OOO.BodyFile = expandPath(cfg.OOO.BodyFile)
+
+	// ooo.toml next to config.toml replaces the whole [ooo] block when it
+	// exists (single syncable file; the daemon also re-reads it every pass).
+	cfg.OOOFile = filepath.Join(filepath.Dir(path), "ooo.toml")
+	if override, err := LoadOOOOverride(cfg.OOOFile); err != nil {
+		return nil, err
+	} else if override != nil {
+		cfg.OOO = *override
+	}
 
 	// Ensure screener list directories and files exist so appending (I/O/F/P/$)
 	// works on a fresh install without manual mkdir or touching files.

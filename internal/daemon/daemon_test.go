@@ -223,3 +223,34 @@ func TestSMTPConfigFor(t *testing.T) {
 		t.Error("unknown From must error")
 	}
 }
+
+// --- OOO target account resolution ([ooo].accounts) ---
+
+func TestResolveOOOAccounts(t *testing.T) {
+	cfg := config.Config{Accounts: []config.AccountConfig{
+		{Name: "Personal", User: "simu@sspaeti.com"},
+		{Name: "Work", User: "simon@sspaeti.com"},
+		{Name: "WorkInfo", User: "info@ssp.sh"},
+		{Name: "Gmail", User: "x@gmail.com", IMAPDisabled: true},
+	}}
+
+	got, err := resolveOOOAccounts(cfg, []string{"Work", "workinfo"}) // case-insensitive
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Name != "Work" || got[1].Name != "WorkInfo" {
+		t.Fatalf("got %+v", got)
+	}
+
+	if _, err := resolveOOOAccounts(cfg, []string{"Nope"}); err == nil {
+		t.Fatal("unknown account name must error")
+	}
+	if _, err := resolveOOOAccounts(cfg, []string{"Gmail"}); err == nil {
+		t.Fatal("imap_disabled account must error (cannot watch its inbox)")
+	}
+
+	got, err = resolveOOOAccounts(cfg, nil)
+	if err != nil || got != nil {
+		t.Fatalf("empty list must resolve to nil (daemon account default), got %+v, %v", got, err)
+	}
+}
