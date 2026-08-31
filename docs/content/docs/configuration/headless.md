@@ -82,7 +82,7 @@ Alternatively you can still configure a `[ooo]` block directly in the daemon's `
 
 ### What the recipient sees
 
-The reply subject is your configured `subject` verbatim (default **`Out of Office`**) — the original subject is not appended, but the reply still lands inside the sender's conversation thanks to the threading headers. The body is **markdown, rendered exactly like a composed neomd email**: same `multipart/alternative` MIME structure (plain text + goldmark HTML), your account's text signature appended, your HTML signature injected — recipients can't tell it apart from a hand-written neomd mail. Replies also thread correctly (`In-Reply-To`/`References`), so they appear inside the original conversation.
+The reply subject is your configured `subject` verbatim (default **`Out of Office`**) — the original subject is not appended, but the reply still lands inside the sender's conversation thanks to the threading headers. The body is **markdown, rendered exactly like a composed neomd email**: same `multipart/alternative` MIME structure (plain text + goldmark HTML), your account's text signature appended, your HTML signature injected. Every reply ends with a transparency footer — *automatically sent from [neomd](https://neomd.ssp.sh)* — so recipients know it was automated; if your signature already carries the sent-from-neomd link (the default signature does), the footer is skipped so the line never appears twice. Replies also thread correctly (`In-Reply-To`/`References`), so they appear inside the original conversation.
 
 ### How it works
 

@@ -28,6 +28,11 @@ import (
 // DefaultSubject is used when [ooo].subject is empty.
 const DefaultSubject = "Out of Office"
 
+// Footer is appended to every OOO reply body — transparency that the reply
+// was automated (rendered as a link in the HTML part, like any composed
+// markdown).
+const Footer = "*automatically sent from [neomd](https://neomd.ssp.sh)*"
+
 // location resolves the timezone from/until are interpreted in: the
 // configured IANA name, or the daemon machine's local time when unset.
 func location(cfg config.OOOConfig) (*time.Location, error) {
@@ -170,6 +175,12 @@ func Body(cfg config.OOOConfig, sig config.SignatureConfig) (string, error) {
 	}
 	if sig.Text != "" {
 		body += "\n\n--  \n" + sig.Text + "\n"
+	}
+	// The footer marks the reply as automated — but if the signature already
+	// carries the sent-from-neomd link (the default signature does), keep
+	// just that: never two neomd lines in one reply.
+	if !strings.Contains(sig.Text, "neomd.ssp.sh") && !strings.Contains(sig.HTML, "neomd.ssp.sh") {
+		body = strings.TrimRight(body, "\n") + "\n\n" + Footer + "\n"
 	}
 	return body, nil
 }

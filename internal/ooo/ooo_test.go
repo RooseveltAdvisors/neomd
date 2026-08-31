@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,7 +110,7 @@ func TestBody_AppendsTextSignatureLikeComposer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "I'm away until Sep 7.\n\n--  \n*sent from neomd*\n"
+	want := "I'm away until Sep 7.\n\n--  \n*sent from neomd*\n\n" + Footer + "\n"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -120,8 +121,18 @@ func TestBody_NoSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "away" {
-		t.Fatalf("got %q, want %q", got, "away")
+	if got != "away\n\n"+Footer+"\n" {
+		t.Fatalf("got %q, want body plus footer", got)
+	}
+}
+
+func TestBody_FooterMarksAutomatedReply(t *testing.T) {
+	got, err := Body(config.OOOConfig{Body: "away"}, config.SignatureConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "*automatically sent from [neomd](https://neomd.ssp.sh)*") {
+		t.Fatalf("OOO body must end with the automated-reply footer, got %q", got)
 	}
 }
 
@@ -135,8 +146,8 @@ func TestBody_BodyFileOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "file body" {
-		t.Fatalf("got %q, want file body (trimmed)", got)
+	if got != "file body\n\n"+Footer+"\n" {
+		t.Fatalf("got %q, want file body (trimmed) plus footer", got)
 	}
 }
 
@@ -414,5 +425,32 @@ func TestStartFor_UsesTimezone(t *testing.T) {
 	want := time.Date(2026, 8, 31, 11, 0, 0, 0, zurich)
 	if !got.Equal(want) {
 		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// --- No duplicated "sent from neomd" line ---
+
+func TestBody_SkipsFooterWhenSignatureAlreadyLinksNeomd(t *testing.T) {
+	sig := config.SignatureConfig{Text: "*sent from [neomd](https://neomd.ssp.sh)*"}
+	got, err := Body(config.OOOConfig{Body: "away"}, sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(got, "neomd.ssp.sh") != 1 {
+		t.Fatalf("exactly one neomd mention expected, got %q", got)
+	}
+	if strings.Contains(got, Footer) {
+		t.Fatalf("footer must be skipped when the signature already says sent-from-neomd, got %q", got)
+	}
+}
+
+func TestBody_SkipsFooterWhenHTMLSignatureLinksNeomd(t *testing.T) {
+	sig := config.SignatureConfig{HTML: `sent from <a href="https://neomd.ssp.sh">neomd</a>`}
+	got, err := Body(config.OOOConfig{Body: "away"}, sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, Footer) {
+		t.Fatalf("footer must be skipped when the HTML signature links neomd (it would duplicate in the HTML part), got %q", got)
 	}
 }
