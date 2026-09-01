@@ -149,38 +149,76 @@ func TestOptimisticActionFailureRestoresRemovedSelection(t *testing.T) {
 
 func TestOptimisticActionIgnoresStaleFolderLoad(t *testing.T) {
 	m := optimisticActionTestModel()
+	_ = m.fetchFolderCmd("ToScreen")
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
 	got := next.(Model)
+	next, _ = got.Update(batchDoneMsg{optimistic: true})
+	got = next.(Model)
+	if got.optimisticAction != nil {
+		t.Fatal("optimistic action did not complete")
+	}
+	staleGeneration := got.currentViewGeneration() - 1
 	next, cmd := got.Update(emailsLoadedMsg{
 		emails:     []imap.Email{{UID: 99, Folder: "ToScreen", Subject: "stale"}},
 		folder:     "ToScreen",
-		generation: 0,
+		generation: staleGeneration,
 	})
 	got = next.(Model)
-	if cmd != nil || len(got.emails) != 2 || got.emails[0].UID != 2 || got.optimisticAction == nil {
-		t.Fatalf("stale load replaced optimistic state: cmd=%v emails=%#v pending=%v", cmd != nil, got.emails, got.optimisticAction != nil)
+	if cmd != nil || len(got.emails) != 2 || got.emails[0].UID != 2 || got.optimisticAction != nil {
+		t.Fatalf("stale load replaced completed action state: cmd=%v emails=%#v pending=%v", cmd != nil, got.emails, got.optimisticAction != nil)
+	}
+	currentGeneration := got.currentViewGeneration()
+	next, _ = got.Update(emailsLoadedMsg{
+		emails:     []imap.Email{{UID: 100, Folder: "ToScreen", Subject: "current"}},
+		folder:     "ToScreen",
+		generation: currentGeneration,
+	})
+	got = next.(Model)
+	if len(got.emails) != 1 || got.emails[0].UID != 100 {
+		t.Fatalf("current load was rejected: emails=%#v", got.emails)
 	}
 }
 
 func TestOptimisticActionIgnoresStaleViewResults(t *testing.T) {
 	tests := []struct {
 		name string
-		msg  tea.Msg
+		msg  func(viewGeneration, countsGeneration uint64) tea.Msg
 	}{
-		{name: "body", msg: bodyLoadedMsg{email: &imap.Email{UID: 9, Folder: "ToScreen"}, body: "stale"}},
-		{name: "search", msg: imapSearchResultMsg{emails: []imap.Email{{UID: 9, Folder: "Search"}}}},
-		{name: "everything", msg: everythingResultMsg{emails: []imap.Email{{UID: 9, Folder: "Everything"}}}},
-		{name: "conversation", msg: conversationResultMsg{emails: []imap.Email{{UID: 9, Folder: "Thread"}}}},
-		{name: "sender", msg: senderResultMsg{addr: "stale@example.com", emails: []imap.Email{{UID: 9, Folder: "Sender"}}}},
-		{name: "counts", msg: folderCountsMsg{counts: map[string]int{"Inbox": 99}}},
+		{name: "body", msg: func(g, _ uint64) tea.Msg {
+			return bodyLoadedMsg{email: &imap.Email{UID: 9, Folder: "ToScreen"}, body: "stale", generation: g}
+		}},
+		{name: "search", msg: func(g, _ uint64) tea.Msg {
+			return imapSearchResultMsg{emails: []imap.Email{{UID: 9, Folder: "Search"}}, generation: g}
+		}},
+		{name: "everything", msg: func(g, _ uint64) tea.Msg {
+			return everythingResultMsg{emails: []imap.Email{{UID: 9, Folder: "Everything"}}, generation: g}
+		}},
+		{name: "conversation", msg: func(g, _ uint64) tea.Msg {
+			return conversationResultMsg{emails: []imap.Email{{UID: 9, Folder: "Thread"}}, generation: g}
+		}},
+		{name: "sender", msg: func(g, _ uint64) tea.Msg {
+			return senderResultMsg{addr: "stale@example.com", emails: []imap.Email{{UID: 9, Folder: "Sender"}}, generation: g}
+		}},
+		{name: "counts", msg: func(_, g uint64) tea.Msg {
+			return folderCountsMsg{counts: map[string]int{"Inbox": 99}, generation: g}
+		}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := optimisticActionTestModel()
+			_ = m.fetchFolderCmd("ToScreen")
+			_ = m.fetchFolderCountsCmd()
 			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
 			got := next.(Model)
-			next, cmd := got.Update(tt.msg)
+			next, _ = got.Update(batchDoneMsg{optimistic: true})
+			got = next.(Model)
+			if got.optimisticAction != nil {
+				t.Fatal("optimistic action did not complete")
+			}
+			staleViewGeneration := got.currentViewGeneration() - 1
+			staleCountsGeneration := got.currentCountsGeneration() - 1
+			next, cmd := got.Update(tt.msg(staleViewGeneration, staleCountsGeneration))
 			switch updated := next.(type) {
 			case Model:
 				got = updated
@@ -189,13 +227,59 @@ func TestOptimisticActionIgnoresStaleViewResults(t *testing.T) {
 			default:
 				t.Fatalf("unexpected model type %T", next)
 			}
-			if cmd != nil || len(got.emails) != 2 || got.emails[0].UID != 2 || got.optimisticAction == nil {
-				t.Fatalf("stale %s result changed the pending view: cmd=%v emails=%#v pending=%v", tt.name, cmd != nil, got.emails, got.optimisticAction != nil)
+			if cmd != nil || len(got.emails) != 2 || got.emails[0].UID != 2 || got.optimisticAction != nil {
+				t.Fatalf("stale %s result changed the completed view: cmd=%v emails=%#v pending=%v", tt.name, cmd != nil, got.emails, got.optimisticAction != nil)
 			}
 			if got.state != stateInbox || got.folderCounts["Inbox"] != 7 {
 				t.Fatalf("stale %s result changed view state: state=%d counts=%v", tt.name, got.state, got.folderCounts)
 			}
 		})
+	}
+}
+
+func TestFolderCountsRefreshSurvivesViewRequest(t *testing.T) {
+	m := optimisticActionTestModel()
+	_ = m.fetchFolderCountsCmd()
+	countsGeneration := m.currentCountsGeneration()
+	_ = m.fetchFolderCmd("ToScreen")
+
+	next, cmd := m.Update(folderCountsMsg{
+		counts:     map[string]int{"Inbox": 12},
+		generation: countsGeneration,
+	})
+	got := next.(Model)
+	if cmd != nil || got.folderCounts["Inbox"] != 12 {
+		t.Fatalf("count refresh was discarded after view request: cmd=%v counts=%v", cmd != nil, got.folderCounts)
+	}
+}
+
+func TestReaderExitClearsCanceledReload(t *testing.T) {
+	m := Model{
+		cfg:         &config.Config{Folders: config.FoldersConfig{Inbox: "INBOX"}},
+		folders:     []string{"Inbox"},
+		state:       stateReading,
+		loading:     true,
+		viewRequest: &viewRequestState{},
+	}
+	staleGeneration := m.nextViewGeneration()
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got := next.(Model)
+	if cmd != nil || got.state != stateInbox || got.loading {
+		t.Fatalf("reader exit left reload active: cmd=%v state=%d loading=%v", cmd != nil, got.state, got.loading)
+	}
+	if got.currentViewGeneration() == staleGeneration {
+		t.Fatal("reader exit did not invalidate the pending reload")
+	}
+
+	next, cmd = got.Update(emailsLoadedMsg{
+		emails:     []imap.Email{{UID: 99, Folder: "INBOX"}},
+		folder:     "INBOX",
+		generation: staleGeneration,
+	})
+	got = next.(Model)
+	if cmd != nil || len(got.emails) != 0 || got.loading {
+		t.Fatalf("canceled reader reload was applied: cmd=%v emails=%#v loading=%v", cmd != nil, got.emails, got.loading)
 	}
 }
 

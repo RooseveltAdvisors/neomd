@@ -2,6 +2,7 @@
 
 # 2026-09-01
 
+- **Fix stale foreground UI requests** — leaving a reader with a pending reload now clears its loading state while invalidating the canceled result; folder-count refreshes use an independent request token so a view load cannot discard unseen-count updates. Tests: `TestReaderExitClearsCanceledReload`, `TestFolderCountsRefreshSurvivesViewRequest`, `TestOptimisticActionIgnoresStaleFolderLoad`, `TestOptimisticActionIgnoresStaleViewResults`
 - **Instant optimistic inbox actions** — `I`/`O`/`F`/`P`/`$` sender screening and `A` archive now remove affected rows and update selection/counts locally while IMAP runs, keeping the list visible without a full UI refresh; backend failures restore rows, marks, counts, and the prior selection, sender-level count refreshes reconcile unknown totals, and stale view/account loads plus duplicate actions cannot overwrite pending state. `internal/ui/model.go`. Tests: `TestIOFActionsUpdateVisibleStateWithoutReload`, `TestOptimisticActionFailureRestoresVisibleStateAndSelection`, `TestOptimisticActionIgnoresStaleFolderLoad`, `TestOptimisticActionIgnoresStaleViewResults`, `TestOptimisticActionBlocksTabNavigation`, `TestSenderOptimisticActionAdjustsCounts`
 
 # 2026-08-31

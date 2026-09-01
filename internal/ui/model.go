@@ -194,7 +194,8 @@ type bulkOp struct {
 }
 
 type viewRequestState struct {
-	generation atomic.Uint64
+	generation       atomic.Uint64
+	countsGeneration atomic.Uint64
 }
 
 const maxUndoStack = 20
@@ -1039,8 +1040,24 @@ func (m *Model) nextViewGeneration() uint64 {
 	return m.viewRequest.generation.Add(1)
 }
 
+func (m Model) currentCountsGeneration() uint64 {
+	if m.viewRequest == nil {
+		return 0
+	}
+	return m.viewRequest.countsGeneration.Load()
+}
+
+func (m *Model) nextCountsGeneration() uint64 {
+	m.ensureViewRequest()
+	return m.viewRequest.countsGeneration.Add(1)
+}
+
 func (m Model) acceptsViewResult(generation uint64) bool {
 	return m.optimisticAction == nil && generation == m.currentViewGeneration()
+}
+
+func (m Model) acceptsCountsResult(generation uint64) bool {
+	return m.optimisticAction == nil && generation == m.currentCountsGeneration()
 }
 
 func (m *Model) fetchFolderCmd(folder string) tea.Cmd {
@@ -1964,7 +1981,7 @@ func (m Model) deleteAllExecCmd(folder string, uids []uint32) tea.Cmd {
 // fetchFolderCountsCmd fetches unseen counts for the four watched tabs in the
 // background using IMAP STATUS (no SELECT, very fast).
 func (m *Model) fetchFolderCountsCmd() tea.Cmd {
-	generation := m.nextViewGeneration()
+	generation := m.nextCountsGeneration()
 	model := *m
 	folders := map[string]string{
 		"Inbox":      model.cfg.Folders.Inbox,
@@ -2290,6 +2307,7 @@ func (m *Model) adjustOptimisticFolderCounts(targets []imap.Email, dst string) {
 // goroutine, so the visible result does not wait for IMAP.
 func (m *Model) beginOptimisticAction(targets []imap.Email, action string) {
 	m.nextViewGeneration()
+	m.nextCountsGeneration()
 	dst := actionDestination(m.cfg, action)
 	expandSender := len(targets) == 1 && len(m.markedUIDs) == 0 && action != "A" && targets[0].Folder == m.cfg.Folders.ToScreen
 	optimisticTargets := m.optimisticTargets(targets, action)
@@ -2486,7 +2504,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(sortCmd, m.fetchFolderCountsCmd())
 
 	case folderCountsMsg:
-		if !m.acceptsViewResult(msg.generation) {
+		if !m.acceptsCountsResult(msg.generation) {
 			return m, nil
 		}
 		m.folderCounts = msg.counts
@@ -4335,6 +4353,7 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "q", "esc", "h":
 		m.nextViewGeneration()
+		m.loading = false
 		m.state = stateInbox
 		m.readerPending = ""
 		// Clear mark-as-read timer state when exiting reader
