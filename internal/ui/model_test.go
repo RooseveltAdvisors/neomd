@@ -220,6 +220,78 @@ func TestOptimisticActionIgnoresStaleFolderLoad(t *testing.T) {
 	}
 }
 
+func TestNavigationCancelsPendingBodyAction(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     tea.KeyMsg
+		pending func(Model) bool
+	}{
+		{name: "reply", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}, pending: func(m Model) bool { return m.pendingReply }},
+		{name: "reply all", key: tea.KeyMsg{Type: tea.KeyCtrlR}, pending: func(m Model) bool { return m.pendingReplyAll }},
+		{name: "reaction", key: tea.KeyMsg{Type: tea.KeyCtrlE}, pending: func(m Model) bool { return m.pendingReaction }},
+		{name: "forward", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}}, pending: func(m Model) bool { return m.pendingForward }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := optimisticActionTestModel()
+			m.markedUIDs = nil
+			m.spyPixelKeys = map[string]bool{}
+			m.spyScannedKeys = map[string]bool{}
+			m.inbox.Select(0)
+			m.cfg.UI.MarkAsReadAfterSecs = 1
+
+			next, cmd := m.Update(tt.key)
+			got := next.(Model)
+			if cmd == nil || !tt.pending(got) {
+				t.Fatalf("body action did not start: cmd=%v pending=%v", cmd != nil, tt.pending(got))
+			}
+			pendingGeneration := got.currentViewGeneration()
+
+			_, zones := folderTabs(got.folders, "", got.folderCounts)
+			if len(zones) < 2 {
+				t.Fatal("test model needs at least two folder tabs")
+			}
+			next, cmd = got.Update(tea.MouseMsg{
+				X:      zones[1].xStart + 1,
+				Y:      0,
+				Action: tea.MouseActionPress,
+				Button: tea.MouseButtonLeft,
+			})
+			got = next.(Model)
+			if cmd == nil || got.currentViewGeneration() == pendingGeneration {
+				t.Fatalf("navigation did not supersede body request: cmd=%v generation=%d", cmd != nil, got.currentViewGeneration())
+			}
+			if got.pendingForward || got.pendingReply || got.pendingReplyAll || got.pendingReaction {
+				t.Fatal("navigation left a body action pending")
+			}
+
+			next, cmd = got.Update(bodyLoadedMsg{
+				email:      &imap.Email{UID: 1, Folder: "ToScreen"},
+				body:       "stale",
+				generation: pendingGeneration,
+			})
+			got = next.(Model)
+			if cmd != nil || got.state != stateInbox {
+				t.Fatalf("stale body result changed the inbox: cmd=%v state=%d", cmd != nil, got.state)
+			}
+
+			currentEmail := &imap.Email{UID: 2, Folder: "Feed"}
+			_ = got.fetchBodyCmd(currentEmail)
+			currentGeneration := got.currentViewGeneration()
+			next, cmd = got.Update(bodyLoadedMsg{
+				email:      currentEmail,
+				body:       "current",
+				generation: currentGeneration,
+			})
+			got = next.(Model)
+			if got.state != stateReading || got.openEmail != currentEmail {
+				t.Fatalf("current body opened as pending action: cmd=%v state=%d email=%#v", cmd != nil, got.state, got.openEmail)
+			}
+		})
+	}
+}
+
 func TestOptimisticActionIgnoresStaleViewResults(t *testing.T) {
 	tests := []struct {
 		name string

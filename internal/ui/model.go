@@ -1037,7 +1037,15 @@ func (m Model) currentViewGeneration() uint64 {
 	return m.viewRequest.generation.Load()
 }
 
+func (m *Model) clearPendingBodyAction() {
+	m.pendingForward = false
+	m.pendingReply = false
+	m.pendingReplyAll = false
+	m.pendingReaction = false
+}
+
 func (m *Model) nextViewGeneration() uint64 {
+	m.clearPendingBodyAction()
 	m.ensureViewRequest()
 	return m.viewRequest.generation.Add(1)
 }
@@ -3756,9 +3764,10 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if idx := m.matchFromForReply(e); idx >= 0 {
 			m.presendFromI = idx
 		}
-		m.pendingReply = true
 		m.loading = true
-		return m, tea.Batch(m.spinner.Tick, m.fetchBodyCmd(e))
+		cmd := m.fetchBodyCmd(e)
+		m.pendingReply = true
+		return m, tea.Batch(m.spinner.Tick, cmd)
 
 	case "ctrl+r":
 		e := selectedEmail(m.inbox)
@@ -3768,9 +3777,10 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if idx := m.matchFromForReply(e); idx >= 0 {
 			m.presendFromI = idx
 		}
-		m.pendingReplyAll = true
 		m.loading = true
-		return m, tea.Batch(m.spinner.Tick, m.fetchBodyCmd(e))
+		cmd := m.fetchBodyCmd(e)
+		m.pendingReplyAll = true
+		return m, tea.Batch(m.spinner.Tick, cmd)
 
 	case "ctrl+e":
 		e := selectedEmail(m.inbox)
@@ -3781,18 +3791,20 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.presendFromI = idx
 		}
 		// Always fetch body first (needed for quoted message in reaction)
-		m.pendingReaction = true
 		m.loading = true
-		return m, tea.Batch(m.spinner.Tick, m.fetchBodyCmd(e))
+		cmd := m.fetchBodyCmd(e)
+		m.pendingReaction = true
+		return m, tea.Batch(m.spinner.Tick, cmd)
 
 	case "f":
 		e := selectedEmail(m.inbox)
 		if e == nil {
 			return m, nil
 		}
-		m.pendingForward = true
 		m.loading = true
-		return m, tea.Batch(m.spinner.Tick, m.fetchBodyCmd(e))
+		cmd := m.fetchBodyCmd(e)
+		m.pendingForward = true
+		return m, tea.Batch(m.spinner.Tick, cmd)
 
 	case "T":
 		e := selectedEmail(m.inbox)

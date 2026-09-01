@@ -2,6 +2,7 @@
 
 # 2026-09-01
 
+- **Cancel body actions on navigation** — reply, reply-all, reaction, and forward intents are invalidated with their body request so a delayed stale result cannot act on a later email. Test: `TestNavigationCancelsPendingBodyAction`
 - **Reconcile counts after every optimistic action** — successful `I`/`O`/`F`/`P`/`$`/`A` actions now replace any invalidated folder-count request with a count-only refresh, so local unseen badges remain current while rows stay visible. Test: `TestOptimisticActionReconcilesInvalidatedCounts`
 - **Harden account, debug, and count refreshes** — account changes invalidate older unseen-count requests; `:debug` claims a foreground request and keeps the inbox guarded until its tagged result arrives; failed count refreshes retain existing badges. Tests: `TestAccountSwitchInvalidatesStaleCounts`, `TestDebugReportUsesForegroundRequest`, `TestFolderCountsRefreshFailurePreservesCounts`
 - **Fix stale foreground UI requests** — leaving a reader with a pending reload now clears its loading state while invalidating the canceled result; folder-count refreshes use an independent request token so a view load cannot discard unseen-count updates. Tests: `TestReaderExitClearsCanceledReload`, `TestFolderCountsRefreshSurvivesViewRequest`, `TestOptimisticActionIgnoresStaleFolderLoad`, `TestOptimisticActionIgnoresStaleViewResults`
