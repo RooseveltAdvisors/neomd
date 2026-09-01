@@ -394,7 +394,7 @@ neomd's responsiveness depends entirely on your IMAP server. Every folder switch
 | FETCH (10 emails) | 180ms |
 | MOVE (1 email) | 21ms |
 
-Interestingly, Gmail benchmarks fast on a **fresh single connection** (`scripts/imap-benchmark.sh` shows ~70ms total, same as Hostpoint). But on a **sustained session** with sequential commands — which is how neomd actually uses IMAP — Gmail adds ~180ms latency per command. This is likely Gmail's internal label-to-folder translation and session management overhead. The result: every action in neomd feels much slower on Gmail, while Hostpoint stays instant.
+Interestingly, Gmail benchmarks fast on a **fresh single connection** (`scripts/imap-benchmark.sh` shows ~70ms total, same as Hostpoint). But on a **sustained session** with sequential commands — which is how neomd actually uses IMAP — Gmail adds ~180ms latency per command. This is likely Gmail's internal label-to-folder translation and session management overhead. Folder switches, email opens, and server-side move completion can still feel slower on Gmail, but optimistic inbox actions update the visible list immediately while the move finishes; Hostpoint remains faster end-to-end.
 
 {{< callout type="info" >}}
 **Gmail is not recommended.** If you're on Gmail, consider a dedicated email provider (Hostpoint, Fastmail, HEY, Migadu, etc.) for the best neomd experience. Or use Gmail just for fun :). See [docs/content/docs/configuration/gmail.md](docs/content/docs/configuration/gmail.md) for Gmail-specific folder configuration.

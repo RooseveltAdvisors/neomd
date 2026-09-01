@@ -126,6 +126,10 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 - **Reply-all excludes all own addresses** — both IMAP login addresses (`account.User`)
   and send-as addresses (accounts + `[[senders]]` aliases) are stripped from CC. Test:
   `TestReplyAllExcludesAllOwnAddresses`.
+- **Navigation cancels pending body actions** — leaving or switching away while a reply,
+  reply-all, reaction, or forward body fetch is pending clears that intent, so a stale
+  result cannot act on a later email (`nextViewGeneration` in `internal/ui/model.go`).
+  Test: `TestNavigationCancelsPendingBodyAction`.
 - **Threaded inbox rendering** — threads grouped via `In-Reply-To`/`Message-ID` with
   subject+participant fallback, `│`/`╰` connectors, newest on top; the Sent folder is
   intentionally **not** threaded. Tests: `TestNormalizeSubject`, `TestParticipantMatch`.

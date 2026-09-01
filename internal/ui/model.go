@@ -1546,7 +1546,7 @@ func (m Model) undoMovesCmd(moves []undoMove) tea.Cmd {
 	}
 }
 
-// batchScreenerCmd runs a screener action (I/O/F/P) on multiple emails.
+// batchScreenerCmd runs a screener action (I/O/F/P/$) on multiple emails.
 func (m Model) batchScreenerCmd(emails []imap.Email, action string) tea.Cmd {
 	sc := m.screener
 	cfg := m.cfg

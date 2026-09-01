@@ -3,7 +3,7 @@ title: Screener Workflow
 weight: 3
 ---
 
-The screener classifies senders into four buckets using plain-text allowlists. Unknown senders land in `ToScreen` until you make a decision.
+The screener classifies senders into five routing buckets using plain-text allowlists. Unknown senders land in `ToScreen` until you make a decision.
 
 ## How classification works
 
@@ -13,6 +13,7 @@ The screener classifies senders into four buckets using plain-text allowlists. U
 | `screened_out.txt`  | Blocked                  | ScreenedOut       |
 | `feed.txt`          | Newsletter / feed        | Feed              |
 | `papertrail.txt`    | Receipts / notifications | PaperTrail        |
+| `spam.txt`          | Spam                     | Spam              |
 | `notify.txt`        | Desktop notification     | (no move; only fires `notify-send` — see [Notifications](../notifications/)) |
 | _(not in any list)_ | Unknown                  | ToScreen          |
 
