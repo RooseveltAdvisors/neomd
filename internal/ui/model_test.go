@@ -22,7 +22,9 @@ func optimisticActionTestModel() Model {
 			Inbox:       "INBOX",
 			ToScreen:    "ToScreen",
 			Feed:        "Feed",
+			PaperTrail:  "PaperTrail",
 			ScreenedOut: "ScreenedOut",
+			Spam:        "Spam",
 			Archive:     "Archive",
 			TabOrder:    []string{"to_screen", "feed", "archive"},
 		},
@@ -49,7 +51,7 @@ func optimisticActionTestModel() Model {
 }
 
 func TestIOFActionsUpdateVisibleStateWithoutReload(t *testing.T) {
-	for _, action := range []string{"I", "O", "F", "A"} {
+	for _, action := range []string{"I", "O", "F", "P", "$", "A"} {
 		t.Run(action, func(t *testing.T) {
 			m := optimisticActionTestModel()
 			started := time.Now()
@@ -137,6 +139,87 @@ func TestOptimisticActionIgnoresStaleFolderLoad(t *testing.T) {
 	got = next.(Model)
 	if cmd != nil || len(got.emails) != 2 || got.emails[0].UID != 2 || got.optimisticAction == nil {
 		t.Fatalf("stale load replaced optimistic state: cmd=%v emails=%#v pending=%v", cmd != nil, got.emails, got.optimisticAction != nil)
+	}
+}
+
+func TestOptimisticActionIgnoresStaleViewResults(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  tea.Msg
+	}{
+		{name: "body", msg: bodyLoadedMsg{email: &imap.Email{UID: 9, Folder: "ToScreen"}, body: "stale"}},
+		{name: "search", msg: imapSearchResultMsg{emails: []imap.Email{{UID: 9, Folder: "Search"}}}},
+		{name: "everything", msg: everythingResultMsg{emails: []imap.Email{{UID: 9, Folder: "Everything"}}}},
+		{name: "conversation", msg: conversationResultMsg{emails: []imap.Email{{UID: 9, Folder: "Thread"}}}},
+		{name: "sender", msg: senderResultMsg{addr: "stale@example.com", emails: []imap.Email{{UID: 9, Folder: "Sender"}}}},
+		{name: "counts", msg: folderCountsMsg{counts: map[string]int{"Inbox": 99}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := optimisticActionTestModel()
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+			got := next.(Model)
+			next, cmd := got.Update(tt.msg)
+			switch updated := next.(type) {
+			case Model:
+				got = updated
+			case *Model:
+				got = *updated
+			default:
+				t.Fatalf("unexpected model type %T", next)
+			}
+			if cmd != nil || len(got.emails) != 2 || got.emails[0].UID != 2 || got.optimisticAction == nil {
+				t.Fatalf("stale %s result changed the pending view: cmd=%v emails=%#v pending=%v", tt.name, cmd != nil, got.emails, got.optimisticAction != nil)
+			}
+			if got.state != stateInbox || got.folderCounts["Inbox"] != 7 {
+				t.Fatalf("stale %s result changed view state: state=%d counts=%v", tt.name, got.state, got.folderCounts)
+			}
+		})
+	}
+}
+
+func TestOptimisticActionBlocksTabNavigation(t *testing.T) {
+	m := optimisticActionTestModel()
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	got := next.(Model)
+	_, zones := folderTabs(got.folders, "", got.folderCounts)
+	if len(zones) < 2 {
+		t.Fatal("test model needs at least two folder tabs")
+	}
+
+	next, cmd := got.Update(tea.MouseMsg{
+		X:      zones[1].xStart + 1,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	})
+	got = next.(Model)
+	if cmd != nil || got.activeFolderI != 0 || got.offTabFolder != "" {
+		t.Fatalf("tab navigation changed during action: cmd=%v active=%d off-tab=%q", cmd != nil, got.activeFolderI, got.offTabFolder)
+	}
+}
+
+func TestSenderOptimisticActionAdjustsCounts(t *testing.T) {
+	m := optimisticActionTestModel()
+	m.markedUIDs = nil
+	m.emails = append(m.emails, imap.Email{UID: 4, Folder: "ToScreen", From: "sender@example.com", Subject: "same sender"})
+	m.applyFilter()
+	m.inbox.Select(0)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'I'}})
+	got := next.(Model)
+	if got.folderCounts["Inbox"] != 9 {
+		t.Fatalf("Inbox count after sender action = %d, want 9", got.folderCounts["Inbox"])
+	}
+	if got.optimisticAction == nil || !got.optimisticAction.refreshFolderCounts {
+		t.Fatal("sender-level action did not request a count refresh")
+	}
+
+	next, _ = got.Update(batchDoneMsg{optimistic: true, err: errors.New("test backend refusal")})
+	got = next.(Model)
+	if got.folderCounts["Inbox"] != 7 {
+		t.Fatalf("Inbox count after rollback = %d, want 7", got.folderCounts["Inbox"])
 	}
 }
 

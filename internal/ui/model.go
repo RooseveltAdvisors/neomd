@@ -55,6 +55,7 @@ type (
 		emails     []imap.Email
 		folder     string
 		generation uint64
+		err        error
 	}
 	bodyLoadedMsg struct {
 		email       *imap.Email
@@ -64,6 +65,8 @@ type (
 		attachments []imap.Attachment
 		references  string // References header for email threading
 		spyPixels   imap.SpyPixelInfo
+		generation  uint64
+		err         error
 	}
 	sendDoneMsg struct {
 		err           error
@@ -105,7 +108,10 @@ type (
 		err         error
 	}
 	// folderCountsMsg carries unseen counts for watched folder tabs.
-	folderCountsMsg struct{ counts map[string]int }
+	folderCountsMsg struct {
+		counts     map[string]int
+		generation uint64
+	}
 	// deleteAllReadyMsg carries UIDs to permanently delete after y/n confirm.
 	deleteAllReadyMsg struct {
 		uids   []uint32
@@ -185,6 +191,10 @@ type bulkOp struct {
 	moved atomic.Int64
 	total int64
 	label string // "Screening", "Moving", etc.
+}
+
+type viewRequestState struct {
+	generation atomic.Uint64
 }
 
 const maxUndoStack = 20
@@ -324,6 +334,7 @@ func maskEmail(s string) string {
 
 // writeDebugReport generates a diagnostic report and opens it in the reader.
 func (m Model) writeDebugReport() tea.Cmd {
+	generation := m.currentViewGeneration()
 	return func() tea.Msg {
 		var b strings.Builder
 		b.WriteString("# neomd debug report\n\n")
@@ -477,8 +488,9 @@ func (m Model) writeDebugReport() tea.Cmd {
 
 		// Return as body to display in reader
 		return bodyLoadedMsg{
-			email: &imap.Email{Subject: "neomd debug report", From: "neomd", Folder: "debug"},
-			body:  b.String(),
+			email:      &imap.Email{Subject: "neomd debug report", From: "neomd", Folder: "debug"},
+			body:       b.String(),
+			generation: generation,
 		}
 	}
 }
@@ -631,10 +643,10 @@ type Model struct {
 	undoStack [][]undoMove
 
 	// optimisticAction keeps the pre-action UI state until the backend result
-	// arrives. Successful I/O/F/A actions keep their local state; failures roll
+	// arrives. Successful screener and archive actions keep their local state; failures roll
 	// back the snapshot and restore the original selection.
 	optimisticAction *optimisticActionState
-	viewGeneration   uint64
+	viewRequest      *viewRequestState
 
 	// Forward/Reply: when true, bodyLoadedMsg launches the action instead of reader
 	pendingForward  bool
@@ -721,6 +733,7 @@ type optimisticActionState struct {
 	selectionKey         string
 	previousSelectionKey string
 	wasMarked            bool
+	refreshFolderCounts  bool
 }
 
 // New creates and initialises the TUI model.
@@ -780,6 +793,7 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener, mail
 		sortField:      "date",
 		sortReverse:    true, // newest first
 		mailto:         mp,
+		viewRequest:    &viewRequestState{},
 	}
 }
 
@@ -913,6 +927,7 @@ func (m Model) imapCli() *imap.Client {
 }
 
 func (m Model) Init() tea.Cmd {
+	m.ensureViewRequest()
 	cmds := []tea.Cmd{
 		m.spinner.Tick,
 		m.fetchFolderCmd(m.activeFolder()),
@@ -1006,23 +1021,43 @@ func (m Model) activeFolder() string {
 
 // ── Commands ─────────────────────────────────────────────────────────────
 
-func (m Model) fetchFolderCmd(folder string) tea.Cmd {
-	return func() tea.Msg {
-		emails, err := m.imapCli().FetchHeaders(nil, folder, m.cfg.UI.InboxCount)
-		if err != nil {
-			return errMsg{err}
-		}
-		return emailsLoadedMsg{emails: emails, folder: folder, generation: m.viewGeneration}
+func (m *Model) ensureViewRequest() {
+	if m.viewRequest == nil {
+		m.viewRequest = &viewRequestState{}
 	}
 }
 
-func (m Model) fetchBodyCmd(e *imap.Email) tea.Cmd {
+func (m Model) currentViewGeneration() uint64 {
+	if m.viewRequest == nil {
+		return 0
+	}
+	return m.viewRequest.generation.Load()
+}
+
+func (m *Model) nextViewGeneration() uint64 {
+	m.ensureViewRequest()
+	return m.viewRequest.generation.Add(1)
+}
+
+func (m Model) acceptsViewResult(generation uint64) bool {
+	return m.optimisticAction == nil && generation == m.currentViewGeneration()
+}
+
+func (m *Model) fetchFolderCmd(folder string) tea.Cmd {
+	generation := m.nextViewGeneration()
+	model := *m
 	return func() tea.Msg {
-		body, rawHTML, webURL, attachments, references, spyPixels, err := m.imapCli().FetchBody(nil, e.Folder, e.UID)
-		if err != nil {
-			return errMsg{err}
-		}
-		return bodyLoadedMsg{email: e, body: body, rawHTML: rawHTML, webURL: webURL, attachments: attachments, references: references, spyPixels: spyPixels}
+		emails, err := model.imapCli().FetchHeaders(nil, folder, model.cfg.UI.InboxCount)
+		return emailsLoadedMsg{emails: emails, folder: folder, generation: generation, err: err}
+	}
+}
+
+func (m *Model) fetchBodyCmd(e *imap.Email) tea.Cmd {
+	generation := m.nextViewGeneration()
+	model := *m
+	return func() tea.Msg {
+		body, rawHTML, webURL, attachments, references, spyPixels, err := model.imapCli().FetchBody(nil, e.Folder, e.UID)
+		return bodyLoadedMsg{email: e, body: body, rawHTML: rawHTML, webURL: webURL, attachments: attachments, references: references, spyPixels: spyPixels, generation: generation, err: err}
 	}
 }
 
@@ -1928,16 +1963,18 @@ func (m Model) deleteAllExecCmd(folder string, uids []uint32) tea.Cmd {
 
 // fetchFolderCountsCmd fetches unseen counts for the four watched tabs in the
 // background using IMAP STATUS (no SELECT, very fast).
-func (m Model) fetchFolderCountsCmd() tea.Cmd {
+func (m *Model) fetchFolderCountsCmd() tea.Cmd {
+	generation := m.nextViewGeneration()
+	model := *m
 	folders := map[string]string{
-		"Inbox":      m.cfg.Folders.Inbox,
-		"PaperTrail": m.cfg.Folders.PaperTrail,
-		"Waiting":    m.cfg.Folders.Waiting,
-		"Scheduled":  m.cfg.Folders.Scheduled,
+		"Inbox":      model.cfg.Folders.Inbox,
+		"PaperTrail": model.cfg.Folders.PaperTrail,
+		"Waiting":    model.cfg.Folders.Waiting,
+		"Scheduled":  model.cfg.Folders.Scheduled,
 	}
 	return func() tea.Msg {
-		counts, _ := m.imapCli().FetchUnseenCounts(nil, folders)
-		return folderCountsMsg{counts: counts}
+		counts, _ := model.imapCli().FetchUnseenCounts(nil, folders)
+		return folderCountsMsg{counts: counts, generation: generation}
 	}
 }
 
@@ -2142,6 +2179,10 @@ func actionDestination(cfg *config.Config, action string) string {
 		return cfg.Folders.ScreenedOut
 	case "F":
 		return cfg.Folders.Feed
+	case "P":
+		return cfg.Folders.PaperTrail
+	case "$":
+		return cfg.Folders.Spam
 	case "A":
 		return cfg.Folders.Archive
 	default:
@@ -2248,7 +2289,7 @@ func (m *Model) adjustOptimisticFolderCounts(targets []imap.Email, dst string) {
 // complete pre-action state for rollback. SetItems runs on Bubble Tea's main
 // goroutine, so the visible result does not wait for IMAP.
 func (m *Model) beginOptimisticAction(targets []imap.Email, action string) {
-	m.viewGeneration++
+	m.nextViewGeneration()
 	dst := actionDestination(m.cfg, action)
 	expandSender := len(targets) == 1 && len(m.markedUIDs) == 0 && action != "A" && targets[0].Folder == m.cfg.Folders.ToScreen
 	optimisticTargets := m.optimisticTargets(targets, action)
@@ -2269,6 +2310,7 @@ func (m *Model) beginOptimisticAction(targets []imap.Email, action string) {
 		selectionKey:         m.selectionAfterRemoval(remove),
 		previousSelectionKey: previousSelectionKey,
 		wasMarked:            len(m.markedUIDs) > 0,
+		refreshFolderCounts:  expandSender,
 	}
 	if len(remove) == 0 && len(optimisticTargets) == 0 {
 		return
@@ -2283,9 +2325,7 @@ func (m *Model) beginOptimisticAction(targets []imap.Email, action string) {
 		}
 	}
 	m.emails = filtered
-	if !expandSender {
-		m.adjustOptimisticFolderCounts(optimisticTargets, dst)
-	}
+	m.adjustOptimisticFolderCounts(optimisticTargets, dst)
 	m.applyFilter()
 	m.restoreActionSelection(m.optimisticAction.selectionKey)
 }
@@ -2306,9 +2346,13 @@ func (m *Model) restoreOptimisticAction() {
 // ── Update ────────────────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.ensureViewRequest()
 	switch msg := msg.(type) {
 
 	case tea.MouseMsg:
+		if m.optimisticAction != nil {
+			return m, nil
+		}
 		if m.state == stateInbox && msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && msg.Y == 0 {
 			// Click on tab bar — compute zones and match.
 			_, zones := folderTabs(m.folders, "", m.folderCounts)
@@ -2353,10 +2397,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case emailsLoadedMsg:
-		if msg.generation != m.viewGeneration || m.optimisticAction != nil {
+		if !m.acceptsViewResult(msg.generation) {
 			return m, nil
 		}
 		m.loading = false
+		if msg.err != nil {
+			m.status = msg.err.Error()
+			m.isError = true
+			return m, nil
+		}
 		m.emails = msg.emails
 		m.harvestContacts(msg.emails)
 		m.markedUIDs = make(map[uint32]bool) // clear marks on folder reload
@@ -2437,6 +2486,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(sortCmd, m.fetchFolderCountsCmd())
 
 	case folderCountsMsg:
+		if !m.acceptsViewResult(msg.generation) {
+			return m, nil
+		}
 		m.folderCounts = msg.counts
 		return m, nil
 
@@ -2465,7 +2517,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case bodyLoadedMsg:
+		if !m.acceptsViewResult(msg.generation) {
+			return m, nil
+		}
 		m.loading = false
+		if msg.err != nil {
+			m.status = msg.err.Error()
+			m.isError = true
+			return m, nil
+		}
 		m.openEmail = msg.email
 		m.openBody = msg.body
 		m.openHTMLBody = msg.rawHTML
@@ -2760,6 +2820,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSenderResult(msg)
 
 	case batchDoneMsg:
+		if !msg.optimistic && m.optimisticAction != nil {
+			return m, nil
+		}
 		m.loading = false
 		m.bulkProgress = nil
 		m.markedUIDs = make(map[uint32]bool)
@@ -2776,6 +2839,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isError = true
 				return m, nil
 			}
+			state := m.optimisticAction
 			m.optimisticAction = nil
 			if len(msg.undo) > 0 {
 				m.undoStack = append(m.undoStack, msg.undo)
@@ -2785,6 +2849,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.status = "Done."
 			m.isError = false
+			if state != nil && state.refreshFolderCounts {
+				return m, m.fetchFolderCountsCmd()
+			}
 			return m, nil
 		}
 		if msg.err != nil {
@@ -3118,6 +3185,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.optimisticAction != nil && m.state == stateInbox && msg.String() != "q" && msg.String() != "ctrl+c" {
 			return m, nil
 		}
+		if m.loading && m.optimisticAction == nil && m.state == stateInbox && msg.String() != "q" && msg.String() != "ctrl+c" {
+			return m, nil
+		}
 		// ? opens/closes help — but only from states without active text input.
 		// stateCompose feeds keys into a textinput where the user must be able
 		// to type "?" verbatim (To/CC/BCC/Subject fields). Other states either
@@ -3400,18 +3470,14 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(targets) == 0 {
 			return m, nil
 		}
-		if key == "I" || key == "O" || key == "F" {
-			if m.optimisticAction != nil {
-				return m, nil
-			}
-			m.beginOptimisticAction(targets, key)
+		if m.optimisticAction != nil {
+			return m, nil
 		}
+		m.beginOptimisticAction(targets, key)
 		m.loading = true
 		m.bulkProgress = m.newBulkOp("Screening", len(targets))
 		cmd := m.batchScreenerCmd(targets, key)
-		if key == "I" || key == "O" || key == "F" {
-			cmd = optimisticBatchDone(cmd)
-		}
+		cmd = optimisticBatchDone(cmd)
 		return m, tea.Batch(m.spinner.Tick, cmd)
 
 	// A = archive (pure move, no screener update)
@@ -4268,6 +4334,7 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch key {
 	case "q", "esc", "h":
+		m.nextViewGeneration()
 		m.state = stateInbox
 		m.readerPending = ""
 		// Clear mark-as-read timer state when exiting reader

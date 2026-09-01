@@ -287,13 +287,18 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 
 ## Inbox Display
 
-- **Optimistic inbox actions** — `I`/`O`/`F` screener actions and `A` archive remove
-  affected rows immediately without a full-folder refresh; the list remains visible
-  while IMAP runs, stale loads cannot overwrite it, and failures restore the prior
-  rows, marks, counts, and selection (`optimisticAction` in `internal/ui/model.go`).
+- **Optimistic inbox actions** — `I`/`O`/`F`/`P`/`$` screener actions and `A` archive
+  remove affected rows immediately without a full-folder refresh; the list remains
+  visible while IMAP runs, stale view/account loads cannot overwrite it, duplicate
+  actions and tab navigation are ignored while pending, and failures restore the
+  prior rows, marks, counts, and selection (`optimisticAction` in
+  `internal/ui/model.go`).
   Tests: `TestIOFActionsUpdateVisibleStateWithoutReload`,
   `TestOptimisticActionFailureRestoresVisibleStateAndSelection`,
-  `TestOptimisticActionIgnoresStaleFolderLoad`.
+  `TestOptimisticActionIgnoresStaleFolderLoad`,
+  `TestOptimisticActionIgnoresStaleViewResults`,
+  `TestOptimisticActionBlocksTabNavigation`,
+  `TestSenderOptimisticActionAdjustsCounts`.
 - **Rows never overflow the terminal width** — complex scripts (Bengali/Arabic/Thai/emoji)
   collapse to `·` for display only; CJK passes through (East Asian Wide is deterministic);
   the original subject is never mutated (reply/forward/thread logic uses the real RFC

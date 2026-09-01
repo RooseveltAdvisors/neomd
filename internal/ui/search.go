@@ -25,18 +25,21 @@ import (
 
 // imapSearchResultMsg carries results from a server-side IMAP search.
 type imapSearchResultMsg struct {
-	emails []imap.Email
-	query  string
-	err    error
+	emails     []imap.Email
+	query      string
+	err        error
+	generation uint64
 }
 
 // imapSearchAllCmd runs IMAP SEARCH across all configured folders.
 // The query is expanded with addresses of known contacts whose display name
 // matches (see expandSearchQueries) so searching "louise" also finds messages
 // that only carry her bare address in the headers.
-func (m Model) imapSearchAllCmd(query string) tea.Cmd {
-	cli := m.imapCli()
-	f := m.cfg.Folders
+func (m *Model) imapSearchAllCmd(query string) tea.Cmd {
+	generation := m.nextViewGeneration()
+	model := *m
+	cli := model.imapCli()
+	f := model.cfg.Folders
 	folders := []string{
 		f.Inbox, f.Sent, f.Trash, f.Drafts,
 		f.ToScreen, f.Feed, f.PaperTrail, f.ScreenedOut,
@@ -45,7 +48,7 @@ func (m Model) imapSearchAllCmd(query string) tea.Cmd {
 	if f.Work != "" {
 		folders = append(folders, f.Work)
 	}
-	queries := expandSearchQueries(query, m.contacts)
+	queries := expandSearchQueries(query, model.contacts)
 	return func() tea.Msg {
 		var all []imap.Email
 		seen := make(map[string]bool)
@@ -63,7 +66,7 @@ func (m Model) imapSearchAllCmd(query string) tea.Cmd {
 				}
 			}
 		}
-		return imapSearchResultMsg{emails: all, query: query, err: firstErr}
+		return imapSearchResultMsg{emails: all, query: query, err: firstErr, generation: generation}
 	}
 }
 
@@ -131,6 +134,9 @@ func (m *Model) updateIMAPSearch(key string) (tea.Model, tea.Cmd, bool) {
 // handleIMAPSearchResult processes the result of an IMAP SEARCH command.
 // Displays results in a temporary "Search" off-tab.
 func (m *Model) handleIMAPSearchResult(msg imapSearchResultMsg) (tea.Model, tea.Cmd) {
+	if !m.acceptsViewResult(msg.generation) {
+		return m, nil
+	}
 	m.loading = false
 	if msg.err != nil {
 		m.status = "Search error: " + msg.err.Error()
@@ -153,14 +159,17 @@ func (m *Model) handleIMAPSearchResult(msg imapSearchResultMsg) (tea.Model, tea.
 
 // everythingResultMsg carries results from fetching latest across all folders.
 type everythingResultMsg struct {
-	emails []imap.Email
-	err    error
+	emails     []imap.Email
+	err        error
+	generation uint64
 }
 
 // fetchEverythingCmd fetches the latest N emails across all folders.
-func (m Model) fetchEverythingCmd() tea.Cmd {
-	cli := m.imapCli()
-	f := m.cfg.Folders
+func (m *Model) fetchEverythingCmd() tea.Cmd {
+	generation := m.nextViewGeneration()
+	model := *m
+	cli := model.imapCli()
+	f := model.cfg.Folders
 	folders := []string{
 		f.Inbox, f.Sent, f.Trash, f.Drafts,
 		f.ToScreen, f.Feed, f.PaperTrail, f.ScreenedOut,
@@ -171,12 +180,15 @@ func (m Model) fetchEverythingCmd() tea.Cmd {
 	}
 	return func() tea.Msg {
 		emails, err := cli.FetchLatestAllFolders(nil, folders, 50)
-		return everythingResultMsg{emails: emails, err: err}
+		return everythingResultMsg{emails: emails, err: err, generation: generation}
 	}
 }
 
 // handleEverythingResult displays the "Everything" view.
 func (m *Model) handleEverythingResult(msg everythingResultMsg) (tea.Model, tea.Cmd) {
+	if !m.acceptsViewResult(msg.generation) {
+		return m, nil
+	}
 	m.loading = false
 	m.imapSearchText = ""
 	if msg.err != nil {
@@ -199,15 +211,18 @@ func (m *Model) handleEverythingResult(msg everythingResultMsg) (tea.Model, tea.
 
 // conversationResultMsg carries results from a conversation/thread fetch.
 type conversationResultMsg struct {
-	emails []imap.Email
-	err    error
+	emails     []imap.Email
+	err        error
+	generation uint64
 }
 
 // fetchConversationCmd fetches all emails related to the given email's
 // conversation across key folders (Inbox, Sent, Archive, etc.).
-func (m Model) fetchConversationCmd(e *imap.Email) tea.Cmd {
-	cli := m.imapCli()
-	f := m.cfg.Folders
+func (m *Model) fetchConversationCmd(e *imap.Email) tea.Cmd {
+	generation := m.nextViewGeneration()
+	model := *m
+	cli := model.imapCli()
+	f := model.cfg.Folders
 	// Search folders likely to contain conversation parts.
 	folders := []string{f.Inbox, f.Sent, f.Archive, f.Waiting, f.Someday, f.Scheduled}
 	if f.Work != "" {
@@ -241,12 +256,15 @@ func (m Model) fetchConversationCmd(e *imap.Email) tea.Cmd {
 
 	return func() tea.Msg {
 		emails, err := cli.FetchConversation(nil, folders, subject, participants)
-		return conversationResultMsg{emails: emails, err: err}
+		return conversationResultMsg{emails: emails, err: err, generation: generation}
 	}
 }
 
 // handleConversationResult displays the conversation/thread view.
 func (m *Model) handleConversationResult(msg conversationResultMsg) (tea.Model, tea.Cmd) {
+	if !m.acceptsViewResult(msg.generation) {
+		return m, nil
+	}
 	m.loading = false
 	m.imapSearchResults = false
 	if msg.err != nil {
@@ -279,17 +297,20 @@ func senderAddr(e *imap.Email) string {
 
 // senderResultMsg carries results from a per-sender search across folders.
 type senderResultMsg struct {
-	addr   string
-	emails []imap.Email
-	err    error
+	addr       string
+	emails     []imap.Email
+	err        error
+	generation uint64
 }
 
 // fetchSenderCmd searches all folders for every email from the given
 // email's sender address.
-func (m Model) fetchSenderCmd(e *imap.Email) tea.Cmd {
+func (m *Model) fetchSenderCmd(e *imap.Email) tea.Cmd {
+	generation := m.nextViewGeneration()
+	model := *m
 	addr := senderAddr(e)
-	cli := m.imapCli()
-	f := m.cfg.Folders
+	cli := model.imapCli()
+	f := model.cfg.Folders
 	folders := []string{
 		f.Inbox, f.Sent, f.Trash, f.Drafts,
 		f.ToScreen, f.Feed, f.PaperTrail, f.ScreenedOut,
@@ -300,15 +321,18 @@ func (m Model) fetchSenderCmd(e *imap.Email) tea.Cmd {
 	}
 	return func() tea.Msg {
 		if addr == "" {
-			return senderResultMsg{addr: addr}
+			return senderResultMsg{addr: addr, generation: generation}
 		}
 		emails, err := cli.SearchAllFolders(nil, folders, "from:"+addr)
-		return senderResultMsg{addr: addr, emails: emails, err: err}
+		return senderResultMsg{addr: addr, emails: emails, err: err, generation: generation}
 	}
 }
 
 // handleSenderResult displays the "Sender" view — every email from one address.
 func (m *Model) handleSenderResult(msg senderResultMsg) (tea.Model, tea.Cmd) {
+	if !m.acceptsViewResult(msg.generation) {
+		return m, nil
+	}
 	m.loading = false
 	if msg.err != nil {
 		m.status = "Sender: " + msg.err.Error()
