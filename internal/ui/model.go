@@ -2295,7 +2295,7 @@ func (m *Model) beginOptimisticAction(targets []imap.Email, action string) {
 	optimisticTargets := m.optimisticTargets(targets, action)
 	remove := make(map[string]bool, len(optimisticTargets))
 	for _, e := range optimisticTargets {
-		if e.Folder != dst {
+		if dst != "" && e.Folder != dst {
 			remove[actionEmailKey(e)] = true
 		}
 	}

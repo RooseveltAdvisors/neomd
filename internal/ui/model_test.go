@@ -95,6 +95,26 @@ func TestIOFActionsUpdateVisibleStateWithoutReload(t *testing.T) {
 	}
 }
 
+func TestOptimisticActionEmptyDestinationKeepsRows(t *testing.T) {
+	m := optimisticActionTestModel()
+	m.cfg.Folders.PaperTrail = ""
+	m.markedUIDs = nil
+	m.inbox.Select(0)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	got := next.(Model)
+	if cmd == nil {
+		t.Fatal("action did not start its backend command")
+	}
+	if len(got.emails) != 3 || got.emails[0].UID != 1 || got.emails[1].UID != 2 || got.emails[2].UID != 3 {
+		t.Fatalf("empty-destination action changed visible emails: %#v", got.emails)
+	}
+	selected := selectedEmail(got.inbox)
+	if selected == nil || selected.UID != 1 {
+		t.Fatalf("selection after empty-destination action = %#v, want UID 1", selected)
+	}
+}
+
 func TestOptimisticActionFailureRestoresVisibleStateAndSelection(t *testing.T) {
 	m := optimisticActionTestModel()
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
