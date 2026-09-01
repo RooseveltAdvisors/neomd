@@ -42,7 +42,7 @@ toc: false
   >}}
   {{< hextra/feature-card
     title="Superhuman Speed"
-    subtitle="Folder switches in ~33ms (on fast IMAP providers like Hostpoint). Every action is instant — no loading spinners, no delays. Navigate with Vim motions."
+    subtitle="Folder switches in ~33ms (on fast IMAP providers like Hostpoint). Inbox screening and archive actions update immediately while IMAP completes; other operations depend on your provider. Navigate with Vim motions."
     class="aspect-auto md:aspect-[1.1/1] max-md:min-h-[340px]"
     style="background: radial-gradient(ellipse at 50% 80%,rgba(142,53,74,0.15),hsla(0,0%,100%,0));"
   >}}
@@ -54,7 +54,7 @@ toc: false
   >}}
   {{< hextra/feature-card
     title="Direct IMAP/SMTP"
-    subtitle="No local sync daemon. Uses RFC 6851 MOVE for instant operations. Works on any device with your mailbox always in sync."
+    subtitle="No local sync daemon. Uses RFC 6851 MOVE and keeps inbox actions responsive while the server operation completes. Works on any device with your mailbox always in sync."
     class="aspect-auto md:aspect-[1.1/1] max-lg:min-h-[340px]"
     style="background: radial-gradient(ellipse at 50% 80%,rgba(221,210,59,0.15),hsla(0,0%,100%,0));"
   >}}

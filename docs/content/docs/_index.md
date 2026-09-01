@@ -29,17 +29,20 @@ flowchart TD
 
     AutoScreen -->|screened_in.txt| Inbox["📥 Inbox (Next)"]
     AutoScreen -->|screened_out.txt| ScreenedOut[🚫 ScreenedOut]
+    AutoScreen -->|spam.txt| Spam[🛑 Spam]
     AutoScreen -->|feed.txt| Feed[📰 Feed]
     AutoScreen -->|papertrail.txt| PaperTrail[🧾 PaperTrail]
     AutoScreen -->|Unknown| ToScreen[❓ ToScreen]
 
     ToScreen -->|Press I| ClassifyIn[Add to screened_in.txt]
     ToScreen -->|Press O| ClassifyOut[Add to screened_out.txt]
+    ToScreen -->|Press $| ClassifySpam[Add to spam.txt]
     ToScreen -->|Press F| ClassifyFeed[Add to feed.txt]
     ToScreen -->|Press P| ClassifyPaper[Add to papertrail.txt]
 
     ClassifyIn --> Inbox
     ClassifyOut --> ScreenedOut
+    ClassifySpam --> Spam
     ClassifyFeed --> Feed
     ClassifyPaper --> PaperTrail
 
@@ -66,7 +69,7 @@ flowchart TD
     ReadLater --> Archive
 
     classDef folderStyle fill:#54546d,stroke:#7fb4ca,stroke-width:2px,color:#dcd7ba
-    class ToScreen,Inbox,ScreenedOut,Feed,PaperTrail,Archive,Waiting,Someday,Scheduled,Trash folderStyle
+    class ToScreen,Inbox,ScreenedOut,Spam,Feed,PaperTrail,Archive,Waiting,Someday,Scheduled,Trash folderStyle
 ```
 
 _all colored boxes represent neomd folders_
@@ -74,7 +77,7 @@ _all colored boxes represent neomd folders_
 **Key principles:**
 
 - **Screener first**: Unknown senders never clutter your Inbox, but get automatically wait in ToScreen for classification [more](https://neomd.ssp.sh/docs/screener/)
-- **One-time decision**: Once you classify a sender (`I/O/F/P`), all future emails from them are automatically routed [more](https://neomd.ssp.sh/docs/screener/#how-classification-works)
+- **One-time decision**: Once you classify a sender (`I/O/F/P/$`), all future emails from them are automatically routed [more](https://neomd.ssp.sh/docs/screener/#how-classification-works)
 - **GTD processing**: Emails in Inbox are processed once. Inbox acting as want/need to do _Next_, otherwise move to Waiting, Someday, or Scheduled
 - **Minimal filing**: Only Archive when done; no complex folder hierarchies. Use search to find old emails
 - **Separate contexts**: Feed for newsletters (read when you want), PaperTrail for receipts (search when needed)
@@ -139,7 +142,7 @@ _(shorter but limited showcase [part 1 video](https://youtu.be/lpmHqIrCC-w))_
 These features are the one that makes neomd different to other email clients out there.
 
 - **Write in Markdown, send beautifully** — compose in `$EDITOR` (defaults to `nvim`), send as `multipart/alternative`: raw Markdown as plain text + goldmark-rendered HTML so recipients get clickable links, bold, headers, inline code, and code blocks [→](https://neomd.ssp.sh/docs/sending/)
-- **HEY-style screener** — unknown senders land in `ToScreen`; press `I/O/F/P` to approve, block, mark as Feed, or mark as PaperTrail; reuses your existing `screened_in.txt` lists from neomutt; also acts as a **phishing defense** — impersonation emails from senders you've already approved land in ToScreen instead of Inbox, making them immediately suspicious [→](https://neomd.ssp.sh/docs/screener/)
+- **HEY-style screener** — unknown senders land in `ToScreen`; press `I/O/F/P/$` to approve, block, mark as Feed, mark as PaperTrail, or mark as Spam; individual screening and archive actions update the visible list while IMAP finishes; reuses your existing `screened_in.txt` lists from neomutt; also acts as a **phishing defense** — impersonation emails from senders you've already approved land in ToScreen instead of Inbox, making them immediately suspicious [→](https://neomd.ssp.sh/docs/screener/)
 - **Glamour reading** — incoming emails rendered as styled Markdown in the terminal [→](https://neomd.ssp.sh/docs/reading/)
 - **Spy pixel blocking** — tracking pixels from newsletter services (Mailchimp, SendGrid, HubSpot, etc.) are automatically detected, counted, and stripped; `°` indicator in the inbox and tracker domains in the reader header; browser view (`O`) blocks remote images via CSP — senders cannot tell if you read their email [→](https://neomd.ssp.sh/docs/reading/#spy-pixel-blocking)
 - **GitHub/Obsidian-style callouts** — compose emails with callout syntax `> [!note]`, `> [!tip]`, `> [!warning]` for styled alert boxes in HTML emails; rendered with colored left borders, subtle backgrounds, and emoji icons [→](https://neomd.ssp.sh/docs/sending/#callouts-admonition)
@@ -298,7 +301,8 @@ By default, neomd loads and auto-screens only the newest `200` Inbox emails (`[u
    - `O` screen **out** — sender never reaches Inbox again
    - `F` **feed** — newsletters go to the Feed tab
    - `P` **papertrail** — receipts go to the PaperTrail tab
-4. Use `m` to mark multiple emails, then `I` to batch-approve them all at once. From the `ToScreen` folder, approving/blocking a single unmarked message now applies to all currently queued mail from that sender.
+   - `$` **spam** — senders go to the Spam tab
+4. Use `m` to mark multiple emails, then `I` to batch-approve them all at once. From the `ToScreen` folder, using any screening key on a single unmarked message applies to all currently queued mail from that sender.
 
 **The best part:** all classifications are saved permanently in your screener lists (`screened_in.txt`, `screened_out.txt`, etc.). An email address screened in will automatically go to your Inbox, and any email screened out will never be in your Inbox again.
 

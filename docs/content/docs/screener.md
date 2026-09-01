@@ -55,13 +55,15 @@ bg_sync_interval    = 5      # minutes between background syncs; 0 = disabled
 
 Press `S` (or run `:screen`) to dry-run the screener against the emails currently loaded in your Inbox. A preview shows what would move where — press `y` to apply, `n` to cancel.
 
-For individual senders, use `I` / `O` / `F` / `P` / `$` from any folder or the ToScreen queue.
+For individual senders, use `I` / `O` / `F` / `P` / `$` from any folder or the ToScreen queue. In `ToScreen`, using a screening key on one unmarked message applies to all currently queued mail from that sender.
 
 Screening actions (`I`, `O`, `F`, `P`, `$`) and archive (`A`) update the current list
 optimistically: rows that move out of the current folder disappear immediately,
 selection and visible unread counts adjust locally, and the list stays visible while
-the IMAP move (and, for screening actions, the list update) finishes. If the backend
-action fails, the prior rows, marks, counts, and selection are restored.
+the IMAP move (and, for screening actions, the list update) finishes. Duplicate
+actions and tab navigation are ignored while one is pending, and stale folder or
+account loads cannot overwrite the local view. If the backend action fails, the prior
+rows, marks, counts, and selection are restored.
 
 ### Whole-domain shortcuts: `Di` / `Do`
 
