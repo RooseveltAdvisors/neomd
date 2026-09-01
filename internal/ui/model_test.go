@@ -84,12 +84,53 @@ func TestIOFActionsUpdateVisibleStateWithoutReload(t *testing.T) {
 			}
 			next, cmd = got.Update(batchDoneMsg{optimistic: true})
 			got = next.(Model)
-			if cmd != nil || got.loading || got.optimisticAction != nil {
+			if cmd == nil || got.loading || got.optimisticAction != nil {
 				t.Fatalf("after success: cmd=%v loading=%v optimistic=%v", cmd != nil, got.loading, got.optimisticAction != nil)
 			}
 			selected = selectedEmail(got.inbox)
 			if selected == nil || selected.UID != 2 {
 				t.Fatalf("selection after success = %#v, want UID 2", selected)
+			}
+		})
+	}
+}
+
+func TestOptimisticActionReconcilesInvalidatedCounts(t *testing.T) {
+	for _, action := range []string{"A", "I", "O", "F", "P", "$"} {
+		t.Run(action, func(t *testing.T) {
+			m := optimisticActionTestModel()
+			_ = m.fetchFolderCountsCmd()
+			staleGeneration := m.currentCountsGeneration()
+
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(action)})
+			got := next.(Model)
+			beforeStaleResult := got.folderCounts["Inbox"]
+			next, cmd := got.Update(batchDoneMsg{optimistic: true})
+			got = next.(Model)
+			if cmd == nil || got.optimisticAction != nil || got.loading {
+				t.Fatalf("successful %s action did not reconcile counts: cmd=%v pending=%v loading=%v", action, cmd != nil, got.optimisticAction != nil, got.loading)
+			}
+			currentGeneration := got.currentCountsGeneration()
+			if currentGeneration == staleGeneration {
+				t.Fatal("successful action did not replace the invalidated count request")
+			}
+
+			next, cmd = got.Update(folderCountsMsg{
+				counts:     map[string]int{"Inbox": 99},
+				generation: staleGeneration,
+			})
+			got = next.(Model)
+			if cmd != nil || got.folderCounts["Inbox"] != beforeStaleResult {
+				t.Fatalf("stale counts changed local state after %s: cmd=%v counts=%v", action, cmd != nil, got.folderCounts)
+			}
+
+			next, cmd = got.Update(folderCountsMsg{
+				counts:     map[string]int{"Inbox": 12},
+				generation: currentGeneration,
+			})
+			got = next.(Model)
+			if cmd != nil || got.folderCounts["Inbox"] != 12 {
+				t.Fatalf("replacement counts were rejected after %s: cmd=%v counts=%v", action, cmd != nil, got.folderCounts)
 			}
 		})
 	}
@@ -410,8 +451,8 @@ func TestSenderOptimisticActionAdjustsCounts(t *testing.T) {
 	if got.folderCounts["Inbox"] != 9 {
 		t.Fatalf("Inbox count after sender action = %d, want 9", got.folderCounts["Inbox"])
 	}
-	if got.optimisticAction == nil || !got.optimisticAction.refreshFolderCounts {
-		t.Fatal("sender-level action did not request a count refresh")
+	if got.optimisticAction == nil {
+		t.Fatal("sender-level action did not remain pending")
 	}
 
 	next, _ = got.Update(batchDoneMsg{optimistic: true, err: errors.New("test backend refusal")})

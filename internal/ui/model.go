@@ -737,7 +737,6 @@ type optimisticActionState struct {
 	selectionKey         string
 	previousSelectionKey string
 	wasMarked            bool
-	refreshFolderCounts  bool
 }
 
 // New creates and initialises the TUI model.
@@ -2312,7 +2311,6 @@ func (m *Model) beginOptimisticAction(targets []imap.Email, action string) {
 	m.nextViewGeneration()
 	m.nextCountsGeneration()
 	dst := actionDestination(m.cfg, action)
-	expandSender := len(targets) == 1 && len(m.markedUIDs) == 0 && action != "A" && targets[0].Folder == m.cfg.Folders.ToScreen
 	optimisticTargets := m.optimisticTargets(targets, action)
 	remove := make(map[string]bool, len(optimisticTargets))
 	for _, e := range optimisticTargets {
@@ -2331,7 +2329,6 @@ func (m *Model) beginOptimisticAction(targets []imap.Email, action string) {
 		selectionKey:         m.selectionAfterRemoval(remove),
 		previousSelectionKey: previousSelectionKey,
 		wasMarked:            len(m.markedUIDs) > 0,
-		refreshFolderCounts:  expandSender,
 	}
 	if len(remove) == 0 && len(optimisticTargets) == 0 {
 		return
@@ -2875,7 +2872,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.status = "Done."
 			m.isError = false
-			if state != nil && state.refreshFolderCounts {
+			if state != nil {
 				return m, m.fetchFolderCountsCmd()
 			}
 			return m, nil
