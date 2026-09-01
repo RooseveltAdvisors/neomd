@@ -111,6 +111,7 @@ type (
 	folderCountsMsg struct {
 		counts     map[string]int
 		generation uint64
+		err        error
 	}
 	// deleteAllReadyMsg carries UIDs to permanently delete after y/n confirm.
 	deleteAllReadyMsg struct {
@@ -334,9 +335,11 @@ func maskEmail(s string) string {
 }
 
 // writeDebugReport generates a diagnostic report and opens it in the reader.
-func (m Model) writeDebugReport() tea.Cmd {
-	generation := m.currentViewGeneration()
+func (m *Model) writeDebugReport() tea.Cmd {
+	generation := m.nextViewGeneration()
+	model := *m
 	return func() tea.Msg {
+		m := model
 		var b strings.Builder
 		b.WriteString("# neomd debug report\n\n")
 		b.WriteString(fmt.Sprintf("Version: %s\n", Version))
@@ -484,7 +487,7 @@ func (m Model) writeDebugReport() tea.Cmd {
 		// Write to file
 		path := filepath.Join(neomdTempDir(), "debug.log")
 		if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
-			return errMsg{fmt.Errorf("write debug report: %w", err)}
+			return bodyLoadedMsg{generation: generation, err: fmt.Errorf("write debug report: %w", err)}
 		}
 
 		// Return as body to display in reader
@@ -1990,8 +1993,8 @@ func (m *Model) fetchFolderCountsCmd() tea.Cmd {
 		"Scheduled":  model.cfg.Folders.Scheduled,
 	}
 	return func() tea.Msg {
-		counts, _ := model.imapCli().FetchUnseenCounts(nil, folders)
-		return folderCountsMsg{counts: counts, generation: generation}
+		counts, err := model.imapCli().FetchUnseenCounts(nil, folders)
+		return folderCountsMsg{counts: counts, generation: generation, err: err}
 	}
 }
 
@@ -2505,6 +2508,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case folderCountsMsg:
 		if !m.acceptsCountsResult(msg.generation) {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.status = "Folder count refresh failed: " + msg.err.Error()
+			m.isError = true
 			return m, nil
 		}
 		m.folderCounts = msg.counts
@@ -3714,6 +3722,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
+			m.nextCountsGeneration()
 			m.activeFolderI = 0
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))

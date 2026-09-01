@@ -253,6 +253,100 @@ func TestFolderCountsRefreshSurvivesViewRequest(t *testing.T) {
 	}
 }
 
+func TestAccountSwitchInvalidatesStaleCounts(t *testing.T) {
+	m := optimisticActionTestModel()
+	m.accounts = []config.AccountConfig{{Name: "Personal"}, {Name: "Work"}}
+	m.clients = []*imap.Client{imap.New(imap.Config{Host: "personal"}), imap.New(imap.Config{Host: "work"})}
+	_ = m.fetchFolderCountsCmd()
+	staleGeneration := m.currentCountsGeneration()
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	got := next.(Model)
+	if cmd == nil || got.accountI != 1 {
+		t.Fatalf("account switch did not start new view: cmd=%v account=%d", cmd != nil, got.accountI)
+	}
+	if got.currentCountsGeneration() == staleGeneration {
+		t.Fatal("account switch did not invalidate the old count request")
+	}
+
+	next, cmd = got.Update(folderCountsMsg{
+		counts:     map[string]int{"Inbox": 99},
+		generation: staleGeneration,
+	})
+	got = next.(Model)
+	if cmd != nil || got.folderCounts["Inbox"] != 7 {
+		t.Fatalf("stale account counts were applied: cmd=%v counts=%v", cmd != nil, got.folderCounts)
+	}
+
+	next, cmd = got.Update(folderCountsMsg{
+		counts:     map[string]int{"Inbox": 12},
+		generation: got.currentCountsGeneration(),
+	})
+	got = next.(Model)
+	if cmd != nil || got.folderCounts["Inbox"] != 12 {
+		t.Fatalf("current account counts were rejected: cmd=%v counts=%v", cmd != nil, got.folderCounts)
+	}
+}
+
+func TestFolderCountsRefreshFailurePreservesCounts(t *testing.T) {
+	m := optimisticActionTestModel()
+	_ = m.fetchFolderCountsCmd()
+	generation := m.currentCountsGeneration()
+
+	next, cmd := m.Update(folderCountsMsg{
+		counts:     nil,
+		generation: generation,
+		err:        errors.New("temporary count failure"),
+	})
+	got := next.(Model)
+	if cmd != nil || got.folderCounts["Inbox"] != 7 {
+		t.Fatalf("count failure erased existing counts: cmd=%v counts=%v", cmd != nil, got.folderCounts)
+	}
+}
+
+func TestDebugReportUsesForegroundRequest(t *testing.T) {
+	m := optimisticActionTestModel()
+	var debugCmd *neomdCmd
+	for i := range cmdRegistry {
+		if cmdRegistry[i].name == "debug" {
+			debugCmd = &cmdRegistry[i]
+			break
+		}
+	}
+	if debugCmd == nil {
+		t.Fatal("debug command is not registered")
+	}
+
+	result, cmd := debugCmd.run(&m)
+	got, ok := result.(*Model)
+	if !ok {
+		t.Fatalf("debug command returned %T, want *Model", result)
+	}
+	if cmd == nil || !got.loading {
+		t.Fatalf("debug command did not guard its async work: cmd=%v loading=%v", cmd != nil, got.loading)
+	}
+	debugGeneration := got.currentViewGeneration()
+	if debugGeneration == 0 {
+		t.Fatal("debug command did not claim a foreground generation")
+	}
+
+	next, _ := got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	updated := next.(Model)
+	if updated.state != stateInbox || !updated.loading {
+		t.Fatalf("compose input was accepted during debug report: state=%d loading=%v", updated.state, updated.loading)
+	}
+
+	updated.nextViewGeneration()
+	next, cmd = updated.Update(bodyLoadedMsg{
+		generation: debugGeneration,
+		err:        errors.New("debug report failed"),
+	})
+	updated = next.(Model)
+	if cmd != nil || !updated.loading || updated.status != "" {
+		t.Fatalf("stale debug error changed active UI: cmd=%v loading=%v status=%q", cmd != nil, updated.loading, updated.status)
+	}
+}
+
 func TestReaderExitClearsCanceledReload(t *testing.T) {
 	m := Model{
 		cfg:         &config.Config{Folders: config.FoldersConfig{Inbox: "INBOX"}},
