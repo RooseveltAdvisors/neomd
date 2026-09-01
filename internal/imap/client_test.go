@@ -34,6 +34,17 @@ func TestParseSendAtSection(t *testing.T) {
 	}
 }
 
+func TestParseReminderSection(t *testing.T) {
+	secs := []imapclient.FetchBodySectionBuffer{{}, {Bytes: []byte("X-Neomd-Reminder-At: 2030-01-02T03:04:05Z\r\nX-Neomd-Reminder-State: due\r\n")}}
+	got := parseReminder(secs)
+	if got == nil || got.State != "due" || !got.At.Equal(time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)) {
+		t.Fatalf("reminder = %#v, want due metadata", got)
+	}
+	if parseReminder(nil) != nil || parseReminder([]imapclient.FetchBodySectionBuffer{{Bytes: []byte("Subject: ordinary\r\n")}}) != nil {
+		t.Fatal("ordinary or incomplete headers should not become reminders")
+	}
+}
+
 func TestBuildSearchCriteria(t *testing.T) {
 	tests := []struct {
 		name      string

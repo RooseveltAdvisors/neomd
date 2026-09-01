@@ -24,6 +24,7 @@ import (
 	"github.com/emersion/go-message/mail"
 	"github.com/sspaeti/neomd/internal/mailtls"
 	"github.com/sspaeti/neomd/internal/oauth2"
+	"github.com/sspaeti/neomd/internal/reminder"
 	"github.com/sspaeti/neomd/internal/schedule"
 )
 
@@ -50,12 +51,13 @@ type Email struct {
 	Answered      bool // \Answered flag — set when replied to from any client
 	Flagged       bool // \Flagged — the send-later daemon uses it as a claim marker
 	Folder        string
-	Size          uint32    // RFC822 size in bytes
-	HasAttachment bool      // true if BODYSTRUCTURE contains an attachment part
-	MessageID     string    // Message-ID from envelope (for threading)
-	InReplyTo     string    // first In-Reply-To message ID (for threading)
-	References    string    // References header (space-separated Message-IDs for threading)
-	SendAt        time.Time // parsed X-Neomd-Send-At — non-zero only for send-later queued messages
+	Size          uint32             // RFC822 size in bytes
+	HasAttachment bool               // true if BODYSTRUCTURE contains an attachment part
+	MessageID     string             // Message-ID from envelope (for threading)
+	InReplyTo     string             // first In-Reply-To message ID (for threading)
+	References    string             // References header (space-separated Message-IDs for threading)
+	SendAt        time.Time          // parsed X-Neomd-Send-At — non-zero only for send-later queued messages
+	Reminder      *reminder.Metadata // optional per-email reminder metadata
 }
 
 // Config holds connection parameters.
@@ -302,6 +304,25 @@ func sendAtHeaderSection() []*imap.FetchItemBodySection {
 	}}
 }
 
+func reminderHeaderSection() *imap.FetchItemBodySection {
+	return &imap.FetchItemBodySection{
+		Specifier:    imap.PartSpecifierHeader,
+		HeaderFields: []string{reminder.AtHeader, reminder.StateHeader, reminder.IDHeader},
+		Peek:         true,
+	}
+}
+
+func parseReminder(sections []imapclient.FetchBodySectionBuffer) *reminder.Metadata {
+	if len(sections) < 2 || len(sections[1].Bytes) == 0 {
+		return nil
+	}
+	metadata, err := reminder.ParseHeader(sections[1].Bytes)
+	if err != nil || metadata.At.IsZero() {
+		return nil
+	}
+	return &metadata
+}
+
 // parseSendAtSection extracts the RFC 3339 time from a fetched
 // X-Neomd-Send-At header-fields section. Zero time when absent.
 func parseSendAtSection(sections []imapclient.FetchBodySectionBuffer) time.Time {
@@ -364,7 +385,7 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
-			BodySection:   sendAtHeaderSection(),
+			BodySection:   append(sendAtHeaderSection(), reminderHeaderSection()),
 		}).Collect()
 		if err != nil {
 			return fmt.Errorf("FETCH headers: %w", err)
@@ -380,7 +401,7 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 			if !ok {
 				continue
 			}
-			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.BodySection)}
+			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.BodySection), Reminder: parseReminder(m.BodySection)}
 			for _, f := range m.Flags {
 				if f == imap.FlagSeen {
 					e.Seen = true
@@ -780,13 +801,13 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
-			BodySection:   sendAtHeaderSection(),
+			BodySection:   append(sendAtHeaderSection(), reminderHeaderSection()),
 		}).Collect()
 		if err != nil {
 			return fmt.Errorf("FETCH headers: %w", err)
 		}
 		for _, m := range msgs {
-			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.BodySection)}
+			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.BodySection), Reminder: parseReminder(m.BodySection)}
 			for _, f := range m.Flags {
 				if f == imap.FlagSeen {
 					e.Seen = true
@@ -1207,6 +1228,28 @@ func (c *Client) SaveDraft(ctx context.Context, folder string, raw []byte) error
 		}
 		if _, err := cmd.Wait(); err != nil {
 			return fmt.Errorf("APPEND wait: %w", err)
+		}
+		return nil
+	})
+}
+
+// SaveReminder APPENDs a parked email to the reminder folder. Reminders are
+// ordinary IMAP messages; no SMTP or outbound delivery is involved.
+func (c *Client) SaveReminder(ctx context.Context, folder string, raw []byte) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return c.withConn(ctx, func(conn *imapclient.Client) error {
+		opts := &imap.AppendOptions{Flags: []imap.Flag{imap.FlagSeen}, Time: time.Now()}
+		cmd := conn.Append(folder, int64(len(raw)), opts)
+		if _, err := cmd.Write(raw); err != nil {
+			return fmt.Errorf("APPEND reminder write: %w", err)
+		}
+		if err := cmd.Close(); err != nil {
+			return fmt.Errorf("APPEND reminder close: %w", err)
+		}
+		if _, err := cmd.Wait(); err != nil {
+			return fmt.Errorf("APPEND reminder wait: %w", err)
 		}
 		return nil
 	})
