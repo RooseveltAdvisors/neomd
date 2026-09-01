@@ -14,6 +14,7 @@ import (
 	"github.com/sspaeti/neomd/internal/config"
 	"github.com/sspaeti/neomd/internal/imap"
 	"github.com/sspaeti/neomd/internal/reminder"
+	"github.com/sspaeti/neomd/internal/screener"
 )
 
 func TestMaskEmail(t *testing.T) {
@@ -51,6 +52,25 @@ func TestReminderMetadataIsVisibleState(t *testing.T) {
 	e := imap.Email{Reminder: &reminder.Metadata{At: at, State: "scheduled"}}
 	if e.Reminder.Status(at.Add(time.Minute)) != "due" {
 		t.Fatal("scheduled reminder should become due at its timestamp")
+	}
+}
+
+func TestDeepScreenSkipsDueReminder(t *testing.T) {
+	m := Model{
+		cfg:      &config.Config{Folders: config.FoldersConfig{Inbox: "INBOX", ToScreen: "ToScreen"}},
+		screener: &screener.Screener{},
+	}
+	updated, _ := m.Update(deepScreenBatchMsg{
+		emails: []imap.Email{{
+			UID:      9,
+			From:     "unknown@example.com",
+			Reminder: &reminder.Metadata{At: time.Now().Add(-time.Minute), State: "scheduled"},
+		}},
+		total: 1,
+	})
+	got := updated.(Model)
+	if len(got.pendingMoves) != 0 {
+		t.Fatalf("screen-all planned %d move(s) for a due reminder", len(got.pendingMoves))
 	}
 }
 

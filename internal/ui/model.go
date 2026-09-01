@@ -29,7 +29,6 @@ import (
 	"github.com/sspaeti/neomd/internal/imap"
 	"github.com/sspaeti/neomd/internal/listmonk"
 	"github.com/sspaeti/neomd/internal/notify"
-	"github.com/sspaeti/neomd/internal/reminder"
 	"github.com/sspaeti/neomd/internal/render"
 	"github.com/sspaeti/neomd/internal/schedule"
 	"github.com/sspaeti/neomd/internal/screener"
@@ -1970,40 +1969,31 @@ func (m Model) bgFetchInboxCmd() tea.Cmd {
 	}
 }
 
-// setReminderCmd stores one copy in Waiting only after the complete message
-// has been fetched and tagged. The source is removed last, so a failed append
-// cannot lose the email and no SMTP code is reachable from this path.
+// setReminderCmd parks the selected message without reaching the SMTP path.
 func (m Model) setReminderCmd(e *imap.Email, at time.Time) tea.Cmd {
+	var source imap.Email
+	if e != nil {
+		source = *e
+	}
+	waiting, trash := m.cfg.Folders.Waiting, m.cfg.Folders.Trash
+	folders := reminderFolders(m.cfg.Folders)
 	return func() tea.Msg {
-		if e == nil || m.cfg.Folders.Waiting == "" {
-			return reminderDoneMsg{err: fmt.Errorf("reminders require a configured waiting folder")}
-		}
-		if e.Folder == m.cfg.Folders.Trash || m.cfg.Folders.Trash == "" {
-			return reminderDoneMsg{err: fmt.Errorf("reminders require a recoverable Trash folder")}
-		}
 		cli := m.imapCli()
 		if cli == nil {
 			return reminderDoneMsg{err: fmt.Errorf("reminders require an IMAP-enabled account")}
 		}
-		raw, err := cli.FetchRaw(nil, e.Folder, e.UID)
-		if err != nil {
-			return reminderDoneMsg{err: fmt.Errorf("fetch email for reminder: %w", err)}
-		}
-		id := e.MessageID
-		if id == "" {
-			id = fmt.Sprintf("neomd:%s:%d", e.Folder, e.UID)
-		}
-		updated, err := reminder.SetHeaders(raw, at, id)
-		if err != nil {
-			return reminderDoneMsg{err: fmt.Errorf("prepare reminder: %w", err)}
-		}
-		if err := cli.SaveReminder(nil, m.cfg.Folders.Waiting, updated); err != nil {
-			return reminderDoneMsg{err: fmt.Errorf("save reminder: %w", err)}
-		}
-		if _, err := cli.MoveMessage(nil, e.Folder, e.UID, m.cfg.Folders.Trash); err != nil {
-			return reminderDoneMsg{at: at, err: fmt.Errorf("reminder saved, but original could not be moved to Trash: %w", err)}
+		if err := cli.ParkReminder(nil, source, folders, waiting, trash, at); err != nil {
+			return reminderDoneMsg{err: err}
 		}
 		return reminderDoneMsg{at: at}
+	}
+}
+
+func reminderFolders(fc config.FoldersConfig) []string {
+	return []string{
+		fc.Inbox, fc.ToScreen, fc.Feed, fc.PaperTrail, fc.ScreenedOut, fc.Spam,
+		fc.Archive, fc.Work, fc.Someday, fc.Scheduled, fc.Sent, fc.Drafts,
+		fc.Waiting, fc.Trash,
 	}
 }
 
@@ -2759,28 +2749,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, m.deepScreenClassifyCmd(msg.emails, msg.remaining, msg.total))
 		}
 		// All batches done — classify in-memory (O(1) map lookups).
-		inboxFolder := m.cfg.Folders.Inbox
-		var moves []autoScreenMove
-		for i := range msg.emails {
-			e := &msg.emails[i]
-			cat := m.screener.Classify(e.From)
-			var dst string
-			switch cat {
-			case screener.CategorySpam:
-				dst = m.cfg.Folders.Spam
-			case screener.CategoryScreenedOut:
-				dst = m.cfg.Folders.ScreenedOut
-			case screener.CategoryFeed:
-				dst = m.cfg.Folders.Feed
-			case screener.CategoryPaperTrail:
-				dst = m.cfg.Folders.PaperTrail
-			case screener.CategoryToScreen:
-				dst = m.cfg.Folders.ToScreen
-			}
-			if dst != "" && dst != inboxFolder {
-				moves = append(moves, autoScreenMove{email: e, dst: dst})
-			}
-		}
+		moves := m.classifyForScreen(msg.emails)
 		m.loading = false
 		if len(moves) == 0 {
 			m.status = fmt.Sprintf("Screen-all: all %d inbox emails already classified.", msg.total)

@@ -1049,6 +1049,222 @@ func (c *Client) MoveMessage(ctx context.Context, src string, uid uint32, dst st
 	return destUID, err
 }
 
+func reminderID(source Email) string {
+	if source.Reminder != nil && strings.TrimSpace(source.Reminder.ID) != "" {
+		return strings.TrimSpace(source.Reminder.ID)
+	}
+	if strings.TrimSpace(source.MessageID) != "" {
+		return strings.TrimSpace(source.MessageID)
+	}
+	return fmt.Sprintf("neomd:%s:%d", source.Folder, source.UID)
+}
+
+func reminderIDEqual(a, b string) bool {
+	return strings.TrimSpace(a) != "" && strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+func reminderAddress(field string) string {
+	addrs := SplitAddrs(field)
+	if len(addrs) == 0 {
+		return ""
+	}
+	return addrs[0]
+}
+
+func sameReminderEmail(source, candidate Email, id string) bool {
+	if candidate.Reminder != nil && reminderIDEqual(candidate.Reminder.ID, id) {
+		return true
+	}
+	if source.MessageID != "" {
+		return reminderIDEqual(source.MessageID, candidate.MessageID)
+	}
+	if candidate.MessageID != "" || reminderAddress(source.From) == "" || reminderAddress(candidate.From) == "" {
+		return false
+	}
+	if !strings.EqualFold(reminderAddress(source.From), reminderAddress(candidate.From)) || source.Subject != candidate.Subject {
+		return false
+	}
+	if !source.Date.IsZero() && !candidate.Date.IsZero() && !source.Date.Equal(candidate.Date) {
+		return false
+	}
+	if source.Size != 0 && candidate.Size != 0 && source.Size != candidate.Size {
+		return false
+	}
+	return true
+}
+
+func reminderSearchFolders(folders []string, source, waiting, trash string) []string {
+	all := make([]string, 0, len(folders)+3)
+	all = append(all, folders...)
+	all = append(all, source, waiting, trash)
+	seen := make(map[string]struct{}, len(all))
+	unique := make([]string, 0, len(all))
+	for _, folder := range all {
+		if folder == "" {
+			continue
+		}
+		if _, ok := seen[folder]; ok {
+			continue
+		}
+		seen[folder] = struct{}{}
+		unique = append(unique, folder)
+	}
+	return unique
+}
+
+func (c *Client) reminderCopies(ctx context.Context, source Email, id string, folders []string) ([]Email, error) {
+	var matches []Email
+	var scanErrs []error
+	for _, folder := range folders {
+		emails, err := c.FetchHeaders(ctx, folder, 0)
+		if err != nil {
+			var imapErr *imap.Error
+			if errors.As(err, &imapErr) && imapErr.Code == imap.ResponseCodeNonExistent {
+				continue
+			}
+			scanErrs = append(scanErrs, fmt.Errorf("%s: %w", folder, err))
+			continue
+		}
+		for _, candidate := range emails {
+			if sameReminderEmail(source, candidate, id) {
+				matches = append(matches, candidate)
+			}
+		}
+	}
+	if len(scanErrs) > 0 {
+		return matches, fmt.Errorf("scan reminder folders: %w", errors.Join(scanErrs...))
+	}
+	return matches, nil
+}
+
+func (c *Client) reminderCopyInFolder(ctx context.Context, source Email, id, folder string, hint uint32) (Email, bool, error) {
+	if hint != 0 {
+		if emails, err := c.FetchHeadersByUID(ctx, folder, []uint32{hint}); err == nil {
+			for _, candidate := range emails {
+				if sameReminderEmail(source, candidate, id) {
+					return candidate, true, nil
+				}
+			}
+		}
+	}
+	emails, err := c.FetchHeaders(ctx, folder, 0)
+	if err != nil {
+		return Email{}, false, err
+	}
+	for _, candidate := range emails {
+		if sameReminderEmail(source, candidate, id) {
+			return candidate, true, nil
+		}
+	}
+	return Email{}, false, nil
+}
+
+func (c *Client) reminderSourceExists(ctx context.Context, source Email) (bool, error) {
+	emails, err := c.FetchHeadersByUID(ctx, source.Folder, []uint32{source.UID})
+	if err != nil {
+		return false, err
+	}
+	return len(emails) > 0, nil
+}
+
+func (c *Client) claimReminderSource(ctx context.Context, source Email, folders []string, waiting, trash, id string) (Email, bool, error) {
+	searchFolders := reminderSearchFolders(folders, source.Folder, waiting, trash)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		sourceExists, checkErr := c.reminderSourceExists(ctx, source)
+		if checkErr != nil {
+			lastErr = fmt.Errorf("check source message uid=%d: %w", source.UID, checkErr)
+		} else if sourceExists {
+			destUID, moveErr := c.MoveMessage(ctx, source.Folder, source.UID, trash)
+			if moveErr == nil {
+				copy, found, findErr := c.reminderCopyInFolder(ctx, source, id, trash, destUID)
+				if findErr == nil && found {
+					return copy, false, nil
+				}
+				if findErr != nil {
+					lastErr = findErr
+				} else {
+					lastErr = fmt.Errorf("moved message uid=%d to %s but could not find it there", source.UID, trash)
+				}
+				continue
+			}
+			lastErr = fmt.Errorf("move message uid=%d to %s: %w", source.UID, trash, moveErr)
+		} else {
+			lastErr = fmt.Errorf("source message uid=%d is no longer in %s", source.UID, source.Folder)
+		}
+
+		copies, scanErr := c.reminderCopies(ctx, source, id, searchFolders)
+		if scanErr != nil {
+			lastErr = scanErr
+			continue
+		}
+		waitingFound := false
+		changed := false
+		moveFailed := false
+		for _, copy := range copies {
+			switch copy.Folder {
+			case waiting:
+				waitingFound = true
+			case trash:
+				return copy, false, nil
+			default:
+				if _, moveErr := c.MoveMessage(ctx, copy.Folder, copy.UID, trash); moveErr != nil {
+					lastErr = fmt.Errorf("reconcile message uid=%d from %s: %w", copy.UID, copy.Folder, moveErr)
+					moveFailed = true
+					continue
+				}
+				changed = true
+			}
+		}
+		if waitingFound && !changed && !moveFailed {
+			return Email{}, true, nil
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("source message could not be located")
+	}
+	return Email{}, false, fmt.Errorf("claim reminder source: %w", lastErr)
+}
+
+func (c *Client) ParkReminder(ctx context.Context, source Email, folders []string, waiting, trash string, at time.Time) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if source.Folder == "" || source.UID == 0 {
+		return fmt.Errorf("reminder source is missing its folder or UID")
+	}
+	if waiting == "" || trash == "" || waiting == trash {
+		return fmt.Errorf("reminders require distinct Waiting and Trash folders")
+	}
+	if source.Folder == trash {
+		return fmt.Errorf("cannot remind an email already in Trash")
+	}
+	if at.IsZero() {
+		return fmt.Errorf("reminder time is required")
+	}
+
+	id := reminderID(source)
+	claimed, alreadyParked, err := c.claimReminderSource(ctx, source, folders, waiting, trash, id)
+	if err != nil {
+		return err
+	}
+	if alreadyParked {
+		return nil
+	}
+	raw, err := c.FetchRaw(ctx, claimed.Folder, claimed.UID)
+	if err != nil {
+		return fmt.Errorf("fetch claimed reminder: %w", err)
+	}
+	updated, err := reminder.SetHeaders(raw, at, id)
+	if err != nil {
+		return fmt.Errorf("prepare reminder: %w", err)
+	}
+	if err := c.SaveReminder(ctx, waiting, updated); err != nil {
+		return fmt.Errorf("save reminder: %w", err)
+	}
+	return nil
+}
+
 // EnsureFolders creates and subscribes any folders in the list that do not
 // yet exist on the server. Already-existing folders are silently skipped.
 // Returns the names of folders that were actually created.
@@ -1238,13 +1454,35 @@ func (c *Client) SaveDraft(ctx context.Context, folder string, raw []byte) error
 	})
 }
 
-// SaveReminder APPENDs a parked email to the reminder folder. Reminders are
-// ordinary IMAP messages; no SMTP or outbound delivery is involved.
+// SaveReminder idempotently APPENDs a parked email to the reminder folder.
 func (c *Client) SaveReminder(ctx context.Context, folder string, raw []byte) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	metadata, err := reminder.ParseHeader(raw)
+	if err != nil {
+		return fmt.Errorf("parse reminder before save: %w", err)
+	}
 	return c.withConn(ctx, func(conn *imapclient.Client) error {
+		if err := c.selectMailbox(folder); err != nil {
+			return err
+		}
+		if metadata.ID != "" {
+			searchData, err := conn.UIDSearch(&imap.SearchCriteria{
+				Header: []imap.SearchCriteriaHeaderField{{Key: reminder.IDHeader, Value: metadata.ID}},
+			}, nil).Wait()
+			if err != nil {
+				return fmt.Errorf("SEARCH existing reminder: %w", err)
+			}
+			if searchData != nil {
+				if uidSet, ok := searchData.All.(imap.UIDSet); ok {
+					uids, _ := uidSet.Nums()
+					if len(uids) > 0 {
+						return nil
+					}
+				}
+			}
+		}
 		opts := &imap.AppendOptions{Flags: []imap.Flag{imap.FlagSeen}, Time: time.Now()}
 		cmd := conn.Append(folder, int64(len(raw)), opts)
 		if _, err := cmd.Write(raw); err != nil {
