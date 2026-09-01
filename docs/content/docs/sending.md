@@ -309,8 +309,9 @@ Open an email and press `H` to set a reminder, then enter a time such as
 `+2h`, `tomorrow 09:00`, or `2026-09-02 09:00`. The message is copied to the
 configured **Waiting** folder with `X-Neomd-Reminder-*` metadata and the
 original is moved to Trash (recoverable). No email is sent. The headless daemon
-returns due reminders to Inbox; the reminder marker stays on the message so it
-is clear why it resurfaced. The TUI also checks Waiting during background sync.
+returns due reminders to Inbox and leaves them there even when automatic
+screening is enabled; the reminder marker stays on the message so it is clear
+why it resurfaced. The TUI also checks Waiting during background sync.
 
 ## Recipient Names
 

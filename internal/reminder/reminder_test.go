@@ -28,3 +28,18 @@ func TestHeadersPreserveBodyAndReplaceFoldedValues(t *testing.T) {
 		t.Fatalf("cleared=%q err=%v", cleared, err)
 	}
 }
+
+func TestHeadersPreserveBodyWithMixedLineEndings(t *testing.T) {
+	raw := []byte("Subject: x\n\nbody-one\nbody-two\r\n\r\nbody-tail")
+	wantBody := []byte("body-one\nbody-two\r\n\r\nbody-tail")
+	at := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	updated, err := SetHeaders(raw, at, "id")
+	if err != nil || !bytes.HasSuffix(updated, wantBody) {
+		t.Fatalf("updated body=%q err=%v", updated, err)
+	}
+	cleared, err := ClearHeaders(updated)
+	if err != nil || !bytes.HasSuffix(cleared, wantBody) {
+		t.Fatalf("cleared body=%q err=%v", cleared, err)
+	}
+}

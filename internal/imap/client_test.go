@@ -16,32 +16,52 @@ import (
 // UI can mark them without mutating the stored message.
 func TestParseSendAtSection(t *testing.T) {
 	at := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
-	sec := []imapclient.FetchBodySectionBuffer{{
-		Bytes: []byte("X-Neomd-Send-At: " + at.Format(time.RFC3339) + "\r\n\r\n"),
-	}}
-	if got := parseSendAtSection(sec); !got.Equal(at) {
+	if got := parseSendAtSection([]byte("X-Neomd-Send-At: " + at.Format(time.RFC3339) + "\r\n\r\n")); !got.Equal(at) {
 		t.Errorf("SendAt = %v, want %v", got, at)
 	}
 	// Regular mail (no section content) and garbage must yield zero time.
 	if got := parseSendAtSection(nil); !got.IsZero() {
 		t.Errorf("nil section: %v", got)
 	}
-	if got := parseSendAtSection([]imapclient.FetchBodySectionBuffer{{Bytes: []byte("\r\n")}}); !got.IsZero() {
+	if got := parseSendAtSection([]byte("\r\n")); !got.IsZero() {
 		t.Errorf("empty header: %v", got)
 	}
-	if got := parseSendAtSection([]imapclient.FetchBodySectionBuffer{{Bytes: []byte("X-Neomd-Send-At: not-a-time\r\n")}}); !got.IsZero() {
+	if got := parseSendAtSection([]byte("X-Neomd-Send-At: not-a-time\r\n")); !got.IsZero() {
 		t.Errorf("garbage time: %v", got)
 	}
 }
 
 func TestParseReminderSection(t *testing.T) {
-	secs := []imapclient.FetchBodySectionBuffer{{}, {Bytes: []byte("X-Neomd-Reminder-At: 2030-01-02T03:04:05Z\r\nX-Neomd-Reminder-State: due\r\n")}}
-	got := parseReminder(secs)
+	got := parseReminder([]byte("X-Neomd-Reminder-At: 2030-01-02T03:04:05Z\r\nX-Neomd-Reminder-State: due\r\n"))
 	if got == nil || got.State != "due" || !got.At.Equal(time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)) {
 		t.Fatalf("reminder = %#v, want due metadata", got)
 	}
-	if parseReminder(nil) != nil || parseReminder([]imapclient.FetchBodySectionBuffer{{Bytes: []byte("Subject: ordinary\r\n")}}) != nil {
+	if parseReminder(nil) != nil || parseReminder([]byte("Subject: ordinary\r\n")) != nil {
 		t.Fatal("ordinary or incomplete headers should not become reminders")
+	}
+}
+
+func TestParseHeaderSectionsByDescriptor(t *testing.T) {
+	sendAtSection := sendAtHeaderSection()
+	reminderSection := reminderHeaderSection()
+	sendAtResponse := *sendAtSection
+	reminderResponse := *reminderSection
+	msg := &imapclient.FetchMessageBuffer{BodySection: []imapclient.FetchBodySectionBuffer{
+		{
+			Section: &reminderResponse,
+			Bytes:   []byte("X-Neomd-Reminder-At: 2030-01-02T03:04:05Z\r\nX-Neomd-Reminder-State: due\r\n"),
+		},
+		{
+			Section: &sendAtResponse,
+			Bytes:   []byte("X-Neomd-Send-At: 2030-01-03T03:04:05Z\r\n"),
+		},
+	}}
+
+	if got := parseSendAtSection(msg.FindBodySection(sendAtSection)); !got.Equal(time.Date(2030, time.January, 3, 3, 4, 5, 0, time.UTC)) {
+		t.Errorf("SendAt = %v, want descriptor-matched value", got)
+	}
+	if got := parseReminder(msg.FindBodySection(reminderSection)); got == nil || got.State != "due" {
+		t.Errorf("Reminder = %#v, want descriptor-matched value", got)
 	}
 }
 

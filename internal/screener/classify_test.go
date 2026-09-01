@@ -4,9 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sspaeti/neomd/internal/config"
 	"github.com/sspaeti/neomd/internal/imap"
+	"github.com/sspaeti/neomd/internal/reminder"
 )
 
 func TestClassifyForScreen(t *testing.T) {
@@ -98,6 +100,14 @@ func TestClassifyForScreen(t *testing.T) {
 			name: "approved email (stays in inbox)",
 			emails: []imap.Email{
 				{UID: 5, From: "approved@example.com", Subject: "Good"},
+			},
+			expectedMoves: 0,
+			expectedDsts:  []string{},
+		},
+		{
+			name: "due reminder stays in inbox",
+			emails: []imap.Email{
+				{UID: 12, From: "spam@example.com", Subject: "Reminder", Reminder: &reminder.Metadata{At: time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), State: "scheduled"}},
 			},
 			expectedMoves: 0,
 			expectedDsts:  []string{},

@@ -77,11 +77,11 @@ func ClearHeaders(raw []byte) ([]byte, error) {
 }
 
 func rewrite(raw []byte, values map[string]string) ([]byte, error) {
-	sep, sepLen := []byte("\r\n\r\n"), 4
-	idx := bytes.Index(raw, sep)
-	if idx < 0 {
-		sep, sepLen = []byte("\n\n"), 2
-		idx = bytes.Index(raw, sep)
+	crlfIdx := bytes.Index(raw, []byte("\r\n\r\n"))
+	lfIdx := bytes.Index(raw, []byte("\n\n"))
+	idx, sepLen := crlfIdx, 4
+	if idx < 0 || (lfIdx >= 0 && lfIdx < idx) {
+		idx, sepLen = lfIdx, 2
 	}
 	if idx < 0 {
 		return nil, fmt.Errorf("message has no RFC header/body separator")

@@ -296,12 +296,12 @@ func (c *Client) Ping(ctx context.Context) error {
 // sendAtHeaderSection requests only the X-Neomd-Send-At header field (peek,
 // so \Seen is untouched) — it identifies send-later queued messages so the UI
 // can mark them, without ever mutating the stored message.
-func sendAtHeaderSection() []*imap.FetchItemBodySection {
-	return []*imap.FetchItemBodySection{{
+func sendAtHeaderSection() *imap.FetchItemBodySection {
+	return &imap.FetchItemBodySection{
 		Specifier:    imap.PartSpecifierHeader,
 		HeaderFields: []string{schedule.HeaderSendAt},
 		Peek:         true,
-	}}
+	}
 }
 
 func reminderHeaderSection() *imap.FetchItemBodySection {
@@ -312,11 +312,11 @@ func reminderHeaderSection() *imap.FetchItemBodySection {
 	}
 }
 
-func parseReminder(sections []imapclient.FetchBodySectionBuffer) *reminder.Metadata {
-	if len(sections) < 2 || len(sections[1].Bytes) == 0 {
+func parseReminder(raw []byte) *reminder.Metadata {
+	if len(raw) == 0 {
 		return nil
 	}
-	metadata, err := reminder.ParseHeader(sections[1].Bytes)
+	metadata, err := reminder.ParseHeader(raw)
 	if err != nil || metadata.At.IsZero() {
 		return nil
 	}
@@ -325,11 +325,12 @@ func parseReminder(sections []imapclient.FetchBodySectionBuffer) *reminder.Metad
 
 // parseSendAtSection extracts the RFC 3339 time from a fetched
 // X-Neomd-Send-At header-fields section. Zero time when absent.
-func parseSendAtSection(sections []imapclient.FetchBodySectionBuffer) time.Time {
-	if len(sections) == 0 {
+func parseSendAtSection(raw []byte) time.Time {
+	if len(raw) == 0 {
 		return time.Time{}
 	}
-	for _, line := range strings.Split(string(sections[0].Bytes), "\r\n") {
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimRight(line, "\r")
 		if i := strings.IndexByte(line, ':'); i > 0 && strings.EqualFold(strings.TrimSpace(line[:i]), schedule.HeaderSendAt) {
 			if at, err := time.Parse(time.RFC3339, strings.TrimSpace(line[i+1:])); err == nil {
 				return at
@@ -379,13 +380,15 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 			fetchSet.AddNum(uid)
 		}
 
+		sendAtSection := sendAtHeaderSection()
+		reminderSection := reminderHeaderSection()
 		msgs, err := conn.Fetch(fetchSet, &imap.FetchOptions{
 			UID:           true,
 			Flags:         true,
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
-			BodySection:   append(sendAtHeaderSection(), reminderHeaderSection()),
+			BodySection:   []*imap.FetchItemBodySection{sendAtSection, reminderSection},
 		}).Collect()
 		if err != nil {
 			return fmt.Errorf("FETCH headers: %w", err)
@@ -401,7 +404,7 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 			if !ok {
 				continue
 			}
-			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.BodySection), Reminder: parseReminder(m.BodySection)}
+			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.FindBodySection(sendAtSection)), Reminder: parseReminder(m.FindBodySection(reminderSection))}
 			for _, f := range m.Flags {
 				if f == imap.FlagSeen {
 					e.Seen = true
@@ -795,19 +798,21 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 		for _, uid := range uids {
 			fetchSet.AddNum(imap.UID(uid))
 		}
+		sendAtSection := sendAtHeaderSection()
+		reminderSection := reminderHeaderSection()
 		msgs, err := conn.Fetch(fetchSet, &imap.FetchOptions{
 			UID:           true,
 			Flags:         true,
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
-			BodySection:   append(sendAtHeaderSection(), reminderHeaderSection()),
+			BodySection:   []*imap.FetchItemBodySection{sendAtSection, reminderSection},
 		}).Collect()
 		if err != nil {
 			return fmt.Errorf("FETCH headers: %w", err)
 		}
 		for _, m := range msgs {
-			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.BodySection), Reminder: parseReminder(m.BodySection)}
+			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.FindBodySection(sendAtSection)), Reminder: parseReminder(m.FindBodySection(reminderSection))}
 			for _, f := range m.Flags {
 				if f == imap.FlagSeen {
 					e.Seen = true
