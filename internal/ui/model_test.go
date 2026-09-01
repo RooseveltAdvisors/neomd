@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +15,130 @@ import (
 	"github.com/sspaeti/neomd/internal/config"
 	"github.com/sspaeti/neomd/internal/imap"
 )
+
+func optimisticActionTestModel() Model {
+	cfg := &config.Config{
+		Folders: config.FoldersConfig{
+			Inbox:       "INBOX",
+			ToScreen:    "ToScreen",
+			Feed:        "Feed",
+			ScreenedOut: "ScreenedOut",
+			Archive:     "Archive",
+			TabOrder:    []string{"to_screen", "feed", "archive"},
+		},
+		UI: config.UIConfig{InboxCount: 50},
+	}
+	m := Model{
+		cfg:          cfg,
+		folders:      cfg.Folders.TabLabels(),
+		state:        stateInbox,
+		width:        120,
+		height:       10,
+		markedUIDs:   map[uint32]bool{1: true},
+		folderCounts: map[string]int{"ToScreen": 3, "Inbox": 7},
+		emails: []imap.Email{
+			{UID: 1, Folder: "ToScreen", From: "sender@example.com", Subject: "target"},
+			{UID: 2, Folder: "ToScreen", From: "other@example.com", Subject: "keep selected"},
+			{UID: 3, Folder: "ToScreen", From: "third@example.com", Subject: "keep"},
+		},
+	}
+	m.inbox = newInboxList(120, 10, "Sent", "Drafts")
+	m.applyFilter()
+	m.inbox.Select(1)
+	return m
+}
+
+func TestIOFActionsUpdateVisibleStateWithoutReload(t *testing.T) {
+	for _, action := range []string{"I", "O", "F", "A"} {
+		t.Run(action, func(t *testing.T) {
+			m := optimisticActionTestModel()
+			started := time.Now()
+			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(action)})
+			if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+				t.Fatalf("key handling took %s; UI state should not wait for IMAP", elapsed)
+			}
+			if cmd == nil {
+				t.Fatal("action did not start its backend command")
+			}
+			got := next.(Model)
+			if !got.loading || got.optimisticAction == nil {
+				t.Fatalf("after key: loading=%v optimistic=%v, want pending action", got.loading, got.optimisticAction != nil)
+			}
+			if strings.Contains(got.View(), "Loading") || !strings.Contains(got.View(), "keep selected") {
+				t.Fatal("optimistic action hid the visible message list")
+			}
+			if len(got.emails) != 2 || got.emails[0].UID != 2 || got.emails[1].UID != 3 {
+				t.Fatalf("visible emails after %s = %#v, want UIDs [2 3]", action, got.emails)
+			}
+			selected := selectedEmail(got.inbox)
+			if selected == nil || selected.UID != 2 {
+				t.Fatalf("selection after %s = %#v, want UID 2", action, selected)
+			}
+
+			next, duplicateCmd := got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(action)})
+			got = next.(Model)
+			if duplicateCmd != nil {
+				t.Fatal("repeated action started a duplicate backend command")
+			}
+			next, cmd = got.Update(batchDoneMsg{optimistic: true})
+			got = next.(Model)
+			if cmd != nil || got.loading || got.optimisticAction != nil {
+				t.Fatalf("after success: cmd=%v loading=%v optimistic=%v", cmd != nil, got.loading, got.optimisticAction != nil)
+			}
+			selected = selectedEmail(got.inbox)
+			if selected == nil || selected.UID != 2 {
+				t.Fatalf("selection after success = %#v, want UID 2", selected)
+			}
+		})
+	}
+}
+
+func TestOptimisticActionFailureRestoresVisibleStateAndSelection(t *testing.T) {
+	m := optimisticActionTestModel()
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	got := next.(Model)
+	next, cmd := got.Update(batchDoneMsg{optimistic: true, err: errors.New("test backend refusal")})
+	got = next.(Model)
+	if cmd != nil {
+		t.Fatal("failed optimistic action started a reload")
+	}
+	if len(got.emails) != 3 || got.emails[0].UID != 1 || !got.markedUIDs[1] {
+		t.Fatalf("failed action did not restore emails/mark: %#v, marks=%v", got.emails, got.markedUIDs)
+	}
+	selected := selectedEmail(got.inbox)
+	if selected == nil || selected.UID != 2 {
+		t.Fatalf("selection after failed action = %#v, want UID 2", selected)
+	}
+}
+
+func TestOptimisticActionFailureRestoresRemovedSelection(t *testing.T) {
+	m := optimisticActionTestModel()
+	m.markedUIDs = nil
+	m.inbox.Select(0)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	got := next.(Model)
+	next, _ = got.Update(batchDoneMsg{optimistic: true, err: errors.New("test backend refusal")})
+	got = next.(Model)
+	selected := selectedEmail(got.inbox)
+	if selected == nil || selected.UID != 1 {
+		t.Fatalf("selection after failed action = %#v, want UID 1", selected)
+	}
+}
+
+func TestOptimisticActionIgnoresStaleFolderLoad(t *testing.T) {
+	m := optimisticActionTestModel()
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	got := next.(Model)
+	next, cmd := got.Update(emailsLoadedMsg{
+		emails:     []imap.Email{{UID: 99, Folder: "ToScreen", Subject: "stale"}},
+		folder:     "ToScreen",
+		generation: 0,
+	})
+	got = next.(Model)
+	if cmd != nil || len(got.emails) != 2 || got.emails[0].UID != 2 || got.optimisticAction == nil {
+		t.Fatalf("stale load replaced optimistic state: cmd=%v emails=%#v pending=%v", cmd != nil, got.emails, got.optimisticAction != nil)
+	}
+}
 
 func TestMaskEmail(t *testing.T) {
 	tests := []struct {

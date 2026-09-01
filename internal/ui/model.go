@@ -52,8 +52,9 @@ const (
 // async message types
 type (
 	emailsLoadedMsg struct {
-		emails []imap.Email
-		folder string
+		emails     []imap.Email
+		folder     string
+		generation uint64
 	}
 	bodyLoadedMsg struct {
 		email       *imap.Email
@@ -120,8 +121,9 @@ type (
 		undo []undoMove
 	}
 	batchDoneMsg struct {
-		err  error
-		undo []undoMove
+		err        error
+		undo       []undoMove
+		optimistic bool
 	}
 	undoDoneMsg       struct{}
 	toggleSeenDoneMsg struct {
@@ -628,6 +630,12 @@ type Model struct {
 	// Screener operations (I/O/F/P/$) are not undoable — they also modify .txt files.
 	undoStack [][]undoMove
 
+	// optimisticAction keeps the pre-action UI state until the backend result
+	// arrives. Successful I/O/F/A actions keep their local state; failures roll
+	// back the snapshot and restore the original selection.
+	optimisticAction *optimisticActionState
+	viewGeneration   uint64
+
 	// Forward/Reply: when true, bodyLoadedMsg launches the action instead of reader
 	pendingForward  bool
 	pendingReply    bool
@@ -704,6 +712,15 @@ type Model struct {
 	// When set, the TUI opens compose immediately after init.
 	mailto     *MailtoParams
 	mailtoBody string // body from mailto URI, consumed by launchEditorCmd
+}
+
+type optimisticActionState struct {
+	emails               []imap.Email
+	markedUIDs           map[uint32]bool
+	folderCounts         map[string]int
+	selectionKey         string
+	previousSelectionKey string
+	wasMarked            bool
 }
 
 // New creates and initialises the TUI model.
@@ -995,7 +1012,7 @@ func (m Model) fetchFolderCmd(folder string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return emailsLoadedMsg{emails: emails, folder: folder}
+		return emailsLoadedMsg{emails: emails, folder: folder, generation: m.viewGeneration}
 	}
 }
 
@@ -1494,12 +1511,15 @@ func (m Model) batchScreenerCmd(emails []imap.Email, action string) tea.Cmd {
 		ops = append(ops, op{e.From, e.Folder, e.UID, dst})
 	}
 	bp := m.bulkProgress
+	expandSender := len(emails) == 1 && emails[0].Folder == cfg.Folders.ToScreen &&
+		((m.optimisticAction != nil && !m.optimisticAction.wasMarked) ||
+			(m.optimisticAction == nil && len(m.markedUIDs) == 0))
 	return func() tea.Msg {
 		if err := m.validateScreenerSafety(); err != nil {
 			return batchDoneMsg{err: err}
 		}
 		expandedOps := ops
-		if len(emails) == 1 && len(m.markedUIDs) == 0 && emails[0].Folder == cfg.Folders.ToScreen {
+		if expandSender {
 			sender := normalizedSender(emails[0].From)
 			uids, err := m.imapCli().SearchUIDs(nil, cfg.Folders.ToScreen)
 			if err != nil {
@@ -2100,6 +2120,189 @@ func (m Model) screenerCmd(e *imap.Email, action string) tea.Cmd {
 	}
 }
 
+// optimisticBatchDone marks a batch command whose visible result was applied
+// locally. The backend still runs normally; only the successful completion
+// skips the redundant folder fetch.
+func optimisticBatchDone(cmd tea.Cmd) tea.Cmd {
+	return func() tea.Msg {
+		msg := cmd()
+		if done, ok := msg.(batchDoneMsg); ok {
+			done.optimistic = true
+			return done
+		}
+		return msg
+	}
+}
+
+func actionDestination(cfg *config.Config, action string) string {
+	switch action {
+	case "I":
+		return cfg.Folders.Inbox
+	case "O":
+		return cfg.Folders.ScreenedOut
+	case "F":
+		return cfg.Folders.Feed
+	case "A":
+		return cfg.Folders.Archive
+	default:
+		return ""
+	}
+}
+
+func actionEmailKey(e imap.Email) string {
+	return e.Folder + "\x00" + strconv.FormatUint(uint64(e.UID), 10)
+}
+
+func copyUIDSet(m map[uint32]bool) map[uint32]bool {
+	if m == nil {
+		return nil
+	}
+	out := make(map[uint32]bool, len(m))
+	for uid, marked := range m {
+		out[uid] = marked
+	}
+	return out
+}
+
+func copyFolderCounts(m map[string]int) map[string]int {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]int, len(m))
+	for folder, count := range m {
+		out[folder] = count
+	}
+	return out
+}
+
+func (m Model) optimisticTargets(targets []imap.Email, action string) []imap.Email {
+	out := append([]imap.Email(nil), targets...)
+	if len(targets) != 1 || len(m.markedUIDs) != 0 || action == "A" || targets[0].Folder != m.cfg.Folders.ToScreen {
+		return out
+	}
+	sender := normalizedSender(targets[0].From)
+	for _, e := range m.emails {
+		if e.Folder == m.cfg.Folders.ToScreen && normalizedSender(e.From) == sender && actionEmailKey(e) != actionEmailKey(targets[0]) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func (m Model) selectionAfterRemoval(remove map[string]bool) string {
+	selected := selectedEmail(m.inbox)
+	if selected == nil {
+		return ""
+	}
+	selectedKey := actionEmailKey(*selected)
+	if !remove[selectedKey] {
+		return selectedKey
+	}
+	index := m.inbox.Index()
+	items := m.inbox.Items()
+	for i := index + 1; i < len(items); i++ {
+		if item, ok := items[i].(emailItem); ok && !remove[actionEmailKey(item.email)] {
+			return actionEmailKey(item.email)
+		}
+	}
+	for i := index - 1; i >= 0; i-- {
+		if item, ok := items[i].(emailItem); ok && !remove[actionEmailKey(item.email)] {
+			return actionEmailKey(item.email)
+		}
+	}
+	return ""
+}
+
+func (m *Model) restoreActionSelection(key string) {
+	if key == "" {
+		return
+	}
+	for i, item := range m.inbox.Items() {
+		if email, ok := item.(emailItem); ok && actionEmailKey(email.email) == key {
+			m.inbox.Select(i)
+			return
+		}
+	}
+}
+
+func (m *Model) adjustOptimisticFolderCounts(targets []imap.Email, dst string) {
+	if len(m.folderCounts) == 0 || dst == "" {
+		return
+	}
+	for _, e := range targets {
+		if e.Folder == dst {
+			continue
+		}
+		srcLabel := m.cfg.Folders.LabelFor(e.Folder)
+		if count, ok := m.folderCounts[srcLabel]; ok && count > 0 && !e.Seen {
+			m.folderCounts[srcLabel] = count - 1
+		}
+		dstLabel := m.cfg.Folders.LabelFor(dst)
+		if count, ok := m.folderCounts[dstLabel]; ok && !e.Seen {
+			m.folderCounts[dstLabel] = count + 1
+		}
+	}
+}
+
+// beginOptimisticAction removes rows from the local view and remembers the
+// complete pre-action state for rollback. SetItems runs on Bubble Tea's main
+// goroutine, so the visible result does not wait for IMAP.
+func (m *Model) beginOptimisticAction(targets []imap.Email, action string) {
+	m.viewGeneration++
+	dst := actionDestination(m.cfg, action)
+	expandSender := len(targets) == 1 && len(m.markedUIDs) == 0 && action != "A" && targets[0].Folder == m.cfg.Folders.ToScreen
+	optimisticTargets := m.optimisticTargets(targets, action)
+	remove := make(map[string]bool, len(optimisticTargets))
+	for _, e := range optimisticTargets {
+		if e.Folder != dst {
+			remove[actionEmailKey(e)] = true
+		}
+	}
+	previousSelectionKey := ""
+	if selected := selectedEmail(m.inbox); selected != nil {
+		previousSelectionKey = actionEmailKey(*selected)
+	}
+	m.optimisticAction = &optimisticActionState{
+		emails:               append([]imap.Email(nil), m.emails...),
+		markedUIDs:           copyUIDSet(m.markedUIDs),
+		folderCounts:         copyFolderCounts(m.folderCounts),
+		selectionKey:         m.selectionAfterRemoval(remove),
+		previousSelectionKey: previousSelectionKey,
+		wasMarked:            len(m.markedUIDs) > 0,
+	}
+	if len(remove) == 0 && len(optimisticTargets) == 0 {
+		return
+	}
+	filtered := m.emails[:0]
+	for _, e := range m.emails {
+		if !remove[actionEmailKey(e)] {
+			filtered = append(filtered, e)
+		}
+		if m.markedUIDs != nil {
+			delete(m.markedUIDs, e.UID)
+		}
+	}
+	m.emails = filtered
+	if !expandSender {
+		m.adjustOptimisticFolderCounts(optimisticTargets, dst)
+	}
+	m.applyFilter()
+	m.restoreActionSelection(m.optimisticAction.selectionKey)
+}
+
+func (m *Model) restoreOptimisticAction() {
+	if m.optimisticAction == nil {
+		return
+	}
+	state := m.optimisticAction
+	m.emails = state.emails
+	m.markedUIDs = state.markedUIDs
+	m.folderCounts = state.folderCounts
+	m.applyFilter()
+	m.restoreActionSelection(state.previousSelectionKey)
+	m.optimisticAction = nil
+}
+
 // ── Update ────────────────────────────────────────────────────────────────
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -2150,6 +2353,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case emailsLoadedMsg:
+		if msg.generation != m.viewGeneration || m.optimisticAction != nil {
+			return m, nil
+		}
 		m.loading = false
 		m.emails = msg.emails
 		m.harvestContacts(msg.emails)
@@ -2557,6 +2763,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.bulkProgress = nil
 		m.markedUIDs = make(map[uint32]bool)
+		if msg.optimistic {
+			if msg.err != nil {
+				if len(msg.undo) > 0 {
+					m.undoStack = append(m.undoStack, msg.undo)
+					if len(m.undoStack) > maxUndoStack {
+						m.undoStack = m.undoStack[len(m.undoStack)-maxUndoStack:]
+					}
+				}
+				m.restoreOptimisticAction()
+				m.status = msg.err.Error()
+				m.isError = true
+				return m, nil
+			}
+			m.optimisticAction = nil
+			if len(msg.undo) > 0 {
+				m.undoStack = append(m.undoStack, msg.undo)
+				if len(m.undoStack) > maxUndoStack {
+					m.undoStack = m.undoStack[len(m.undoStack)-maxUndoStack:]
+				}
+			}
+			m.status = "Done."
+			m.isError = false
+			return m, nil
+		}
 		if msg.err != nil {
 			// Include partial undo info so user can reverse already-moved emails.
 			if len(msg.undo) > 0 {
@@ -2885,6 +3115,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.optimisticAction != nil && m.state == stateInbox && msg.String() != "q" && msg.String() != "ctrl+c" {
+			return m, nil
+		}
 		// ? opens/closes help — but only from states without active text input.
 		// stateCompose feeds keys into a textinput where the user must be able
 		// to type "?" verbatim (To/CC/BCC/Subject fields). Other states either
@@ -3167,9 +3400,19 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(targets) == 0 {
 			return m, nil
 		}
+		if key == "I" || key == "O" || key == "F" {
+			if m.optimisticAction != nil {
+				return m, nil
+			}
+			m.beginOptimisticAction(targets, key)
+		}
 		m.loading = true
 		m.bulkProgress = m.newBulkOp("Screening", len(targets))
-		return m, tea.Batch(m.spinner.Tick, m.batchScreenerCmd(targets, key))
+		cmd := m.batchScreenerCmd(targets, key)
+		if key == "I" || key == "O" || key == "F" {
+			cmd = optimisticBatchDone(cmd)
+		}
+		return m, tea.Batch(m.spinner.Tick, cmd)
 
 	// A = archive (pure move, no screener update)
 	case "A":
@@ -3177,9 +3420,13 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(targets) == 0 {
 			return m, nil
 		}
+		if m.optimisticAction != nil {
+			return m, nil
+		}
+		m.beginOptimisticAction(targets, key)
 		m.loading = true
 		m.bulkProgress = m.newBulkOp("Archiving", len(targets))
-		return m, tea.Batch(m.spinner.Tick, m.batchMoveCmd(targets, m.cfg.Folders.Archive))
+		return m, tea.Batch(m.spinner.Tick, optimisticBatchDone(m.batchMoveCmd(targets, m.cfg.Folders.Archive)))
 
 	// B = move to Work/Business (pure move, no screener update)
 	case "B":
@@ -6016,7 +6263,7 @@ func (m Model) viewInbox() string {
 	b.WriteString(header + "\n")
 	b.WriteString(styleSeparator.Render(strings.Repeat("─", m.width)) + "\n")
 
-	if m.loading {
+	if m.loading && m.optimisticAction == nil {
 		loadingText := "Loading…"
 		if bp := m.bulkProgress; bp != nil && bp.total > 0 {
 			loadingText = bp.String()
