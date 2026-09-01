@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +15,524 @@ import (
 	"github.com/sspaeti/neomd/internal/config"
 	"github.com/sspaeti/neomd/internal/imap"
 )
+
+func optimisticActionTestModel() Model {
+	cfg := &config.Config{
+		Folders: config.FoldersConfig{
+			Inbox:       "INBOX",
+			ToScreen:    "ToScreen",
+			Feed:        "Feed",
+			PaperTrail:  "PaperTrail",
+			ScreenedOut: "ScreenedOut",
+			Spam:        "Spam",
+			Archive:     "Archive",
+			TabOrder:    []string{"to_screen", "feed", "archive"},
+		},
+		UI: config.UIConfig{InboxCount: 50},
+	}
+	m := Model{
+		cfg:          cfg,
+		folders:      cfg.Folders.TabLabels(),
+		state:        stateInbox,
+		width:        120,
+		height:       10,
+		markedUIDs:   map[uint32]bool{1: true},
+		folderCounts: map[string]int{"ToScreen": 3, "Inbox": 7},
+		emails: []imap.Email{
+			{UID: 1, Folder: "ToScreen", From: "sender@example.com", Subject: "target"},
+			{UID: 2, Folder: "ToScreen", From: "other@example.com", Subject: "keep selected"},
+			{UID: 3, Folder: "ToScreen", From: "third@example.com", Subject: "keep"},
+		},
+	}
+	m.inbox = newInboxList(120, 10, "Sent", "Drafts")
+	m.applyFilter()
+	m.inbox.Select(1)
+	return m
+}
+
+func TestIOFActionsUpdateVisibleStateWithoutReload(t *testing.T) {
+	for _, action := range []string{"I", "O", "F", "P", "$", "A"} {
+		t.Run(action, func(t *testing.T) {
+			m := optimisticActionTestModel()
+			started := time.Now()
+			next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(action)})
+			if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+				t.Fatalf("key handling took %s; UI state should not wait for IMAP", elapsed)
+			}
+			if cmd == nil {
+				t.Fatal("action did not start its backend command")
+			}
+			got := next.(Model)
+			if !got.loading || got.optimisticAction == nil {
+				t.Fatalf("after key: loading=%v optimistic=%v, want pending action", got.loading, got.optimisticAction != nil)
+			}
+			if strings.Contains(got.View(), "Loading") || !strings.Contains(got.View(), "keep selected") {
+				t.Fatal("optimistic action hid the visible message list")
+			}
+			if len(got.emails) != 2 || got.emails[0].UID != 2 || got.emails[1].UID != 3 {
+				t.Fatalf("visible emails after %s = %#v, want UIDs [2 3]", action, got.emails)
+			}
+			selected := selectedEmail(got.inbox)
+			if selected == nil || selected.UID != 2 {
+				t.Fatalf("selection after %s = %#v, want UID 2", action, selected)
+			}
+
+			next, duplicateCmd := got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(action)})
+			got = next.(Model)
+			if duplicateCmd != nil {
+				t.Fatal("repeated action started a duplicate backend command")
+			}
+			next, cmd = got.Update(batchDoneMsg{optimistic: true})
+			got = next.(Model)
+			if cmd == nil || got.loading || got.optimisticAction != nil {
+				t.Fatalf("after success: cmd=%v loading=%v optimistic=%v", cmd != nil, got.loading, got.optimisticAction != nil)
+			}
+			selected = selectedEmail(got.inbox)
+			if selected == nil || selected.UID != 2 {
+				t.Fatalf("selection after success = %#v, want UID 2", selected)
+			}
+		})
+	}
+}
+
+func TestOptimisticActionReconcilesInvalidatedCounts(t *testing.T) {
+	for _, action := range []string{"A", "I", "O", "F", "P", "$"} {
+		t.Run(action, func(t *testing.T) {
+			m := optimisticActionTestModel()
+			_ = m.fetchFolderCountsCmd()
+			staleGeneration := m.currentCountsGeneration()
+
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(action)})
+			got := next.(Model)
+			beforeStaleResult := got.folderCounts["Inbox"]
+			next, cmd := got.Update(batchDoneMsg{optimistic: true})
+			got = next.(Model)
+			if cmd == nil || got.optimisticAction != nil || got.loading {
+				t.Fatalf("successful %s action did not reconcile counts: cmd=%v pending=%v loading=%v", action, cmd != nil, got.optimisticAction != nil, got.loading)
+			}
+			currentGeneration := got.currentCountsGeneration()
+			if currentGeneration == staleGeneration {
+				t.Fatal("successful action did not replace the invalidated count request")
+			}
+
+			next, cmd = got.Update(folderCountsMsg{
+				counts:     map[string]int{"Inbox": 99},
+				generation: staleGeneration,
+			})
+			got = next.(Model)
+			if cmd != nil || got.folderCounts["Inbox"] != beforeStaleResult {
+				t.Fatalf("stale counts changed local state after %s: cmd=%v counts=%v", action, cmd != nil, got.folderCounts)
+			}
+
+			next, cmd = got.Update(folderCountsMsg{
+				counts:     map[string]int{"Inbox": 12},
+				generation: currentGeneration,
+			})
+			got = next.(Model)
+			if cmd != nil || got.folderCounts["Inbox"] != 12 {
+				t.Fatalf("replacement counts were rejected after %s: cmd=%v counts=%v", action, cmd != nil, got.folderCounts)
+			}
+		})
+	}
+}
+
+func TestOptimisticActionEmptyDestinationKeepsRows(t *testing.T) {
+	m := optimisticActionTestModel()
+	m.cfg.Folders.PaperTrail = ""
+	m.markedUIDs = nil
+	m.inbox.Select(0)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	got := next.(Model)
+	if cmd == nil {
+		t.Fatal("action did not start its backend command")
+	}
+	if len(got.emails) != 3 || got.emails[0].UID != 1 || got.emails[1].UID != 2 || got.emails[2].UID != 3 {
+		t.Fatalf("empty-destination action changed visible emails: %#v", got.emails)
+	}
+	selected := selectedEmail(got.inbox)
+	if selected == nil || selected.UID != 1 {
+		t.Fatalf("selection after empty-destination action = %#v, want UID 1", selected)
+	}
+}
+
+func TestOptimisticActionFailureRestoresVisibleStateAndSelection(t *testing.T) {
+	m := optimisticActionTestModel()
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	got := next.(Model)
+	next, cmd := got.Update(batchDoneMsg{optimistic: true, err: errors.New("test backend refusal")})
+	got = next.(Model)
+	if cmd != nil {
+		t.Fatal("failed optimistic action started a reload")
+	}
+	if len(got.emails) != 3 || got.emails[0].UID != 1 || !got.markedUIDs[1] {
+		t.Fatalf("failed action did not restore emails/mark: %#v, marks=%v", got.emails, got.markedUIDs)
+	}
+	selected := selectedEmail(got.inbox)
+	if selected == nil || selected.UID != 2 {
+		t.Fatalf("selection after failed action = %#v, want UID 2", selected)
+	}
+}
+
+func TestOptimisticActionFailureRestoresRemovedSelection(t *testing.T) {
+	m := optimisticActionTestModel()
+	m.markedUIDs = nil
+	m.inbox.Select(0)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	got := next.(Model)
+	next, _ = got.Update(batchDoneMsg{optimistic: true, err: errors.New("test backend refusal")})
+	got = next.(Model)
+	selected := selectedEmail(got.inbox)
+	if selected == nil || selected.UID != 1 {
+		t.Fatalf("selection after failed action = %#v, want UID 1", selected)
+	}
+}
+
+func TestOptimisticActionIgnoresStaleFolderLoad(t *testing.T) {
+	m := optimisticActionTestModel()
+	_ = m.fetchFolderCmd("ToScreen")
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	got := next.(Model)
+	next, _ = got.Update(batchDoneMsg{optimistic: true})
+	got = next.(Model)
+	if got.optimisticAction != nil {
+		t.Fatal("optimistic action did not complete")
+	}
+	staleGeneration := got.currentViewGeneration() - 1
+	next, cmd := got.Update(emailsLoadedMsg{
+		emails:     []imap.Email{{UID: 99, Folder: "ToScreen", Subject: "stale"}},
+		folder:     "ToScreen",
+		generation: staleGeneration,
+	})
+	got = next.(Model)
+	if cmd != nil || len(got.emails) != 2 || got.emails[0].UID != 2 || got.optimisticAction != nil {
+		t.Fatalf("stale load replaced completed action state: cmd=%v emails=%#v pending=%v", cmd != nil, got.emails, got.optimisticAction != nil)
+	}
+	currentGeneration := got.currentViewGeneration()
+	next, _ = got.Update(emailsLoadedMsg{
+		emails:     []imap.Email{{UID: 100, Folder: "ToScreen", Subject: "current"}},
+		folder:     "ToScreen",
+		generation: currentGeneration,
+	})
+	got = next.(Model)
+	if len(got.emails) != 1 || got.emails[0].UID != 100 {
+		t.Fatalf("current load was rejected: emails=%#v", got.emails)
+	}
+}
+
+func TestNavigationCancelsPendingBodyAction(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     tea.KeyMsg
+		pending func(Model) bool
+	}{
+		{name: "reply", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}, pending: func(m Model) bool { return m.pendingReply }},
+		{name: "reply all", key: tea.KeyMsg{Type: tea.KeyCtrlR}, pending: func(m Model) bool { return m.pendingReplyAll }},
+		{name: "reaction", key: tea.KeyMsg{Type: tea.KeyCtrlE}, pending: func(m Model) bool { return m.pendingReaction }},
+		{name: "forward", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}}, pending: func(m Model) bool { return m.pendingForward }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := optimisticActionTestModel()
+			m.markedUIDs = nil
+			m.spyPixelKeys = map[string]bool{}
+			m.spyScannedKeys = map[string]bool{}
+			m.inbox.Select(0)
+			m.cfg.UI.MarkAsReadAfterSecs = 1
+
+			next, cmd := m.Update(tt.key)
+			got := next.(Model)
+			if cmd == nil || !tt.pending(got) {
+				t.Fatalf("body action did not start: cmd=%v pending=%v", cmd != nil, tt.pending(got))
+			}
+			pendingGeneration := got.currentViewGeneration()
+
+			_, zones := folderTabs(got.folders, "", got.folderCounts)
+			if len(zones) < 2 {
+				t.Fatal("test model needs at least two folder tabs")
+			}
+			next, cmd = got.Update(tea.MouseMsg{
+				X:      zones[1].xStart + 1,
+				Y:      0,
+				Action: tea.MouseActionPress,
+				Button: tea.MouseButtonLeft,
+			})
+			got = next.(Model)
+			if cmd == nil || got.currentViewGeneration() == pendingGeneration {
+				t.Fatalf("navigation did not supersede body request: cmd=%v generation=%d", cmd != nil, got.currentViewGeneration())
+			}
+			if got.pendingForward || got.pendingReply || got.pendingReplyAll || got.pendingReaction {
+				t.Fatal("navigation left a body action pending")
+			}
+
+			next, cmd = got.Update(bodyLoadedMsg{
+				email:      &imap.Email{UID: 1, Folder: "ToScreen"},
+				body:       "stale",
+				generation: pendingGeneration,
+			})
+			got = next.(Model)
+			if cmd != nil || got.state != stateInbox {
+				t.Fatalf("stale body result changed the inbox: cmd=%v state=%d", cmd != nil, got.state)
+			}
+
+			currentEmail := &imap.Email{UID: 2, Folder: "Feed"}
+			_ = got.fetchBodyCmd(currentEmail)
+			currentGeneration := got.currentViewGeneration()
+			next, cmd = got.Update(bodyLoadedMsg{
+				email:      currentEmail,
+				body:       "current",
+				generation: currentGeneration,
+			})
+			got = next.(Model)
+			if got.state != stateReading || got.openEmail != currentEmail {
+				t.Fatalf("current body opened as pending action: cmd=%v state=%d email=%#v", cmd != nil, got.state, got.openEmail)
+			}
+		})
+	}
+}
+
+func TestOptimisticActionIgnoresStaleViewResults(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  func(viewGeneration, countsGeneration uint64) tea.Msg
+	}{
+		{name: "body", msg: func(g, _ uint64) tea.Msg {
+			return bodyLoadedMsg{email: &imap.Email{UID: 9, Folder: "ToScreen"}, body: "stale", generation: g}
+		}},
+		{name: "search", msg: func(g, _ uint64) tea.Msg {
+			return imapSearchResultMsg{emails: []imap.Email{{UID: 9, Folder: "Search"}}, generation: g}
+		}},
+		{name: "everything", msg: func(g, _ uint64) tea.Msg {
+			return everythingResultMsg{emails: []imap.Email{{UID: 9, Folder: "Everything"}}, generation: g}
+		}},
+		{name: "conversation", msg: func(g, _ uint64) tea.Msg {
+			return conversationResultMsg{emails: []imap.Email{{UID: 9, Folder: "Thread"}}, generation: g}
+		}},
+		{name: "sender", msg: func(g, _ uint64) tea.Msg {
+			return senderResultMsg{addr: "stale@example.com", emails: []imap.Email{{UID: 9, Folder: "Sender"}}, generation: g}
+		}},
+		{name: "counts", msg: func(_, g uint64) tea.Msg {
+			return folderCountsMsg{counts: map[string]int{"Inbox": 99}, generation: g}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := optimisticActionTestModel()
+			_ = m.fetchFolderCmd("ToScreen")
+			_ = m.fetchFolderCountsCmd()
+			next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+			got := next.(Model)
+			next, _ = got.Update(batchDoneMsg{optimistic: true})
+			got = next.(Model)
+			if got.optimisticAction != nil {
+				t.Fatal("optimistic action did not complete")
+			}
+			staleViewGeneration := got.currentViewGeneration() - 1
+			staleCountsGeneration := got.currentCountsGeneration() - 1
+			next, cmd := got.Update(tt.msg(staleViewGeneration, staleCountsGeneration))
+			switch updated := next.(type) {
+			case Model:
+				got = updated
+			case *Model:
+				got = *updated
+			default:
+				t.Fatalf("unexpected model type %T", next)
+			}
+			if cmd != nil || len(got.emails) != 2 || got.emails[0].UID != 2 || got.optimisticAction != nil {
+				t.Fatalf("stale %s result changed the completed view: cmd=%v emails=%#v pending=%v", tt.name, cmd != nil, got.emails, got.optimisticAction != nil)
+			}
+			if got.state != stateInbox || got.folderCounts["Inbox"] != 7 {
+				t.Fatalf("stale %s result changed view state: state=%d counts=%v", tt.name, got.state, got.folderCounts)
+			}
+		})
+	}
+}
+
+func TestFolderCountsRefreshSurvivesViewRequest(t *testing.T) {
+	m := optimisticActionTestModel()
+	_ = m.fetchFolderCountsCmd()
+	countsGeneration := m.currentCountsGeneration()
+	_ = m.fetchFolderCmd("ToScreen")
+
+	next, cmd := m.Update(folderCountsMsg{
+		counts:     map[string]int{"Inbox": 12},
+		generation: countsGeneration,
+	})
+	got := next.(Model)
+	if cmd != nil || got.folderCounts["Inbox"] != 12 {
+		t.Fatalf("count refresh was discarded after view request: cmd=%v counts=%v", cmd != nil, got.folderCounts)
+	}
+}
+
+func TestAccountSwitchInvalidatesStaleCounts(t *testing.T) {
+	m := optimisticActionTestModel()
+	m.accounts = []config.AccountConfig{{Name: "Personal"}, {Name: "Work"}}
+	m.clients = []*imap.Client{imap.New(imap.Config{Host: "personal"}), imap.New(imap.Config{Host: "work"})}
+	_ = m.fetchFolderCountsCmd()
+	staleGeneration := m.currentCountsGeneration()
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	got := next.(Model)
+	if cmd == nil || got.accountI != 1 {
+		t.Fatalf("account switch did not start new view: cmd=%v account=%d", cmd != nil, got.accountI)
+	}
+	if got.currentCountsGeneration() == staleGeneration {
+		t.Fatal("account switch did not invalidate the old count request")
+	}
+
+	next, cmd = got.Update(folderCountsMsg{
+		counts:     map[string]int{"Inbox": 99},
+		generation: staleGeneration,
+	})
+	got = next.(Model)
+	if cmd != nil || got.folderCounts["Inbox"] != 7 {
+		t.Fatalf("stale account counts were applied: cmd=%v counts=%v", cmd != nil, got.folderCounts)
+	}
+
+	next, cmd = got.Update(folderCountsMsg{
+		counts:     map[string]int{"Inbox": 12},
+		generation: got.currentCountsGeneration(),
+	})
+	got = next.(Model)
+	if cmd != nil || got.folderCounts["Inbox"] != 12 {
+		t.Fatalf("current account counts were rejected: cmd=%v counts=%v", cmd != nil, got.folderCounts)
+	}
+}
+
+func TestFolderCountsRefreshFailurePreservesCounts(t *testing.T) {
+	m := optimisticActionTestModel()
+	_ = m.fetchFolderCountsCmd()
+	generation := m.currentCountsGeneration()
+
+	next, cmd := m.Update(folderCountsMsg{
+		counts:     nil,
+		generation: generation,
+		err:        errors.New("temporary count failure"),
+	})
+	got := next.(Model)
+	if cmd != nil || got.folderCounts["Inbox"] != 7 {
+		t.Fatalf("count failure erased existing counts: cmd=%v counts=%v", cmd != nil, got.folderCounts)
+	}
+}
+
+func TestDebugReportUsesForegroundRequest(t *testing.T) {
+	m := optimisticActionTestModel()
+	var debugCmd *neomdCmd
+	for i := range cmdRegistry {
+		if cmdRegistry[i].name == "debug" {
+			debugCmd = &cmdRegistry[i]
+			break
+		}
+	}
+	if debugCmd == nil {
+		t.Fatal("debug command is not registered")
+	}
+
+	result, cmd := debugCmd.run(&m)
+	got, ok := result.(*Model)
+	if !ok {
+		t.Fatalf("debug command returned %T, want *Model", result)
+	}
+	if cmd == nil || !got.loading {
+		t.Fatalf("debug command did not guard its async work: cmd=%v loading=%v", cmd != nil, got.loading)
+	}
+	debugGeneration := got.currentViewGeneration()
+	if debugGeneration == 0 {
+		t.Fatal("debug command did not claim a foreground generation")
+	}
+
+	next, _ := got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	updated := next.(Model)
+	if updated.state != stateInbox || !updated.loading {
+		t.Fatalf("compose input was accepted during debug report: state=%d loading=%v", updated.state, updated.loading)
+	}
+
+	updated.nextViewGeneration()
+	next, cmd = updated.Update(bodyLoadedMsg{
+		generation: debugGeneration,
+		err:        errors.New("debug report failed"),
+	})
+	updated = next.(Model)
+	if cmd != nil || !updated.loading || updated.status != "" {
+		t.Fatalf("stale debug error changed active UI: cmd=%v loading=%v status=%q", cmd != nil, updated.loading, updated.status)
+	}
+}
+
+func TestReaderExitClearsCanceledReload(t *testing.T) {
+	m := Model{
+		cfg:         &config.Config{Folders: config.FoldersConfig{Inbox: "INBOX"}},
+		folders:     []string{"Inbox"},
+		state:       stateReading,
+		loading:     true,
+		viewRequest: &viewRequestState{},
+	}
+	staleGeneration := m.nextViewGeneration()
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	got := next.(Model)
+	if cmd != nil || got.state != stateInbox || got.loading {
+		t.Fatalf("reader exit left reload active: cmd=%v state=%d loading=%v", cmd != nil, got.state, got.loading)
+	}
+	if got.currentViewGeneration() == staleGeneration {
+		t.Fatal("reader exit did not invalidate the pending reload")
+	}
+
+	next, cmd = got.Update(emailsLoadedMsg{
+		emails:     []imap.Email{{UID: 99, Folder: "INBOX"}},
+		folder:     "INBOX",
+		generation: staleGeneration,
+	})
+	got = next.(Model)
+	if cmd != nil || len(got.emails) != 0 || got.loading {
+		t.Fatalf("canceled reader reload was applied: cmd=%v emails=%#v loading=%v", cmd != nil, got.emails, got.loading)
+	}
+}
+
+func TestOptimisticActionBlocksTabNavigation(t *testing.T) {
+	m := optimisticActionTestModel()
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	got := next.(Model)
+	_, zones := folderTabs(got.folders, "", got.folderCounts)
+	if len(zones) < 2 {
+		t.Fatal("test model needs at least two folder tabs")
+	}
+
+	next, cmd := got.Update(tea.MouseMsg{
+		X:      zones[1].xStart + 1,
+		Y:      0,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	})
+	got = next.(Model)
+	if cmd != nil || got.activeFolderI != 0 || got.offTabFolder != "" {
+		t.Fatalf("tab navigation changed during action: cmd=%v active=%d off-tab=%q", cmd != nil, got.activeFolderI, got.offTabFolder)
+	}
+}
+
+func TestSenderOptimisticActionAdjustsCounts(t *testing.T) {
+	m := optimisticActionTestModel()
+	m.markedUIDs = nil
+	m.emails = append(m.emails, imap.Email{UID: 4, Folder: "ToScreen", From: "sender@example.com", Subject: "same sender"})
+	m.applyFilter()
+	m.inbox.Select(0)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'I'}})
+	got := next.(Model)
+	if got.folderCounts["Inbox"] != 9 {
+		t.Fatalf("Inbox count after sender action = %d, want 9", got.folderCounts["Inbox"])
+	}
+	if got.optimisticAction == nil {
+		t.Fatal("sender-level action did not remain pending")
+	}
+
+	next, _ = got.Update(batchDoneMsg{optimistic: true, err: errors.New("test backend refusal")})
+	got = next.(Model)
+	if got.folderCounts["Inbox"] != 7 {
+		t.Fatalf("Inbox count after rollback = %d, want 7", got.folderCounts["Inbox"])
+	}
+}
 
 func TestMaskEmail(t *testing.T) {
 	tests := []struct {

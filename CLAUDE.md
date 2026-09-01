@@ -54,7 +54,7 @@ Requires Go 1.22+. Binary version is injected via `-ldflags -X main.version=$(gi
 
 Folder operations prefer RFC 6851 MOVE; `u` undo uses UIDPLUS destination UIDs captured on move/delete.
 
-**Screener** (`internal/screener/`) reads line-based lists of email addresses from paths defined in config. Default paths are under `~/.config/neomd/lists/`. Classification (`I`/`O`/`F`/`P`) appends to the corresponding list file and moves the message to the matching folder. Auto-screening runs on Inbox load and on a 5-minute background timer (`ui.background_sync_interval`).
+**Screener** (`internal/screener/`) reads line-based lists of email addresses from paths defined in config. Default paths are under `~/.config/neomd/lists/`. Classification (`I`/`O`/`F`/`P`/`$`) appends to the corresponding list file and moves the message to the matching folder. Auto-screening runs on Inbox load and on a 5-minute background timer (`ui.background_sync_interval`). Inbox screening and archive (`A`) actions update local rows and counts while the IMAP operation runs; rollback and stale-result details are pinned in `AGENTS.md` under “Optimistic inbox actions”.
 
 **Config** (`internal/config/`) — TOML at `~/.config/neomd/config.toml`, auto-created with placeholders. Supports multiple `[[accounts]]` and SMTP-only `[[senders]]` aliases (cycled with `ctrl+f` in compose/pre-send). OAuth2 authentication supported via `oauth2_client_id`, `oauth2_client_secret`, `oauth2_issuer_url`, `oauth2_scopes` fields. `-config PATH` flag overrides location.
 

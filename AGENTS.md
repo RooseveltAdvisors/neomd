@@ -126,6 +126,10 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 - **Reply-all excludes all own addresses** — both IMAP login addresses (`account.User`)
   and send-as addresses (accounts + `[[senders]]` aliases) are stripped from CC. Test:
   `TestReplyAllExcludesAllOwnAddresses`.
+- **Navigation cancels pending body actions** — leaving or switching away while a reply,
+  reply-all, reaction, or forward body fetch is pending clears that intent, so a stale
+  result cannot act on a later email (`nextViewGeneration` in `internal/ui/model.go`).
+  Test: `TestNavigationCancelsPendingBodyAction`.
 - **Threaded inbox rendering** — threads grouped via `In-Reply-To`/`Message-ID` with
   subject+participant fallback, `│`/`╰` connectors, newest on top; the Sent folder is
   intentionally **not** threaded. Tests: `TestNormalizeSubject`, `TestParticipantMatch`.
@@ -287,6 +291,18 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 
 ## Inbox Display
 
+- **Optimistic inbox actions** — `I`/`O`/`F`/`P`/`$` screener actions and `A` archive
+  remove affected rows immediately without a full-folder refresh; the list remains
+  visible while IMAP runs, stale view/account loads cannot overwrite it, duplicate
+  actions and tab navigation are ignored while pending, and failures restore the
+  prior rows, marks, counts, and selection (`optimisticAction` in
+  `internal/ui/model.go`).
+  Tests: `TestIOFActionsUpdateVisibleStateWithoutReload`,
+  `TestOptimisticActionFailureRestoresVisibleStateAndSelection`,
+  `TestOptimisticActionIgnoresStaleFolderLoad`,
+  `TestOptimisticActionIgnoresStaleViewResults`,
+  `TestOptimisticActionBlocksTabNavigation`,
+  `TestSenderOptimisticActionAdjustsCounts`.
 - **Rows never overflow the terminal width** — complex scripts (Bengali/Arabic/Thai/emoji)
   collapse to `·` for display only; CJK passes through (East Asian Wide is deterministic);
   the original subject is never mutated (reply/forward/thread logic uses the real RFC

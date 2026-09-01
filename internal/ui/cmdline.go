@@ -179,7 +179,8 @@ func init() {
 			aliases: []string{"dbg"},
 			desc:    "write diagnostic report to /tmp/neomd/debug.log and open it",
 			run: func(m *Model) (tea.Model, tea.Cmd) {
-				return m, m.writeDebugReport()
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.writeDebugReport())
 			},
 		},
 		{
