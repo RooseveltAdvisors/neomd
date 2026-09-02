@@ -155,6 +155,14 @@ type (
 		label        string
 	}
 	saveDraftDoneMsg struct{ err error }
+	reminderDoneMsg  struct {
+		at  time.Time
+		err error
+	}
+	dueRemindersDoneMsg struct {
+		moved int
+		err   error
+	}
 	// scheduleDoneMsg reports the result of queuing a send-later message.
 	scheduleDoneMsg struct {
 		at  time.Time
@@ -594,6 +602,9 @@ type Model struct {
 	// Send-later time prompt on the pre-send screen (`l`).
 	sendLaterActive bool
 	sendLaterInput  textinput.Model
+	// Reminder time prompt on the reader (`H`, Superhuman's reminder key).
+	reminderActive bool
+	reminderInput  textinput.Model
 
 	// Reaction
 	reactionEmail    *imap.Email // email being reacted to
@@ -1958,6 +1969,70 @@ func (m Model) bgFetchInboxCmd() tea.Cmd {
 	}
 }
 
+// setReminderCmd parks the selected message without reaching the SMTP path.
+func (m Model) setReminderCmd(e *imap.Email, at time.Time) tea.Cmd {
+	var source imap.Email
+	if e != nil {
+		source = *e
+	}
+	waiting, trash := m.cfg.Folders.Waiting, m.cfg.Folders.Trash
+	if strings.EqualFold(waiting, m.cfg.Folders.Inbox) {
+		return func() tea.Msg {
+			return reminderDoneMsg{err: fmt.Errorf("reminders require Waiting and Inbox to be distinct folders")}
+		}
+	}
+	folders := reminderFolders(m.cfg.Folders)
+	return func() tea.Msg {
+		cli := m.imapCli()
+		if cli == nil {
+			return reminderDoneMsg{err: fmt.Errorf("reminders require an IMAP-enabled account")}
+		}
+		if err := cli.ParkReminder(nil, source, folders, waiting, trash, at); err != nil {
+			return reminderDoneMsg{err: err}
+		}
+		return reminderDoneMsg{at: at}
+	}
+}
+
+func reminderFolders(fc config.FoldersConfig) []string {
+	return []string{
+		fc.Inbox, fc.ToScreen, fc.Feed, fc.PaperTrail, fc.ScreenedOut, fc.Spam,
+		fc.Archive, fc.Work, fc.Someday, fc.Scheduled, fc.Sent, fc.Drafts,
+		fc.Waiting, fc.Trash,
+	}
+}
+
+// resurfaceDueRemindersCmd returns due messages from Waiting to Inbox. The
+// reminder headers stay on the message, giving the inbox its purple-dot
+// equivalent and making the due state visible without another store.
+func (m Model) resurfaceDueRemindersCmd() tea.Cmd {
+	return func() tea.Msg {
+		waiting, inbox := m.cfg.Folders.Waiting, m.cfg.Folders.Inbox
+		if waiting == "" || inbox == "" || waiting == inbox {
+			return dueRemindersDoneMsg{}
+		}
+		cli := m.imapCli()
+		if cli == nil {
+			return dueRemindersDoneMsg{}
+		}
+		emails, err := cli.FetchHeaders(nil, waiting, 0)
+		if err != nil {
+			return dueRemindersDoneMsg{err: err}
+		}
+		moved := 0
+		for i := range emails {
+			if emails[i].Reminder == nil || emails[i].Reminder.Status(time.Now()) != "due" {
+				continue
+			}
+			if _, err := cli.MoveMessage(nil, waiting, emails[i].UID, inbox); err != nil {
+				return dueRemindersDoneMsg{moved: moved, err: err}
+			}
+			moved++
+		}
+		return dueRemindersDoneMsg{moved: moved}
+	}
+}
+
 // bgFetchVipFolderCmd silently fetches headers from one configured
 // notification folder (other than Inbox, which is handled by the regular bg
 // sync). The result feeds straight into the notifier — no auto-screening,
@@ -2445,6 +2520,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case reminderDoneMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.status = "Reminder error: " + msg.err.Error()
+			m.isError = true
+			return m, nil
+		}
+		m.reminderActive = false
+		m.state = stateInbox
+		m.status = fmt.Sprintf("Reminder set for %s — moved to %s.", msg.at.Local().Format("Mon 2006-01-02 15:04"), m.cfg.Folders.Waiting)
+		m.isError = false
+		return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
+
+	case dueRemindersDoneMsg:
+		if msg.err != nil {
+			// Background reminder checks are best-effort; the next tick retries.
+			return m, nil
+		}
+		if msg.moved == 0 {
+			return m, nil
+		}
+		m.status = fmt.Sprintf("%d reminder(s) returned to Inbox.", msg.moved)
+		m.isError = false
+		if m.state == stateInbox {
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
+		}
+		return m, nil
+
 	case clipboardDoneMsg:
 		if msg.err != nil {
 			m.status = "Copy failed: " + msg.err.Error()
@@ -2650,28 +2754,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, m.deepScreenClassifyCmd(msg.emails, msg.remaining, msg.total))
 		}
 		// All batches done — classify in-memory (O(1) map lookups).
-		inboxFolder := m.cfg.Folders.Inbox
-		var moves []autoScreenMove
-		for i := range msg.emails {
-			e := &msg.emails[i]
-			cat := m.screener.Classify(e.From)
-			var dst string
-			switch cat {
-			case screener.CategorySpam:
-				dst = m.cfg.Folders.Spam
-			case screener.CategoryScreenedOut:
-				dst = m.cfg.Folders.ScreenedOut
-			case screener.CategoryFeed:
-				dst = m.cfg.Folders.Feed
-			case screener.CategoryPaperTrail:
-				dst = m.cfg.Folders.PaperTrail
-			case screener.CategoryToScreen:
-				dst = m.cfg.Folders.ToScreen
-			}
-			if dst != "" && dst != inboxFolder {
-				moves = append(moves, autoScreenMove{email: e, dst: dst})
-			}
-		}
+		moves := m.classifyForScreen(msg.emails)
 		m.loading = false
 		if len(moves) == 0 {
 			m.status = fmt.Sprintf("Screen-all: all %d inbox emails already classified.", msg.total)
@@ -2742,7 +2825,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Also poll any extra notification folders (e.g. PaperTrail, Feed)
 		// so VIP mail screened out of Inbox by the daemon still notifies.
 		m.bgSyncInProgress = true
-		cmds := []tea.Cmd{m.bgFetchInboxCmd(), m.scheduleBgSync(), m.checkOverdueScheduledCmd()}
+		cmds := []tea.Cmd{m.bgFetchInboxCmd(), m.resurfaceDueRemindersCmd(), m.scheduleBgSync(), m.checkOverdueScheduledCmd()}
 		for _, f := range m.vipNotifyFolders() {
 			cmds = append(cmds, m.bgFetchVipFolderCmd(f))
 		}
@@ -3867,6 +3950,26 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 
 func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+	if m.reminderActive {
+		switch key {
+		case "esc":
+			m.reminderActive = false
+			return m, nil
+		case "enter":
+			at, err := schedule.ParseSendAt(m.reminderInput.Value(), time.Now())
+			if err != nil {
+				m.reminderInput.SetValue("")
+				m.reminderInput.Placeholder = err.Error()
+				return m, nil
+			}
+			m.reminderActive = false
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.setReminderCmd(m.openEmail, at))
+		}
+		var cmd tea.Cmd
+		m.reminderInput, cmd = m.reminderInput.Update(msg)
+		return m, cmd
+	}
 
 	// Handle reader chords
 	if m.readerPending != "" {
@@ -4022,6 +4125,7 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "q", "esc", "h":
 		m.state = stateInbox
+		m.reminderActive = false
 		m.readerPending = ""
 		// Clear mark-as-read timer state when exiting reader
 		m.markAsReadUID = 0
@@ -4049,6 +4153,16 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.imapCli().ResetMailboxSelection() // force fresh SELECT to see new messages
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
+	case "H":
+		if m.openEmail != nil {
+			ti := textinput.New()
+			ti.Placeholder = "+2h · tomorrow 09:00 · 2026-09-02 09:00"
+			ti.CharLimit = 40
+			ti.Focus()
+			m.reminderInput = ti
+			m.reminderActive = true
+		}
+		return m, nil
 	case "ctrl+r":
 		if m.openEmail != nil {
 			return m.launchReplyAllCmd()
@@ -6062,8 +6176,14 @@ func (m Model) viewReader() string {
 	} else {
 		b.WriteString(m.reader.View())
 	}
+	if m.openEmail != nil && m.openEmail.Reminder != nil {
+		rem := m.openEmail.Reminder
+		b.WriteString("\n" + styleDate.Render(fmt.Sprintf("  Reminder: %s at %s", rem.Status(time.Now()), rem.At.Local().Format("2006-01-02 15:04"))))
+	}
 	isDraft := m.openEmail != nil && m.openEmail.Folder == m.cfg.Folders.Drafts
-	if m.status != "" {
+	if m.reminderActive {
+		b.WriteString("\n" + styleInputLabel.Render("Remind me at:") + " " + m.reminderInput.View() + styleHelp.Render("  · enter set · esc cancel"))
+	} else if m.status != "" {
 		b.WriteString("\n" + statusBar(m.status, m.isError))
 	} else {
 		b.WriteString("\n" + readerHelp(isDraft, len(m.openLinks) > 0))

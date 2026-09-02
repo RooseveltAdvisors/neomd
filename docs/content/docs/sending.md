@@ -303,6 +303,16 @@ Use the continue-draft flow:
 
 The original queued copy is **replaced automatically**: once the new version is safely stored (or sent), the old one is moved to Trash — recoverable, never expunged. If you instead abort the editor or discard on pre-send, the original stays queued untouched. Should the automatic removal ever fail (connection drop), neomd warns you loudly so you can delete the old copy manually — otherwise the daemon would deliver both.
 
+## Reminders
+
+Open an email and press `H` to set a reminder, then enter a time such as
+`+2h`, `tomorrow 09:00`, or `2026-09-02 09:00`. The message is copied to the
+configured **Waiting** folder with `X-Neomd-Reminder-*` metadata and the
+original is moved to Trash (recoverable). No email is sent. The headless daemon
+returns due reminders to Inbox and leaves them there even when automatic
+screening is enabled; the reminder marker stays on the message so it is clear
+why it resurfaced. The TUI also checks Waiting during background sync.
+
 ## Recipient Names
 
 When you type a bare address (`louise@domain.io`), neomd automatically upgrades the outgoing `To:`/`Cc:` headers to `Louise Nachname <louise@domain.io>` when it knows the name — so recipients see a proper name and your Sent folder becomes searchable by name. Names come from three sources, in order:
@@ -522,4 +532,3 @@ Replace `zsh`/`.zshrc` with `bash`/`.bashrc` if you use bash. Replace `foot` wit
 ### How it looks
 
 ![mailto](/images/mailto-open.png)
-

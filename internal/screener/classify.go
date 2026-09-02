@@ -2,6 +2,7 @@ package screener
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/sspaeti/neomd/internal/config"
 	"github.com/sspaeti/neomd/internal/imap"
@@ -23,9 +24,15 @@ func ClassifyForScreen(screener *Screener, emails []imap.Email, folderCfg config
 	}
 
 	inboxFolder := folderCfg.Inbox
+	now := time.Now()
 	var moves []ScreenMove
 	for i := range emails {
 		e := &emails[i]
+		// Only reminders with our durable identity may bypass re-screening.
+		// Sender-controlled timestamps without an ID must be treated as mail.
+		if e.Reminder != nil && e.Reminder.ID != "" && e.Reminder.Status(now) == "due" {
+			continue
+		}
 		cat := screener.Classify(e.From)
 		var dst string
 		switch cat {

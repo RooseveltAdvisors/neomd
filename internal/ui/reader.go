@@ -190,7 +190,7 @@ func calendarInviteCard(attachments []imap.Attachment) string {
 // readerHelp returns the one-line help string for the reader view.
 // When isDraft is true, "E draft" is shown so the user knows they can re-open in compose.
 func readerHelp(isDraft bool, hasLinks bool) string {
-	keys := []string{"j/k scroll", "h/q back", "r reply", "ctrl+r reply-all", "ctrl+e react", "f fwd", "e nvim"}
+	keys := []string{"j/k scroll", "h/q back", "H remind", "r reply", "ctrl+r reply-all", "ctrl+e react", "f fwd", "e nvim"}
 	if isDraft {
 		keys = append(keys, "E draft")
 	}

@@ -13,6 +13,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sspaeti/neomd/internal/config"
 	"github.com/sspaeti/neomd/internal/imap"
+	"github.com/sspaeti/neomd/internal/reminder"
+	"github.com/sspaeti/neomd/internal/screener"
 )
 
 func TestMaskEmail(t *testing.T) {
@@ -33,6 +35,42 @@ func TestMaskEmail(t *testing.T) {
 				t.Errorf("maskEmail(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestReminderKeyStartsPerEmailPrompt(t *testing.T) {
+	m := Model{openEmail: &imap.Email{UID: 7}, state: stateReading}
+	updated, cmd := m.updateReader(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'H'}})
+	got := updated.(Model)
+	if !got.reminderActive || got.reminderInput.Placeholder == "" || cmd != nil {
+		t.Fatalf("H prompt state = active %v placeholder %q cmd %v", got.reminderActive, got.reminderInput.Placeholder, cmd)
+	}
+}
+
+func TestReminderMetadataIsVisibleState(t *testing.T) {
+	at := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	e := imap.Email{Reminder: &reminder.Metadata{At: at, State: "scheduled"}}
+	if e.Reminder.Status(at.Add(time.Minute)) != "due" {
+		t.Fatal("scheduled reminder should become due at its timestamp")
+	}
+}
+
+func TestDeepScreenSkipsDueReminder(t *testing.T) {
+	m := Model{
+		cfg:      &config.Config{Folders: config.FoldersConfig{Inbox: "INBOX", ToScreen: "ToScreen"}},
+		screener: &screener.Screener{},
+	}
+	updated, _ := m.Update(deepScreenBatchMsg{
+		emails: []imap.Email{{
+			UID:      9,
+			From:     "unknown@example.com",
+			Reminder: &reminder.Metadata{At: time.Now().Add(-time.Minute), State: "scheduled", ID: "id-9"},
+		}},
+		total: 1,
+	})
+	got := updated.(Model)
+	if len(got.pendingMoves) != 0 {
+		t.Fatalf("screen-all planned %d move(s) for a due reminder", len(got.pendingMoves))
 	}
 }
 

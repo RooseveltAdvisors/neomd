@@ -1,36 +1,262 @@
 package imap
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
+	"math/big"
+	"net"
 	"strings"
 	"testing"
 	"time"
 
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/emersion/go-imap/v2/imapserver"
+	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
+	"github.com/sspaeti/neomd/internal/reminder"
 )
+
+type testLiteralReader struct {
+	*bytes.Reader
+	size int64
+}
+
+func (r *testLiteralReader) Size() int64 { return r.size }
+
+func startMemoryIMAP(t *testing.T, folders ...string) (*Client, *imapmemserver.User) {
+	t.Helper()
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test-imap"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: privateKey}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	memServer := imapmemserver.New()
+	user := imapmemserver.NewUser("user", "password")
+	for _, folder := range folders {
+		if err := user.Create(folder, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	memServer.AddUser(user)
+	server := imapserver.New(&imapserver.Options{
+		NewSession: func(_ *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+			return memServer.NewSession(), nil, nil
+		},
+		Caps: imap.CapSet{
+			imap.CapIMAP4rev1: {},
+			imap.CapIMAP4rev2: {},
+			imap.CapMove:      {},
+		},
+	})
+	go func() { _ = server.Serve(listener) }()
+
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		_ = server.Close()
+		t.Fatal(err)
+	}
+	client := New(Config{
+		Host:     "127.0.0.1",
+		Port:     port,
+		User:     "user",
+		Password: "password",
+		TLS:      true,
+	})
+	t.Cleanup(func() {
+		client.Close()
+		_ = server.Close()
+	})
+	return client, user
+}
 
 // Send-later queued messages are identified in header fetches by their
 // X-Neomd-Send-At header (fetched as a peek'd header-fields section) so the
 // UI can mark them without mutating the stored message.
 func TestParseSendAtSection(t *testing.T) {
 	at := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
-	sec := []imapclient.FetchBodySectionBuffer{{
-		Bytes: []byte("X-Neomd-Send-At: " + at.Format(time.RFC3339) + "\r\n\r\n"),
-	}}
-	if got := parseSendAtSection(sec); !got.Equal(at) {
+	if got := parseSendAtSection([]byte("X-Neomd-Send-At: " + at.Format(time.RFC3339) + "\r\n\r\n")); !got.Equal(at) {
 		t.Errorf("SendAt = %v, want %v", got, at)
 	}
 	// Regular mail (no section content) and garbage must yield zero time.
 	if got := parseSendAtSection(nil); !got.IsZero() {
 		t.Errorf("nil section: %v", got)
 	}
-	if got := parseSendAtSection([]imapclient.FetchBodySectionBuffer{{Bytes: []byte("\r\n")}}); !got.IsZero() {
+	if got := parseSendAtSection([]byte("\r\n")); !got.IsZero() {
 		t.Errorf("empty header: %v", got)
 	}
-	if got := parseSendAtSection([]imapclient.FetchBodySectionBuffer{{Bytes: []byte("X-Neomd-Send-At: not-a-time\r\n")}}); !got.IsZero() {
+	if got := parseSendAtSection([]byte("X-Neomd-Send-At: not-a-time\r\n")); !got.IsZero() {
 		t.Errorf("garbage time: %v", got)
+	}
+}
+
+func TestParseReminderSection(t *testing.T) {
+	got := parseReminder([]byte("X-Neomd-Reminder-At: 2030-01-02T03:04:05Z\r\nX-Neomd-Reminder-State: due\r\nX-Neomd-Reminder-ID: id-1\r\n"))
+	if got == nil || got.State != "due" || !got.At.Equal(time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)) {
+		t.Fatalf("reminder = %#v, want due metadata", got)
+	}
+	if parseReminder(nil) != nil || parseReminder([]byte("Subject: ordinary\r\n")) != nil {
+		t.Fatal("ordinary or incomplete headers should not become reminders")
+	}
+}
+
+func TestParseReminderRejectsUnidentifiedHeader(t *testing.T) {
+	if got := parseReminder([]byte("X-Neomd-Reminder-At: 2030-01-02T03:04:05Z\r\n")); got != nil {
+		t.Fatalf("unidentified reminder = %#v, want nil", got)
+	}
+}
+
+func TestParkReminderRejectsWaitingSource(t *testing.T) {
+	client := &Client{}
+	err := client.ParkReminder(context.Background(), Email{Folder: "INBOX", UID: 1}, []string{"INBOX", "Waiting", "Trash"}, "INBOX", "Trash", time.Now().Add(time.Hour))
+	if err == nil {
+		t.Fatal("expected Waiting=Inbox to be rejected before IMAP access")
+	}
+}
+
+func TestParseHeaderSectionsByDescriptor(t *testing.T) {
+	sendAtSection := sendAtHeaderSection()
+	reminderSection := reminderHeaderSection()
+	sendAtResponse := *sendAtSection
+	reminderResponse := *reminderSection
+	msg := &imapclient.FetchMessageBuffer{BodySection: []imapclient.FetchBodySectionBuffer{
+		{
+			Section: &reminderResponse,
+			Bytes:   []byte("X-Neomd-Reminder-At: 2030-01-02T03:04:05Z\r\nX-Neomd-Reminder-State: due\r\nX-Neomd-Reminder-ID: id-1\r\n"),
+		},
+		{
+			Section: &sendAtResponse,
+			Bytes:   []byte("X-Neomd-Send-At: 2030-01-03T03:04:05Z\r\n"),
+		},
+	}}
+
+	if got := parseSendAtSection(msg.FindBodySection(sendAtSection)); !got.Equal(time.Date(2030, time.January, 3, 3, 4, 5, 0, time.UTC)) {
+		t.Errorf("SendAt = %v, want descriptor-matched value", got)
+	}
+	if got := parseReminder(msg.FindBodySection(reminderSection)); got == nil || got.State != "due" {
+		t.Errorf("Reminder = %#v, want descriptor-matched value", got)
+	}
+}
+
+func TestParkReminderReconcilesMovedSourceAndIsIdempotent(t *testing.T) {
+	client, user := startMemoryIMAP(t, "INBOX", "Feed", "Waiting", "Trash")
+	raw := []byte("From: sender@example.com\r\nTo: me@example.com\r\nSubject: meeting\r\nMessage-ID: <reminder@example.com>\r\n\r\nbody\r\n")
+	data, err := user.Append("INBOX", &testLiteralReader{Reader: bytes.NewReader(raw), size: int64(len(raw))}, &imap.AppendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := Email{
+		UID:       uint32(data.UID),
+		Folder:    "INBOX",
+		From:      "sender@example.com",
+		Subject:   "meeting",
+		MessageID: "reminder@example.com",
+		Size:      uint32(len(raw)),
+	}
+	if _, err := client.MoveMessage(context.Background(), "INBOX", source.UID, "Feed"); err != nil {
+		t.Fatal(err)
+	}
+
+	at := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	folders := []string{"INBOX", "Feed", "Waiting", "Trash"}
+	if err := client.ParkReminder(context.Background(), source, folders, "Waiting", "Trash", at); err != nil {
+		t.Fatalf("ParkReminder after source move: %v", err)
+	}
+	waiting, err := client.FetchHeaders(context.Background(), "Waiting", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trash, err := client.FetchHeaders(context.Background(), "Trash", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(waiting) != 1 || len(trash) != 1 {
+		t.Fatalf("after first park: Waiting=%d Trash=%d, want one in each", len(waiting), len(trash))
+	}
+	waitingRaw, err := client.FetchRaw(context.Background(), "Waiting", waiting[0].UID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := reminder.ParseHeader(waitingRaw)
+	if err != nil || !metadata.At.Equal(at) || metadata.ID != source.MessageID {
+		t.Fatalf("waiting metadata=%#v err=%v", metadata, err)
+	}
+	if !bytes.HasSuffix(waitingRaw, []byte("body\r\n")) {
+		t.Fatalf("waiting body changed: %q", waitingRaw)
+	}
+
+	if err := client.ParkReminder(context.Background(), source, folders, "Waiting", "Trash", at.Add(time.Hour)); err != nil {
+		t.Fatalf("repeating ParkReminder: %v", err)
+	}
+	waiting, err = client.FetchHeaders(context.Background(), "Waiting", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trash, err = client.FetchHeaders(context.Background(), "Trash", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(waiting) != 1 || len(trash) != 1 {
+		t.Fatalf("after repeated park: Waiting=%d Trash=%d, want one in each", len(waiting), len(trash))
+	}
+}
+
+func TestParkReminderRejectsAmbiguousCopiesWithoutMovingThem(t *testing.T) {
+	client, user := startMemoryIMAP(t, "INBOX", "Archive", "Sent", "Waiting", "Trash")
+	raw := []byte("From: sender@example.com\r\nTo: me@example.com\r\nSubject: meeting\r\nMessage-ID: <ambiguous@example.com>\r\n\r\nbody\r\n")
+	for _, folder := range []string{"Archive", "Sent"} {
+		if _, err := user.Append(folder, &testLiteralReader{Reader: bytes.NewReader(raw), size: int64(len(raw))}, &imap.AppendOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	source := Email{
+		UID:       999,
+		Folder:    "INBOX",
+		From:      "sender@example.com",
+		Subject:   "meeting",
+		MessageID: "ambiguous@example.com",
+		Size:      uint32(len(raw)),
+	}
+	err := client.ParkReminder(context.Background(), source, []string{"INBOX", "Archive", "Sent", "Waiting", "Trash"}, "Waiting", "Trash", time.Now().Add(time.Hour))
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ParkReminder error = %v, want ambiguity error", err)
+	}
+	for _, folder := range []string{"Archive", "Sent", "Waiting", "Trash"} {
+		emails, fetchErr := client.FetchHeaders(context.Background(), folder, 0)
+		if fetchErr != nil {
+			t.Fatal(fetchErr)
+		}
+		want := 1
+		if folder == "Waiting" || folder == "Trash" {
+			want = 0
+		}
+		if len(emails) != want {
+			t.Errorf("%s has %d messages, want %d", folder, len(emails), want)
+		}
 	}
 }
 

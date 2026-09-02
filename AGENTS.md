@@ -101,6 +101,15 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 
 ---
 
+## Per-email Reminders
+
+- **Superhuman-style reminders** — `H` in the reader prompts for a future time,
+  stores the selected message in Waiting with `X-Neomd-Reminder-*` metadata,
+  and moves the original to recoverable Trash without SMTP. The headless daemon
+  and TUI background sync return due reminders to Inbox; metadata remains visible
+  as the `R` indicator and reader status. Tests: `TestReminderKeyStartsPerEmailPrompt`,
+  `TestParseReminderSection`, `TestParseHeaderAndStatus`.
+
 ## Reply & Threading
 
 - **`·` reply indicator** — after sending a reply, the original email gets the IMAP

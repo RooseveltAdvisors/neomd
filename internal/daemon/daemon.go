@@ -79,6 +79,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := d.processScheduled(ctx); err != nil {
 		d.logger.Error("send-later pass failed", "error", err)
 	}
+	if err := d.processReminders(ctx); err != nil {
+		d.logger.Error("reminder pass failed", "error", err)
+	}
 	if err := d.processOOO(ctx); err != nil {
 		d.logger.Error("out-of-office pass failed", "error", err)
 	}
@@ -99,6 +102,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 			}
 			if err := d.processScheduled(ctx); err != nil {
 				d.logger.Error("send-later pass failed", "error", err)
+			}
+			if err := d.processReminders(ctx); err != nil {
+				d.logger.Error("reminder pass failed", "error", err)
 			}
 			if err := d.processOOO(ctx); err != nil {
 				d.logger.Error("out-of-office pass failed", "error", err)
@@ -175,6 +181,30 @@ func (d *Daemon) reloadScreener() error {
 	}
 	d.screener = newScreener
 	d.logger.Info("screener reloaded successfully")
+	return nil
+}
+
+// processReminders resurfaces due messages without SMTP: IMAP MOVE is the
+// entire lifecycle. Reminder metadata remains attached so the Inbox shows
+// which messages were returned and when they became due.
+func (d *Daemon) processReminders(ctx context.Context) error {
+	waiting, inbox := d.cfg.Folders.Waiting, d.cfg.Folders.Inbox
+	if waiting == "" || inbox == "" || waiting == inbox {
+		return nil
+	}
+	emails, err := d.imapCli.FetchHeaders(ctx, waiting, 0)
+	if err != nil {
+		return fmt.Errorf("fetch reminders: %w", err)
+	}
+	for _, e := range emails {
+		if e.Reminder == nil || e.Reminder.Status(time.Now()) != "due" {
+			continue
+		}
+		if _, err := d.imapCli.MoveMessage(ctx, waiting, e.UID, inbox); err != nil {
+			return fmt.Errorf("resurface reminder uid=%d: %w", e.UID, err)
+		}
+		d.logger.Info("reminder resurfaced", "uid", e.UID, "subject", e.Subject, "scheduled_for", e.Reminder.At.Format(time.RFC3339))
+	}
 	return nil
 }
 
