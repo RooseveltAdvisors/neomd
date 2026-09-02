@@ -35,6 +35,10 @@ func ParseHeader(raw []byte) (Metadata, error) {
 	if err != nil {
 		return Metadata{}, fmt.Errorf("parse %s: %w", AtHeader, err)
 	}
+	id := strings.TrimSpace(msg.Header.Get(IDHeader))
+	if id == "" {
+		return Metadata{}, fmt.Errorf("%s is required", IDHeader)
+	}
 	state := strings.ToLower(strings.TrimSpace(msg.Header.Get(StateHeader)))
 	if state == "" {
 		state = "scheduled"
@@ -42,7 +46,7 @@ func ParseHeader(raw []byte) (Metadata, error) {
 	if state != "scheduled" && state != "due" {
 		return Metadata{}, fmt.Errorf("invalid reminder state %q", state)
 	}
-	return Metadata{At: at.UTC(), State: state, ID: strings.TrimSpace(msg.Header.Get(IDHeader))}, nil
+	return Metadata{At: at.UTC(), State: state, ID: id}, nil
 }
 
 func (m Metadata) Status(now time.Time) string {

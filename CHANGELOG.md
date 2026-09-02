@@ -1,5 +1,14 @@
 # Changelog
 
+# 2026-09-02
+
+- **Reminder safety fixes** — reminder headers without a durable identity no
+  longer bypass sender screening; parking refuses ambiguous same-message
+  copies instead of moving legitimate Archive/Sent/Drafts mail to Trash; and
+  `Waiting = Inbox` is rejected before any IMAP operation. Tests:
+  `TestParseReminderRejectsUnidentifiedHeader`,
+  `TestClassifyForScreen`, `TestParkReminderRejectsWaitingSource`.
+
 # 2026-09-01
 
 - **Superhuman-style per-email reminders** — press `H` while reading an email,

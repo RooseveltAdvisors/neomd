@@ -105,12 +105,20 @@ func TestClassifyForScreen(t *testing.T) {
 			expectedDsts:  []string{},
 		},
 		{
-			name: "due reminder stays in inbox",
+			name: "trusted due reminder stays in inbox",
 			emails: []imap.Email{
-				{UID: 12, From: "spam@example.com", Subject: "Reminder", Reminder: &reminder.Metadata{At: time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), State: "scheduled"}},
+				{UID: 12, From: "spam@example.com", Subject: "Reminder", Reminder: &reminder.Metadata{At: time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), State: "scheduled", ID: "id-12"}},
 			},
 			expectedMoves: 0,
 			expectedDsts:  []string{},
+		},
+		{
+			name: "unidentified due reminder is screened",
+			emails: []imap.Email{
+				{UID: 13, From: "spam@example.com", Subject: "Spoofed reminder", Reminder: &reminder.Metadata{At: time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), State: "scheduled"}},
+			},
+			expectedMoves: 1,
+			expectedDsts:  []string{"Spam"},
 		},
 		{
 			name: "unknown sender (moves to ToScreen)",

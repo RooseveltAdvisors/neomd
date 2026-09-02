@@ -1976,6 +1976,11 @@ func (m Model) setReminderCmd(e *imap.Email, at time.Time) tea.Cmd {
 		source = *e
 	}
 	waiting, trash := m.cfg.Folders.Waiting, m.cfg.Folders.Trash
+	if strings.EqualFold(waiting, m.cfg.Folders.Inbox) {
+		return func() tea.Msg {
+			return reminderDoneMsg{err: fmt.Errorf("reminders require Waiting and Inbox to be distinct folders")}
+		}
+	}
 	folders := reminderFolders(m.cfg.Folders)
 	return func() tea.Msg {
 		cli := m.imapCli()

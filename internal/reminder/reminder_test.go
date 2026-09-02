@@ -17,6 +17,12 @@ func TestParseHeaderAndStatus(t *testing.T) {
 	}
 }
 
+func TestParseHeaderRequiresIdentity(t *testing.T) {
+	if _, err := ParseHeader([]byte("X-Neomd-Reminder-At: 2030-01-02T03:04:05Z\r\n\r\n")); err == nil {
+		t.Fatal("reminder without durable identity should be rejected")
+	}
+}
+
 func TestHeadersPreserveBodyAndReplaceFoldedValues(t *testing.T) {
 	raw := []byte("Subject: test\r\nX-Neomd-Reminder-At: old\r\n folded\r\nX-Unrelated: yes\r\n\r\nbody\r\n")
 	updated, err := SetHeaders(raw, time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC), "id")

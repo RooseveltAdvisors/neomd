@@ -64,7 +64,7 @@ func TestDeepScreenSkipsDueReminder(t *testing.T) {
 		emails: []imap.Email{{
 			UID:      9,
 			From:     "unknown@example.com",
-			Reminder: &reminder.Metadata{At: time.Now().Add(-time.Minute), State: "scheduled"},
+			Reminder: &reminder.Metadata{At: time.Now().Add(-time.Minute), State: "scheduled", ID: "id-9"},
 		}},
 		total: 1,
 	})

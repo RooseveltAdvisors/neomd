@@ -1198,26 +1198,40 @@ func (c *Client) claimReminderSource(ctx context.Context, source Email, folders 
 			lastErr = scanErr
 			continue
 		}
-		waitingFound := false
-		changed := false
-		moveFailed := false
-		for _, copy := range copies {
-			switch copy.Folder {
-			case waiting:
-				waitingFound = true
-			case trash:
-				return copy, false, nil
-			default:
-				if _, moveErr := c.MoveMessage(ctx, copy.Folder, copy.UID, trash); moveErr != nil {
-					lastErr = fmt.Errorf("reconcile message uid=%d from %s: %w", copy.UID, copy.Folder, moveErr)
-					moveFailed = true
-					continue
-				}
-				changed = true
-			}
+		if len(copies) == 0 {
+			continue
 		}
-		if waitingFound && !changed && !moveFailed {
+		if len(copies) > 1 {
+			waitingReminders, trashCopies := 0, 0
+			owned := true
+			for _, copy := range copies {
+				switch {
+				case copy.Folder == waiting && copy.Reminder != nil && reminderIDEqual(copy.Reminder.ID, id):
+					waitingReminders++
+				case copy.Folder == trash:
+					trashCopies++
+				default:
+					owned = false
+				}
+			}
+			if owned && waitingReminders == 1 && trashCopies <= 1 {
+				return Email{}, true, nil
+			}
+			// Same-Message-ID copies are not enough to identify the source. Do
+			// not move any of them: Archive/Sent/Drafts may contain legitimate
+			// copies of the message.
+			return Email{}, false, fmt.Errorf("claim reminder source: ambiguous %d matching copies", len(copies))
+		}
+		copy := copies[0]
+		if copy.Folder == waiting && copy.Reminder != nil && reminderIDEqual(copy.Reminder.ID, id) {
 			return Email{}, true, nil
+		}
+		if copy.Folder == trash {
+			return copy, false, nil
+		}
+		if _, moveErr := c.MoveMessage(ctx, copy.Folder, copy.UID, trash); moveErr != nil {
+			lastErr = fmt.Errorf("reconcile message uid=%d from %s: %w", copy.UID, copy.Folder, moveErr)
+			continue
 		}
 	}
 	if lastErr == nil {
@@ -1233,11 +1247,14 @@ func (c *Client) ParkReminder(ctx context.Context, source Email, folders []strin
 	if source.Folder == "" || source.UID == 0 {
 		return fmt.Errorf("reminder source is missing its folder or UID")
 	}
-	if waiting == "" || trash == "" || waiting == trash {
+	if waiting == "" || trash == "" || strings.EqualFold(waiting, trash) {
 		return fmt.Errorf("reminders require distinct Waiting and Trash folders")
 	}
-	if source.Folder == trash {
+	if strings.EqualFold(source.Folder, trash) {
 		return fmt.Errorf("cannot remind an email already in Trash")
+	}
+	if strings.EqualFold(source.Folder, waiting) {
+		return fmt.Errorf("reminder source must be outside Waiting")
 	}
 	if at.IsZero() {
 		return fmt.Errorf("reminder time is required")
