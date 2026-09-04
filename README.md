@@ -350,6 +350,8 @@ make help     print this list
 
 You have more questions, check out the [docs](https://neomd.ssp.sh/) with more information, or check [Frequently Asked Questions](https://neomd.ssp.sh/docs/faq/).
 
+For why neomd exists and the principles behind it, see [VISION.md](VISION.md).
+
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for what's new.
