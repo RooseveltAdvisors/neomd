@@ -2,7 +2,9 @@
 
 `neomd` exists so that one person can run their entire email life from the terminal, at the speed of a keystroke, with an inbox that contains only the senders they chose.
 It removes the standing pains of email: an inbox flooded by strangers, writing trapped in rich-text web apps, filing busy-work that never ends, and tracking pixels that report every open.
+It also removes the small waits that add up: actions that stall on a reload cycle, history that stops at the first page, and searches that answer nothing.
 It began because its author wanted Neomutt's keyboard-driven speed combined with the HEY screener's sender control, GTD's process-once discipline, and Markdown as the native language of both reading and writing email.
+The explicit bar is the best commercial keyboard-first client, named by its captain as the gold standard of that class: the same instant, shortcut-driven, zero-friction experience delivered from a terminal.
 That intent is the whole product in one line: keyboard-first TUI email - write in Neovim, render as Markdown, screen senders first, organize emails once.
 
 ## The inbox is a chosen place
@@ -18,13 +20,15 @@ Newsletters and receipts get their own quiet rooms in Feed and Papertrail, so de
 ## Built for one pair of hands
 
 neomd serves the terminal person: someone who lives in Neovim and vim motions, writes in Markdown, and wants email to behave like the rest of their tooling instead of a browser tab.
-It is written by one such person for their own daily use, and shared publicly so others of the same shape can run, read, fork, and shape it; the fixed folder set is the author's workflow, and users who need different folders fork the Go source.
+It runs the captain's real mail: a work account and personal accounts side by side behind one OAuth setup, because one person's life spans several inboxes and switching between them is one keystroke, not a logout.
+It is written by one such person for their own daily use, and shared publicly so others of the same shape can run, read, fork, and shape it; the fork exists so the workflow can be updated and optimized without asking anyone's permission, and users who need different folders fork the Go source.
+On its author's machine it has taken over as the primary daily client, with the older Neomutt setup preserved unchanged purely as a fallback.
 It is not for teams, shared inboxes, or collaboration; it is not for users who want a graphical client, a filing hierarchy, or an inbox that any sender can enter.
 It is experimental software that moves, deletes, and flags mail directly on the IMAP server across all devices, and it says so up front: back up important email, try a secondary account first.
 
 ## What neomd owns
 
-It owns the end-to-end terminal email experience: screening, reading, threading, composing in the user's own editor, sending, drafts, send-later, reminders, emoji reactions, iCalendar RSVPs, and out-of-office replies.
+It owns the end-to-end terminal email experience: screening, reading, threading, composing in the user's own editor, sending, drafts, send-later, reminders, emoji reactions, iCalendar RSVPs, out-of-office replies, and multiple accounts behind one config with instant switching.
 It owns the bytes that go on the wire: RFC-compliant MIME with Markdown as plain text plus rendered HTML, correct threading headers, deliverability across providers, and recipient-visible fidelity held to a hardening suite of byte-exact round-trip tests.
 It owns a headless daemon that runs the background of the same workflow on an always-on machine: auto-screening, scheduled delivery, due reminders, and screened-in-only vacation replies that never reveal absence to strangers.
 It owns a small set of hand-offs to tools the user already has: Neovim for composing, yazi for attachments, any LLM CLI for an AI draft pass, the local calendar app for invites, the browser for full-fidelity viewing, and a status-bar CLI for a panel widget.
@@ -42,6 +46,8 @@ It refuses to be a service: no server of its own, no accounts, no telemetry, one
 ## The experience
 
 The experience is speed: every navigation, open, and move is a keystroke away and measured in milliseconds, not seconds, which is why provider latency is benchmarked, documented, and honest about which providers feel instant.
+It is instant feedback: acting on a message updates the row at once instead of waiting for the next reload, and a failed action hands back the exact selection it started with.
+It is continuity: the list keeps revealing older mail as the user scrolls, and a search returns everything that matches, because a feature that silently stops is a defect.
 It is the confidence of processing email once: classify a sender one time, decide an email one time, and neither decision ever has to be made again.
 It is the ease of looking away: drafts are backed up for recovery, sends require a review screen, discards ask for confirmation, moves can be undone, overdue scheduled mail shouts a warning instead of silently dying, and the hardening suite stands guard over every byte a recipient will see.
 It is the calm of a quiet inbox: no unread strangers, no unread newsletters, no tracking, and desktop notifications only for senders the user named as VIP.
@@ -52,6 +58,8 @@ Speed is the product; when a feature costs latency on every interaction, it must
 Fidelity to the wire outranks convenience; a mangled recipient, subject, attachment, or leaked Bcc reaches real people, so outgoing bytes are pinned by tests and never regressed for expediency.
 Plain text wins ties; the compose buffer, screener lists, config, and drafts are all human-readable text that survives editors, sync, and time.
 Nothing happens without a visible decision and a way back: review before send, confirm before discard, undo after move, recover after loss.
+Outbound mail originates only in an explicit human act - a sent message, a scheduled send, a configured vacation reply - so no automated helper can ever speak in the user's voice.
+Defects are fixed at the cause: a warning or a broken key is eliminated, never suppressed, hidden, or worked around.
 Directness over layers: talk to the IMAP and SMTP servers directly, integrate by handing off to existing tools, and add no intermediate service, index, or daemon that can disagree with the server.
 Security and privacy are defaults, not options: encrypted connections only, credentials protected, trackers blocked, and absence never disclosed to unscreened senders.
 The single user's real workflow is the specification; features enter when the author's daily email demands them and are hardened as if business depended on it, because it does.
@@ -70,6 +78,8 @@ The single user's real workflow is the specification; features enter when the au
 
 A folder switch on a good provider still feels instant, and the benchmark documentation still tells the truth about providers that cannot keep up.
 Business email still arrives byte-exact, and the hardening suite has grown alongside every new field and path so that what is parse-back-asserted cannot silently break.
+A change is not finished when its tests pass: it counts when it is proven in the live client on the owner's real machine, merged, deployed, and re-verified against the real inbox path.
 The daemon quietly runs the background on a home server: screening arrives before the inbox is opened, scheduled mail goes out on time, reminders return when due, and vacation replies answer once and only the chosen.
-Installing is still cloning the repository and running make install, and a new user has classified their first sender within minutes of first launch.
+The distance to the keyboard-first standard keeps shrinking in order of daily pain, instant actions and the small conveniences first, so the terminal client loses nothing to its graphical model.
+Installing is still cloning the repository and running make install, upgrading is a version bump away, and a new user has classified their first sender within minutes of first launch.
 The inbox still contains only senders the user chose, and the terminal still is the only place the user needs to answer email.
