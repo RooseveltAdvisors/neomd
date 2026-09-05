@@ -33,6 +33,7 @@ import (
 	"github.com/sspaeti/neomd/internal/schedule"
 	"github.com/sspaeti/neomd/internal/screener"
 	"github.com/sspaeti/neomd/internal/smtp"
+	"github.com/sspaeti/neomd/internal/snippets"
 )
 
 // viewState is the current screen.
@@ -47,6 +48,7 @@ const (
 	stateWelcome            // first-run welcome popup
 	stateReaction           // emoji reaction picker
 	stateContacts           // contacts picker (space c)
+	stateSnippets           // snippet/template picker (;)
 )
 
 // async message types
@@ -54,6 +56,12 @@ type (
 	emailsLoadedMsg struct {
 		emails []imap.Email
 		folder string
+	}
+	// moreEmailsLoadedMsg carries one appended page from the infinite scroll.
+	moreEmailsLoadedMsg struct {
+		emails []imap.Email
+		folder string
+		err    error
 	}
 	bodyLoadedMsg struct {
 		email       *imap.Email
@@ -122,6 +130,9 @@ type (
 	batchDoneMsg struct {
 		err  error
 		undo []undoMove
+		// optID > 0 when the list was already updated optimistically; the
+		// handler retires or rolls back that batch instead of re-fetching.
+		optID int
 	}
 	undoDoneMsg       struct{}
 	toggleSeenDoneMsg struct {
@@ -156,8 +167,9 @@ type (
 	}
 	saveDraftDoneMsg struct{ err error }
 	reminderDoneMsg  struct {
-		at  time.Time
-		err error
+		at    time.Time
+		err   error
+		optID int
 	}
 	dueRemindersDoneMsg struct {
 		moved int
@@ -602,9 +614,24 @@ type Model struct {
 	// Send-later time prompt on the pre-send screen (`l`).
 	sendLaterActive bool
 	sendLaterInput  textinput.Model
-	// Reminder time prompt on the reader (`H`, Superhuman's reminder key).
+	// Reminder time prompt (`h`), available from the inbox and the reader.
 	reminderActive bool
 	reminderInput  textinput.Model
+	// reminderTargets is the email set the pending prompt will act on.
+	reminderTargets []imap.Email
+
+	// Optimistic UI: rows leave the list before IMAP confirms. Keyed by batch
+	// id so overlapping actions roll back independently. See optimistic.go.
+	optimistic    map[int][]imap.Email
+	optimisticSeq int
+
+	// Infinite scroll paging state for the current folder view.
+	loadingMore   bool
+	moreExhausted bool
+
+	// Snippet picker (`;`).
+	snippets       []snippets.Snippet
+	snippetsCursor int
 
 	// Reaction
 	reactionEmail    *imap.Email // email being reacted to
@@ -1970,6 +1997,40 @@ func (m Model) bgFetchInboxCmd() tea.Cmd {
 }
 
 // setReminderCmd parks the selected message without reaching the SMTP path.
+// newReminderInput builds the "remind me at" prompt shared by the inbox (`h`)
+// and the reader (`h` / `H`).
+func newReminderInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "+2h · tomorrow 09:00 · 2026-09-02 09:00"
+	ti.CharLimit = 40
+	ti.Focus()
+	return ti
+}
+
+// setRemindersCmd parks every target email, emitting a single reminderDoneMsg.
+func (m Model) setRemindersCmd(targets []imap.Email, at time.Time) tea.Cmd {
+	waiting, trash, inbox := m.cfg.Folders.Waiting, m.cfg.Folders.Trash, m.cfg.Folders.Inbox
+	if strings.EqualFold(waiting, inbox) {
+		return func() tea.Msg {
+			return reminderDoneMsg{err: fmt.Errorf("reminders require Waiting and Inbox to be distinct folders")}
+		}
+	}
+	folders := reminderFolders(m.cfg.Folders)
+	emails := append([]imap.Email(nil), targets...)
+	return func() tea.Msg {
+		cli := m.imapCli()
+		if cli == nil {
+			return reminderDoneMsg{err: fmt.Errorf("reminders require an IMAP-enabled account")}
+		}
+		for i, e := range emails {
+			if err := cli.ParkReminder(nil, e, folders, waiting, trash, at); err != nil {
+				return reminderDoneMsg{err: fmt.Errorf("stopped after %d/%d: %w", i, len(emails), err)}
+			}
+		}
+		return reminderDoneMsg{at: at}
+	}
+}
+
 func (m Model) setReminderCmd(e *imap.Email, at time.Time) tea.Cmd {
 	var source imap.Email
 	if e != nil {
@@ -2227,6 +2288,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case emailsLoadedMsg:
 		m.loading = false
 		m.emails = msg.emails
+		// A full folder load resets paging: the infinite scroll starts over
+		// from this page and nothing is pending optimistically any more.
+		m.loadingMore = false
+		m.moreExhausted = false
+		m.optimistic = nil
 		m.harvestContacts(msg.emails)
 		m.markedUIDs = make(map[uint32]bool) // clear marks on folder reload
 		m.filterActive = false
@@ -2522,15 +2588,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case reminderDoneMsg:
 		m.loading = false
+		m.reminderActive = false
 		if msg.err != nil {
+			var cmd tea.Cmd
+			if msg.optID > 0 {
+				cmd = m.rollbackOptimistic(msg.optID)
+			}
 			m.status = "Reminder error: " + msg.err.Error()
 			m.isError = true
-			return m, nil
+			return m, cmd
 		}
-		m.reminderActive = false
-		m.state = stateInbox
 		m.status = fmt.Sprintf("Reminder set for %s — moved to %s.", msg.at.Local().Format("Mon 2006-01-02 15:04"), m.cfg.Folders.Waiting)
 		m.isError = false
+		if msg.optID > 0 {
+			m.retireOptimistic(msg.optID)
+			return m, m.fetchFolderCountsCmd()
+		}
+		m.state = stateInbox
 		return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
 
 	case dueRemindersDoneMsg:
@@ -2657,10 +2731,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case senderResultMsg:
 		return m.handleSenderResult(msg)
 
+	case moreEmailsLoadedMsg:
+		m.loadingMore = false
+		if msg.err != nil {
+			m.status = "Load more failed: " + msg.err.Error()
+			m.isError = true
+			return m, nil
+		}
+		// The user may have switched folders while the page was in flight.
+		if msg.folder != m.activeFolder() {
+			return m, nil
+		}
+		var added int
+		m.emails, added = appendNewEmails(m.emails, msg.emails)
+		if added == 0 {
+			m.moreExhausted = true
+			return m, nil
+		}
+		m.harvestContacts(msg.emails)
+		// Re-sort and rebuild; SetItems keeps the cursor index, so the rows
+		// the user is looking at do not move under them.
+		at := m.inbox.Index()
+		cmd := m.sortEmails()
+		m.inbox.Select(at)
+		return m, cmd
+
 	case batchDoneMsg:
 		m.loading = false
 		m.bulkProgress = nil
 		m.markedUIDs = make(map[uint32]bool)
+		// Optimistic batches already removed their rows. Confirm in place —
+		// no folder re-fetch — or put the rows back so the failure is visible.
+		if msg.optID > 0 {
+			if len(msg.undo) > 0 {
+				m.undoStack = append(m.undoStack, msg.undo)
+				if len(m.undoStack) > maxUndoStack {
+					m.undoStack = m.undoStack[len(m.undoStack)-maxUndoStack:]
+				}
+			}
+			if msg.err != nil {
+				cmd := m.rollbackOptimistic(msg.optID)
+				m.status = msg.err.Error()
+				m.isError = true
+				return m, cmd
+			}
+			m.retireOptimistic(msg.optID)
+			m.status = "Done."
+			m.isError = false
+			return m, m.fetchFolderCountsCmd()
+		}
 		if msg.err != nil {
 			// Include partial undo info so user can reverse already-moved emails.
 			if len(msg.undo) > 0 {
@@ -3004,6 +3123,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateReaction(msg)
 		case stateContacts:
 			return m.updateContacts(msg)
+		case stateSnippets:
+			return m.updateSnippets(msg)
 		}
 	}
 
@@ -3101,6 +3222,33 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if consumed {
 			return mm, cmd
 		}
+	}
+
+	// ── Reminder time prompt (h) ────────────────────────────────────
+	// When active, consume all keys for text input; no inbox commands fire.
+	if m.reminderActive {
+		switch key {
+		case "esc":
+			m.reminderActive = false
+			m.reminderTargets = nil
+			return m, nil
+		case "enter":
+			at, err := schedule.ParseSendAt(m.reminderInput.Value(), time.Now())
+			if err != nil {
+				m.reminderInput.SetValue("")
+				m.reminderInput.Placeholder = err.Error()
+				return m, nil
+			}
+			m.reminderActive = false
+			targets := m.reminderTargets
+			m.reminderTargets = nil
+			return m, m.optimisticAct(targets, "Reminding", func() tea.Cmd {
+				return m.setRemindersCmd(targets, at)
+			})
+		}
+		var cmd tea.Cmd
+		m.reminderInput, cmd = m.reminderInput.Update(msg)
+		return m, cmd
 	}
 
 	// ── Our own filter mode ─────────────────────────────────────────
@@ -3206,12 +3354,10 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// ── Mark for batch / delete ─────────────────────────────────────
 	case "x":
 		targets := m.targetEmails()
-		if len(targets) == 0 {
-			return m, nil
-		}
-		m.loading = true
-		m.bulkProgress = m.newBulkOp("Deleting", len(targets))
-		return m, tea.Batch(m.spinner.Tick, m.batchMoveCmd(targets, m.cfg.Folders.Trash))
+		trash := m.cfg.Folders.Trash
+		return m, m.optimisticAct(targets, "Deleting", func() tea.Cmd {
+			return m.batchMoveCmd(targets, trash)
+		})
 
 	case "X": // permanent delete (marked or cursor) — only in Trash
 		if m.activeFolder() != m.cfg.Folders.Trash {
@@ -3245,39 +3391,52 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.spinner.Tick, m.undoMovesCmd(last))
 
 	// ── Screener actions — operate on marked emails or cursor email ──
-	case "I", "O", "F", "P", "$":
+	// Screener actions. Lowercase is the documented binding; the historical
+	// uppercase keys stay as aliases. `F` has no lowercase form — `f` is
+	// forward — so feed keeps its uppercase key (see keys.go mapping table).
+	case "i", "I", "o", "O", "F", "p", "P", "$":
+		targets := m.targetEmails()
+		action := strings.ToUpper(key)
+		return m, m.optimisticAct(targets, "Screening", func() tea.Cmd {
+			return m.batchScreenerCmd(targets, action)
+		})
+
+	// e = archive / mark done (pure move, no screener update). `A` is the
+	// pre-5.0 alias.
+	case "e", "A":
+		targets := m.targetEmails()
+		archive := m.cfg.Folders.Archive
+		return m, m.optimisticAct(targets, "Archiving", func() tea.Cmd {
+			return m.batchMoveCmd(targets, archive)
+		})
+
+	// h = remind me — park the email in Waiting until the chosen time.
+	case "h":
 		targets := m.targetEmails()
 		if len(targets) == 0 {
 			return m, nil
 		}
-		m.loading = true
-		m.bulkProgress = m.newBulkOp("Screening", len(targets))
-		return m, tea.Batch(m.spinner.Tick, m.batchScreenerCmd(targets, key))
+		m.reminderTargets = targets
+		m.reminderInput = newReminderInput()
+		m.reminderActive = true
+		return m, nil
 
-	// A = archive (pure move, no screener update)
-	case "A":
-		targets := m.targetEmails()
-		if len(targets) == 0 {
-			return m, nil
-		}
-		m.loading = true
-		m.bulkProgress = m.newBulkOp("Archiving", len(targets))
-		return m, tea.Batch(m.spinner.Tick, m.batchMoveCmd(targets, m.cfg.Folders.Archive))
+	// ; = snippets / templates palette
+	case ";":
+		return m.openSnippets()
 
-	// B = move to Work/Business (pure move, no screener update)
-	case "B":
-		if m.cfg.Folders.Work == "" {
+	// b = move to Work/Business (pure move, no screener update)
+	case "b", "B":
+		work := m.cfg.Folders.Work
+		if work == "" {
 			m.status = "Work folder not configured"
 			m.isError = true
 			return m, nil
 		}
 		targets := m.targetEmails()
-		if len(targets) == 0 {
-			return m, nil
-		}
-		m.loading = true
-		m.bulkProgress = m.newBulkOp("Moving to Work", len(targets))
-		return m, tea.Batch(m.spinner.Tick, m.batchMoveCmd(targets, m.cfg.Folders.Work))
+		return m, m.optimisticAct(targets, "Moving to Work", func() tea.Cmd {
+			return m.batchMoveCmd(targets, work)
+		})
 
 	// ── Auto-screen dry-run (Inbox only) ────────────────────────────
 	case ":":
@@ -3413,7 +3572,8 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "G":
 		m.inbox.Select(len(m.inbox.Items()) - 1)
-		return m, nil
+		more := m.maybeLoadMoreCmd()
+		return m, more
 
 	case "d":
 		next := m.inbox.Index() + m.inboxPageStep()
@@ -3423,7 +3583,8 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if next >= 0 {
 			m.inbox.Select(next)
 		}
-		return m, nil
+		more := m.maybeLoadMoreCmd()
+		return m, more
 
 	case "u":
 		prev := m.inbox.Index() - m.inboxPageStep()
@@ -3471,7 +3632,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
 		}
 
-	case "c":
+	case "s", "c":
 		m.attachments = nil
 		m.state = stateCompose
 		m.status = ""
@@ -3540,7 +3701,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchBodyCmd(e))
 
-	case "T":
+	case "t", "T":
 		e := selectedEmail(m.inbox)
 		if e == nil {
 			return m, nil
@@ -3548,7 +3709,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchConversationCmd(e))
 
-	case "V":
+	case "v", "V":
 		e := selectedEmail(m.inbox)
 		if e == nil {
 			return m, nil
@@ -3574,10 +3735,14 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	}
 
-	// Forward remaining keys (j/k navigation, filter /) to list
+	// Forward remaining keys (j/k navigation, filter /) to list, then check
+	// whether the cursor moved close enough to the bottom to pull the next page.
 	var cmd tea.Cmd
 	m.inbox, cmd = m.inbox.Update(msg)
-	return m, cmd
+	// maybeLoadMoreCmd latches m.loadingMore, so run it before m is returned:
+	// Go does not order a plain operand against a call in the same statement.
+	more := m.maybeLoadMoreCmd()
+	return m, tea.Batch(cmd, more)
 }
 
 // sortEmails sorts m.emails in place according to m.sortField / m.sortReverse,
@@ -3954,6 +4119,7 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch key {
 		case "esc":
 			m.reminderActive = false
+			m.reminderTargets = nil
 			return m, nil
 		case "enter":
 			at, err := schedule.ParseSendAt(m.reminderInput.Value(), time.Now())
@@ -3963,8 +4129,14 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.reminderActive = false
-			m.loading = true
-			return m, tea.Batch(m.spinner.Tick, m.setReminderCmd(m.openEmail, at))
+			targets := m.reminderTargets
+			m.reminderTargets = nil
+			// Reminding from the reader closes it: the mail is leaving the
+			// folder, so the list beneath is what the user returns to.
+			m.state = stateInbox
+			return m, m.optimisticAct(targets, "Reminding", func() tea.Cmd {
+				return m.setRemindersCmd(targets, at)
+			})
 		}
 		var cmd tea.Cmd
 		m.reminderInput, cmd = m.reminderInput.Update(msg)
@@ -3995,6 +4167,10 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.readerPending = "l"
 				m.status = "link number (11-99): l__"
 				return m, nil
+			}
+			// space + e = open in $EDITOR read-only (search, copy, vim motions)
+			if key == "e" {
+				return m.openInNeovim()
 			}
 			// space + d = download raw EML source
 			if key == "d" {
@@ -4123,9 +4299,10 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch key {
-	case "q", "esc", "h":
+	case "q", "esc":
 		m.state = stateInbox
 		m.reminderActive = false
+		m.reminderTargets = nil
 		m.readerPending = ""
 		// Clear mark-as-read timer state when exiting reader
 		m.markAsReadUID = 0
@@ -4135,8 +4312,29 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.applyFilter()
 		}
 		return m, nil
+	// e = archive / mark done, then drop back to the list. The old `e`
+	// (open in $EDITOR read-only) moved to <space>e — see keys.go.
 	case "e":
-		return m.openInNeovim()
+		if m.openEmail == nil {
+			return m, nil
+		}
+		targets := []imap.Email{*m.openEmail}
+		archive := m.cfg.Folders.Archive
+		m.state = stateInbox
+		return m, m.optimisticAct(targets, "Archiving", func() tea.Cmd {
+			return m.batchMoveCmd(targets, archive)
+		})
+	// s = start a new email, ; = snippets — same keys as the inbox.
+	case "s":
+		m.attachments = nil
+		m.state = stateCompose
+		m.status = ""
+		m.isError = false
+		m.compose.reset()
+		m.presendFromI = m.defaultFromIndex()
+		return m, nil
+	case ";":
+		return m.openSnippets()
 	case "E":
 		return m.continueDraft()
 	case "o":
@@ -4153,13 +4351,10 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.imapCli().ResetMailboxSelection() // force fresh SELECT to see new messages
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
-	case "H":
+	case "h", "H":
 		if m.openEmail != nil {
-			ti := textinput.New()
-			ti.Placeholder = "+2h · tomorrow 09:00 · 2026-09-02 09:00"
-			ti.CharLimit = 40
-			ti.Focus()
-			m.reminderInput = ti
+			m.reminderTargets = []imap.Email{*m.openEmail}
+			m.reminderInput = newReminderInput()
 			m.reminderActive = true
 		}
 		return m, nil
@@ -4175,7 +4370,7 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.openEmail != nil {
 			return m.launchForwardCmd()
 		}
-	case "T":
+	case "t", "T":
 		if m.openEmail != nil {
 			m.loading = true
 			m.state = stateInbox
@@ -4197,7 +4392,7 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if len(m.openLinks) > 0 {
 			hints = append(hints, "1-0 links")
 		}
-		hints = append(hints, "d download .eml", "n add sender to notify.txt", "N add @domain to notify.txt")
+		hints = append(hints, "e open in $EDITOR", "d download .eml", "n add sender to notify.txt", "N add @domain to notify.txt")
 		m.status = "space: " + strings.Join(hints, "  ·  ")
 		return m, nil
 	case "g":
@@ -6018,6 +6213,8 @@ func (m Model) View() string {
 		return m.viewReaction()
 	case stateContacts:
 		return m.viewContacts()
+	case stateSnippets:
+		return m.viewSnippets()
 	}
 	return ""
 }

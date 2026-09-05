@@ -376,6 +376,64 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   messages never include tokens/passwords. Tests: `TestTokenErrors_NoTokenLeak`,
   `TestSaveToken_FilePermissions`.
 
+## Core Keyboard Contract (e / h / s / ;)
+
+The client is driven from the home row. These four keys are the product, not a convenience
+layer — do not rebind them, and do not let a new binding shadow one.
+
+- **`e` archive · `h` remind · `s` start an email · `;` snippets** — bound in both the
+  inbox (`updateInbox`) and the reader (`updateReader`) in `internal/ui/model.go`. The
+  pre-5.0 keys still work as aliases (`A` archive, `H` remind, `c` compose).
+  Test: `TestEmailBindingMap`, `TestReaderArchiveAndRemindKeys`.
+- **Case convention is LOWERCASE for email actions.** `i`/`o`/`p`/`b`/`t`/`v` replaced
+  `I`/`O`/`P`/`B`/`T`/`V` (uppercase kept as aliases). Six keys had to stay uppercase
+  because their lowercase letter is already load-bearing — the exception list is
+  `F` (f=forward), `S` (s=compose), `U` (u=page up), `X` (x=trash), `N` (n=toggle read),
+  `R` (r=reply). Documented in the `keys.go` header comment; keep both in sync.
+- **`h` no longer exits the reader** — `q`/`esc` do. Reverting that would shadow remind.
+- **Reader `e` moved the old $EDITOR view to `<space>e`.**
+- **Bindings must not fire inside a text field** — the inbox handler's early returns for
+  `cmdMode`, `imapSearchActive`, `filterActive`, `reminderActive` and `pendingKey` are what
+  guarantee this; new bindings go in the main `switch` *after* those guards, never before.
+  Test: `TestEmailBindingsGuardedInsideInputFields`.
+
+## Instant Actions (optimistic UI)
+
+- **Every list action applies before the IMAP round-trip.** Archive/delete/screen/move/
+  remind route through `Model.optimisticAct` (`internal/ui/optimistic.go`): the rows leave
+  `m.emails` and the list immediately, the IMAP command runs behind it, and `batchDoneMsg`
+  / `reminderDoneMsg` *confirm in place* — **no folder re-fetch**. Regressing to
+  `fetchFolderCmd` on ack is the failure mode this exists to prevent.
+  Test: `TestOptimisticArchiveIsInstant`.
+- **Failures roll back visibly** — the rows return to the list and `isError` is set; a
+  refused action is never silently dropped. Test:
+  `TestOptimisticArchiveRollsBackVisiblyOnFailure`.
+- **Overlapping actions are independent** — each batch gets an `optID`; one batch's ack must
+  never consume another's rollback snapshot.
+  Test: `TestOverlappingOptimisticBatchesRollBackIndependently`.
+
+## Infinite Scroll
+
+- **Reaching the bottom appends the next page** — `maybeLoadMoreCmd` fires within
+  `loadMoreThreshold` rows of the end and pages on UID via
+  `imap.Client.FetchHeadersBefore(folder, beforeUID, n)`.
+  Test: `TestScrollToBottomTriggersNextPage`.
+- **The cursor must not move when a page lands** — appends go through `sortEmails` and then
+  re-`Select` the previous index. Test: `TestNextPageAppendsAndKeepsScrollPosition`.
+- **Ad-hoc views are never paged** — IMAP search results, `Everything`, conversation and
+  sender views span folders, so UID paging is meaningless there.
+  Test: `TestScrollDoesNotPageAdHocViews`.
+- **An empty page latches `moreExhausted`** so the client stops asking; a full folder load
+  (`emailsLoadedMsg`) resets paging and clears pending optimistic snapshots.
+  Tests: `TestEmptyNextPageMarksFolderExhausted`, `TestFullFolderLoadResetsPagingState`.
+
+## Snippets
+
+- **`;` reads `<config dir>/snippets/*.md` at open time** (`internal/snippets`), so a new
+  template needs no restart. An optional leading `Subject:` line sets the subject; the rest
+  is the body, staged through `mailtoBody` so `launchEditorCmd` drops it into the editor
+  buffer. Tests: `TestSnippetParseSplitsSubjectAndBody`, `TestSnippetPickerComposesPrefilled`.
+
 ## Keybindings & Docs
 
 - **`internal/ui/keys.go` is the single source of truth** — drives the `?` overlay and the
@@ -384,3 +442,10 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 - **Avoid modifier keys for new bindings** — user's tmux prefix is `C-t`; `ctrl+a`/`ctrl+e`
   collide with textinput line-start/end. Prefer plain letters, especially on pre-send.
 - **README.md syncs to the docs site** (`scripts/sync-readme-to-docs.sh` via `make docs`).
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

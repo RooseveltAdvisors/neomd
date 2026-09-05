@@ -1,5 +1,52 @@
 # Changelog
 
+# 2026-09-05
+
+- **Keyboard-driven email handling: `e` archive, `h` remind, `s` start, `;` snippets** —
+  the four Superhuman-style actions are now bound in both the inbox and the reader.
+  `e` archives (mark done), `h` opens the remind-me prompt for the marked/cursor
+  emails (or the open one), `s` starts a new email, and `;` opens a snippet picker
+  reading `<config dir>/snippets/*.md` (an optional leading `Subject:` line sets the
+  subject, the rest becomes the body, staged into the `$EDITOR` buffer). All four are
+  guarded behind the existing input-mode early returns, so they never fire while the
+  filter, `:` command line, IMAP search, or reminder prompt owns the keyboard.
+  Where: `internal/ui/model.go`, `internal/ui/snippets.go`, `internal/snippets/`.
+  Tests: `TestEmailBindingMap`, `TestEmailBindingsGuardedInsideInputFields`,
+  `TestReaderArchiveAndRemindKeys`, `TestSnippetPickerComposesPrefilled`.
+
+- **Email bindings standardised on lowercase** — `i`/`o`/`p`/`b`/`t`/`v` are now the
+  documented keys for screen-in, screen-out, PaperTrail, Work, thread and sender views;
+  the historical uppercase keys keep working as aliases, as do `A` (archive) and `c`
+  (compose). Six keys stay uppercase because their lowercase letter is already taken:
+  `F` (f=forward), `S` (s=compose), `U` (u=page up), `X` (x=trash), `N` (n=toggle read),
+  `R` (r=reply). Two visible moves: `h` no longer exits the reader (`q`/`esc` do, so `h`
+  can mean remind everywhere), and the reader's read-only `$EDITOR` view moved from `e`
+  to `<space>e`. Where: `internal/ui/keys.go` (mapping table + case convention),
+  `internal/ui/model.go`. Test: `TestEmailBindingMap`.
+
+- **Every list action is instantaneous** — archive, delete, screener moves, Work moves and
+  reminders now apply to the list on the keystroke and reconcile with the server in place.
+  Previously each one waited for IMAP and then re-fetched the whole folder, so a single
+  archive felt like a page load. Rows leave the list immediately, the IMAP work runs
+  behind them, and a server failure puts the rows back visibly with an error status rather
+  than dropping the action. Overlapping actions are tracked by batch id so one
+  acknowledgement can never consume another's rollback snapshot.
+  Where: `internal/ui/optimistic.go`, `batchDoneMsg`/`reminderDoneMsg` handlers in
+  `internal/ui/model.go`. Tests: `TestOptimisticArchiveIsInstant`,
+  `TestOptimisticArchiveRollsBackVisiblyOnFailure`,
+  `TestOverlappingOptimisticBatchesRollBackIndependently`,
+  `TestOptimisticRemindMovesRowsAtOnce`.
+
+- **Infinite scroll in the email list** — reaching the bottom of a folder automatically
+  fetches and appends the next page instead of stopping at `ui.inbox_count`. Paging is by
+  UID (`imap.Client.FetchHeadersBefore`), the cursor stays exactly where it was when a page
+  lands, an empty page latches the folder as exhausted, and cross-folder views (IMAP search,
+  `Everything`, conversation, sender) are deliberately not paged.
+  Where: `internal/imap/client.go`, `internal/ui/optimistic.go`, `internal/ui/model.go`.
+  Tests: `TestScrollToBottomTriggersNextPage`, `TestNextPageAppendsAndKeepsScrollPosition`,
+  `TestScrollDoesNotPageAdHocViews`, `TestEmptyNextPageMarksFolderExhausted`,
+  `TestNextPageForAnotherFolderIsDropped`, `TestFullFolderLoadResetsPagingState`.
+
 # 2026-09-02
 
 - **Reminder safety fixes** — reminder headers without a durable identity no
