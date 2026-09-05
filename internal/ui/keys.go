@@ -9,6 +9,11 @@ type HelpSection struct {
 
 // HelpSections is the single source of truth for all keybindings.
 // Edit here → `make docs` regenerates the README.md keybindings section.
+//
+// Case convention: email actions are LOWERCASE. Uppercase keys survive only
+// where the lowercase letter is already taken by something a user presses more
+// often; those are listed as "(alias)" or noted in the row. The pre-5.0
+// uppercase keys still work but are no longer the documented binding.
 var HelpSections = []HelpSection{
 	{"Navigation", [][2]string{
 		{"j / k", "move down / up"},
@@ -16,7 +21,7 @@ var HelpSections = []HelpSection{
 		{"gg", "jump to top"},
 		{"G", "jump to bottom"},
 		{"enter / l", "open email"},
-		{"h / q / esc", "back to inbox (from reader)"},
+		{"q / esc", "back to inbox (from reader)  — h is now remind"},
 		{"?", "toggle help overlay (type to filter)"},
 	}},
 	{"Folders", [][2]string{
@@ -38,17 +43,22 @@ var HelpSections = []HelpSection{
 		{"ge", "go to Everything — latest 50 emails across all folders"},
 		{"gS", "go to Spam (not in tab rotation)"},
 	}},
+	{"Core actions  (marked or cursor — instant, no refresh)", [][2]string{
+		{"e", "archive / mark done — move to Archive, no screener update  (alias A)"},
+		{"h", "remind me — park in Waiting until a chosen time, then back to Inbox"},
+		{"s", "start a new email (compose)  (alias c)"},
+		{";", "snippets — pick a template from <config dir>/snippets/*.md"},
+	}},
 	{"Screener  (marked or cursor, any folder)", [][2]string{
-		{"I", "approve sender → screened_in.txt + move to Inbox (removes from blocked lists)"},
-		{"O", "block sender → screened_out.txt + move to ScreenedOut (removes from screened_in)"},
+		{"i", "approve sender → screened_in.txt + move to Inbox (removes from blocked lists)  (alias I)"},
+		{"o", "block sender → screened_out.txt + move to ScreenedOut (removes from screened_in)  (alias O)"},
 		{"$", "mark as Spam → spam.txt + move to Spam (removes from screened_in/out)"},
-		{"F", "mark as Feed → feed.txt + move to Feed"},
-		{"P", "mark as PaperTrail → papertrail.txt + move to PaperTrail"},
+		{"F", "mark as Feed → feed.txt + move to Feed  (uppercase: f is forward)"},
+		{"p", "mark as PaperTrail → papertrail.txt + move to PaperTrail  (alias P)"},
 		{"Di", "approve whole DOMAIN → @domain.tld appended to screened_in.txt (cursor or open email; y/n)"},
 		{"Do", "block whole DOMAIN → @domain.tld appended to screened_out.txt (cursor or open email; y/n)"},
-		{"A", "archive (move to Archive, no screener update)"},
-		{"B", "move to Work/business (no screener update, if configured)"},
-		{"S", "dry-run screen inbox (loaded emails), then y/n"},
+		{"b", "move to Work/business (no screener update, if configured)  (alias B)"},
+		{"S", "dry-run screen inbox (loaded emails), then y/n  (uppercase: s is compose)"},
 	}},
 	{"Move  (marked or cursor, no screener update)", [][2]string{
 		{"x", "delete → Trash"},
@@ -68,14 +78,15 @@ var HelpSections = []HelpSection{
 	{"Multi-select & Undo", [][2]string{
 		{"m", "mark / unmark email + advance cursor"},
 		{"ctrl+u", "clear all marks"},
-		{"U", "undo last move or delete (reverses x, A, M* — not screener actions)"},
-		{"X  (Trash only)", "permanently delete marked or cursor email(s) — no undo"},
+		{"U", "undo last move or delete (reverses x, e, M* — not screener actions)  (uppercase: u is page up)"},
+		{"X  (Trash only)", "permanently delete marked or cursor email(s) — no undo  (uppercase: x is move to Trash)"},
 	}},
 	{"Leader Key Mappings (space prefix)", [][2]string{
 		{"<space>1 … <space>9", "jump to folder tab by number (Inbox=1, ToScreen=2, …)"},
 		{"<space>/", "IMAP search ALL emails on server (From + Subject)"},
 		{"<space>c", "contacts picker — browse harvested + [contacts] file names; / filter, y copy address, Y copy \"Name <addr>\", enter compose to contact"},
 		{"<space>S", "scan current folder for spy pixels (skips already scanned)"},
+		{"<space>e  (reader)", "open the email in $EDITOR read-only"},
 		{"<space>d  (reader)", "download raw email source (.eml) to ~/Downloads"},
 		{"<space>n  (reader)", "append open email's sender to notify.txt (desktop notifications opt-in)"},
 		{"<space>N  (reader)", "append @domain of open email's sender to notify.txt"},
@@ -97,17 +108,18 @@ var HelpSections = []HelpSection{
 	}},
 	{"Email actions", [][2]string{
 		{"n", "toggle read/unread  (marked or cursor)"},
-		{"N", "jump to next unread email"},
+		{"N", "jump to next unread email  (uppercase: n toggles read/unread)"},
 		{"ctrl+n", "mark all in current folder as read"},
-		{"R", "reload / refresh folder"},
+		{"R", "reload / refresh folder  (uppercase: r is reply)"},
 		{"r", "reply  (from inbox or reader)"},
 		{"ctrl+r", "reply-all — reply to sender + all CC recipients  (from inbox or reader)"},
 		{"ctrl+e", "react with emoji  (from inbox or reader)"},
 		{"f", "forward email  (from reader or inbox)"},
-		{"T", "show full conversation thread across folders  (from inbox or reader)"},
-		{"H  (reader)", "remind this email — return it to Inbox at a chosen time (no mail is sent)"},
-		{"V", "show all emails from this sender, across all folders  (from inbox)"},
-		{"c", "compose new email"},
+		{"t", "show full conversation thread across folders  (from inbox or reader)  (alias T)"},
+		{"h", "remind — park marked/cursor (or the open email) in Waiting until a chosen time  (alias H)"},
+		{"v", "show all emails from this sender, across all folders  (from inbox)  (alias V)"},
+		{"s", "compose new email  (alias c)"},
+		{";", "open the snippets / templates picker"},
 		{"ctrl+b  (compose/pre-send)", "toggle Cc+Bcc fields (both hidden by default)"},
 		{"ctrl+f  (compose/pre-send)", "cycle From address through all accounts + [[senders]] aliases"},
 		{"a  (pre-send)", "attach file via yazi file picker (or $NEOMD_FILE_PICKER)"},
@@ -122,8 +134,8 @@ var HelpSections = []HelpSection{
 		{"1-9  (reader)", "download attachment N to ~/Downloads and open with xdg-open"},
 		{"space+1-0  (reader)", "open link 1-10 in $BROWSER (0 = 10th link)"},
 		{"space+l11-99  (reader)", "open link 11-99 in $BROWSER (e.g. space+l26 for [26])"},
-		{"e  (reader)", "open in $EDITOR read-only — search, copy, vim motions"},
-		{"E  (reader)", "continue draft — re-open as editable compose (Drafts folder)"},
+		{"e  (reader)", "archive / mark done, back to the list  (the old e — $EDITOR view — is now <space>e)"},
+		{"E  (reader)", "continue draft — re-open as editable compose (Drafts folder)  (uppercase: e is archive)"},
 		{"o  (reader)", "open in w3m (terminal browser)"},
 		{"O  (reader)", "open in $BROWSER (GUI browser, images shown)"},
 		{"ctrl+o  (reader)", "open web version / newsletter URL in $BROWSER"},
@@ -152,9 +164,16 @@ var HelpSections = []HelpSection{
 		{"enter  (on Subject)", "open $EDITOR with a .md temp file"},
 		{"esc", "cancel"},
 	}},
+	{"Snippets  (; to open)", [][2]string{
+		{"j / k", "move through templates"},
+		{"1-9", "pick template by number"},
+		{"enter", "start a compose pre-filled with the template's subject + body"},
+		{"esc / q / ;", "close the picker"},
+	}},
 	{"General", [][2]string{
 		{"/", "filter loaded emails (From + Subject, in-memory)"},
 		{"z", "toggle unread-only view (zoomed out/zero inbox)"},
+		{"scroll to bottom", "the next page of emails loads and appends automatically"},
 		{"<space>/  or  :search", "IMAP search ALL emails on server (From + Subject)"},
 		{"?", "toggle this help"},
 		{"q", "quit  (from inbox)"},

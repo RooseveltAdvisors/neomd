@@ -341,6 +341,13 @@ func parseSendAtSection(raw []byte) time.Time {
 }
 
 func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Email, error) {
+	return c.FetchHeadersBefore(ctx, folder, 0, n)
+}
+
+// FetchHeadersBefore fetches the n most recent headers with UID strictly below
+// beforeUID — the paging primitive behind the inbox's infinite scroll. A
+// beforeUID of 0 means "no cursor", making it identical to FetchHeaders.
+func (c *Client) FetchHeadersBefore(ctx context.Context, folder string, beforeUID uint32, n int) ([]Email, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -368,6 +375,14 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 		// Take the last n UIDs (most recent) and reverse to newest-first.
 		// n=0 means no limit — fetch all.
 		sort.Slice(allUIDs, func(i, j int) bool { return allUIDs[i] < allUIDs[j] })
+		// Paging cursor: keep only UIDs older than the oldest one already held.
+		if beforeUID > 0 {
+			cut := sort.Search(len(allUIDs), func(i int) bool { return uint32(allUIDs[i]) >= beforeUID })
+			allUIDs = allUIDs[:cut]
+			if len(allUIDs) == 0 {
+				return nil
+			}
+		}
 		if n > 0 && len(allUIDs) > n {
 			allUIDs = allUIDs[len(allUIDs)-n:]
 		}
