@@ -2,6 +2,19 @@
 
 # 2026-09-07
 
+- **Superhuman-inspired vim keyboard map** — rebuilt the `?` overlay, context-aware
+  footer hints, generated keybinding docs, and a complete decision table from the
+  Superhuman v7 sheet. Captain-selected `e` done, `h` remind, `s` compose, and `;`
+  snippets remain primary; vim navigation now owns `gg/G`, `ctrl+d/u`, `u` undo,
+  `x/m` selection, `V` visual selection, `dd/#` trash, and `ctrl+a` select-all.
+  Superhuman folder gotos map to neomd's mailboxes, command-key-only features are
+  documented as dropped, and the former sender view remains available at `@`.
+  New folder/label picker and compose leader sequences are read-only safe before
+  any network mutation. Where: `internal/ui/keys.go`, `internal/ui/model.go`,
+  `internal/ui/reader.go`, `docs/keys.md`, `docs/content/docs/keybindings.md`.
+  Tests: `TestDocumentedKeyBindings`, `TestReadOnlyBlocksExpandedMutatingBindingsBeforeNetwork`,
+  `go test ./...`, `go vet ./...`.
+
 - **External XOAUTH2 token helpers and read-only mode** — accounts may use
   `oauth2_token_command` to obtain an in-memory access token from a fixed argv
   helper without native OAuth client/issuer, keyring, or token-file settings.
