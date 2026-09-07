@@ -142,6 +142,13 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   `allow-passthrough on`. Tests: `TestYankMenuMessageIDIsOSC52Encoded`,
   `TestOSC52TmuxPassthroughDoublesEscapes`,
   `TestLocalClipboardToolSkippedWithoutDisplay`.
+- **Clipboard standard is non-negotiable for any copy path** — new yank/copy features
+  must follow `copyToClipboard` (`internal/ui/clipboard.go`): always emit OSC 52 to the
+  TUI stdout so it reaches the terminal (Ghostty) first, wrap for tmux when `TMUX` is
+  set, and only try a local tool (`wl-copy`/`xclip`/`xsel`) when `WAYLAND_DISPLAY` or
+  `DISPLAY` exists. Never treat a clipboard binary merely present on `PATH` as
+  sufficient - on a headless box that sets a clipboard nobody can see. Route every new
+  copy through the shared helper instead of shelling out directly.
 
 - **`·` reply indicator** — after sending a reply, the original email gets the IMAP
   `\Answered` flag (`MarkAnswered` in `internal/imap/client.go`, called from `sendEmailCmd`
