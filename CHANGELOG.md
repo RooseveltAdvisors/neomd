@@ -2,6 +2,22 @@
 
 # 2026-09-07
 
+- **Yank menu actually reaches the clipboard (OSC 52)** — the reader's `y` → `m`
+  copy landed nowhere whenever neomd ran over ssh: the shared helper only tried
+  local tools, and on a headless host `xclip` is on `PATH` but `DISPLAY` is empty,
+  so it was invoked and failed with a bare `exit status 1` (verified on the gpu
+  box). Even a *successful* local tool would have set the remote machine's
+  clipboard, not the terminal the user pastes from. `copyToClipboard` now writes an
+  OSC 52 sequence to the terminal first (`ESC ]52;c;<base64> BEL`, system clipboard
+  kind — a multiplexer may drop kind `p`) and only then falls back to a local tool,
+  skipping any tool whose display variable is unset and surfacing its stderr when
+  it does fail. Under tmux this relies on `set-clipboard on`. The helper
+  moved out of `internal/ui/contacts_picker.go` into `internal/ui/clipboard.go`,
+  so the contacts picker (`y`/`Y`) is fixed by the same change. Where:
+  `internal/ui/clipboard.go`, `internal/ui/contacts_picker.go`. Tests:
+  `TestYankMenuMessageIDIsOSC52Encoded`, `TestOSC52TmuxPassthroughDoublesEscapes`,
+  `TestLocalClipboardToolSkippedWithoutDisplay`.
+
 - **Message-ID share links** — the reader's `y` copy menu now offers a stable
   `neomd://mid/<url-encoded-message-id>` URI, plus an available web-version URL;
   the URI is based on the RFC Message-ID rather than IMAP location data. Tests:
