@@ -75,6 +75,7 @@ records the decision made for every shortcut on Superhuman v7's sheet.
 | ⌘- decrease font | dropped | dropped | Terminal theme/font is controlled by the terminal. |
 | ⌘0 reset font | dropped | dropped | Terminal theme/font is controlled by the terminal. |
 | ctrl-/ copy page link | dropped | dropped | No browser page-link concept in the TUI. |
+| copy message link | `y` | neomd-native | In the reader, opens a copy menu: `m` copies `neomd://mid/<url-encoded-message-id>` and `w` copies an available web-version link. |
 | ⌘B bold | dropped | dropped | Formatting belongs to the external editor. |
 | ⌘I italic | dropped | dropped | Formatting belongs to the external editor. |
 | ⌘U underline | dropped | dropped | Formatting belongs to the external editor. |

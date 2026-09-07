@@ -126,6 +126,11 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 
 ## Reply & Threading
 
+- **Message-ID share links** — in the reader, `y` opens the copy menu and `m` copies
+  `neomd://mid/<url-encoded-message-id>`; the URI encodes the RFC Message-ID, never
+  an IMAP UID or folder path. Tests: `internal/link/message_id_test.go`,
+  `internal/ui/copy_menu_test.go`.
+
 - **`·` reply indicator** — after sending a reply, the original email gets the IMAP
   `\Answered` flag (`MarkAnswered` in `internal/imap/client.go`, called from `sendEmailCmd`
   in `internal/ui/model.go`) and the inbox shows `·` (or `·╰` inside a thread,

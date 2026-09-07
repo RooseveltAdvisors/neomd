@@ -198,7 +198,7 @@ func readerHelp(isDraft bool, hasLinks bool) string {
 	if hasLinks {
 		keys = append(keys, "space+1-0 links")
 	}
-	keys = append(keys, "? help")
+	keys = append(keys, "y copy link", "? help")
 	return styleHelp.Render("  " + strings.Join(keys, " · "))
 }
 

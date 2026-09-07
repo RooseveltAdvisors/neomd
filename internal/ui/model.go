@@ -47,6 +47,7 @@ const (
 	stateHelp               // help overlay
 	stateWelcome            // first-run welcome popup
 	stateReaction           // emoji reaction picker
+	stateCopyMenu           // copy-target picker for the reader
 	stateContacts           // contacts picker (space c)
 	stateSnippets           // snippet/template picker (;)
 )
@@ -592,6 +593,8 @@ type Model struct {
 	openLinks       []emailLink       // extracted links from the email body
 	openSpyPixels   imap.SpyPixelInfo // spy pixels detected in the currently open email
 	readerPending   string            // chord prefix in reader (space for link open)
+	copyTargetsList []copyTarget      // copy targets shown by the reader's y menu
+	copyMenuCursor  int
 	// Mark-as-read timer tracking
 	markAsReadUID    uint32 // UID of email with pending mark-as-read timer
 	markAsReadFolder string // folder of email with pending mark-as-read timer
@@ -3305,6 +3308,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case stateReaction:
 			return m.updateReaction(msg)
+		case stateCopyMenu:
+			return m.updateCopyMenu(msg)
 		case stateContacts:
 			return m.updateContacts(msg)
 		case stateSnippets:
@@ -4688,6 +4693,8 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.openEmail != nil {
 			return m.enterReactionMode(m.openEmail)
 		}
+	case "y":
+		return m.openCopyMenu()
 	case "f":
 		if m.openEmail != nil {
 			return m.launchForwardCmd()
@@ -6610,6 +6617,8 @@ func (m Model) View() string {
 		return m.viewWelcome()
 	case stateReaction:
 		return m.viewReaction()
+	case stateCopyMenu:
+		return m.viewCopyMenu()
 	case stateContacts:
 		return m.viewContacts()
 	case stateSnippets:
