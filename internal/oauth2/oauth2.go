@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/emersion/go-sasl"
@@ -302,6 +303,36 @@ func (c *xoauth2Client) Start() (string, []byte, error) {
 // We return an empty response to cleanly abort the exchange.
 func (c *xoauth2Client) Next(_ []byte) ([]byte, error) {
 	return []byte{}, nil
+}
+
+// CommandTokenSource runs a trusted, configuration-owned argv each time an
+// OAuth2 access token is needed. The token stays in process memory and is
+// never logged or persisted by neomd.
+func CommandTokenSource(argv []string) func() (string, error) {
+	return func() (string, error) {
+		if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
+			return "", fmt.Errorf("oauth2 token command is empty")
+		}
+		program := argv[0]
+		if strings.HasPrefix(program, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", fmt.Errorf("resolve oauth2 token command home: %w", err)
+			}
+			program = filepath.Join(home, program[2:])
+		}
+		cmd := exec.Command(program, argv[1:]...)
+		cmd.Stderr = io.Discard
+		out, err := cmd.Output()
+		if err != nil {
+			return "", fmt.Errorf("oauth2 token command failed: %w", err)
+		}
+		token := strings.TrimSpace(string(out))
+		if token == "" {
+			return "", fmt.Errorf("oauth2 token command returned an empty token")
+		}
+		return token, nil
+	}
 }
 
 // tokenStorage persists OAuth2 tokens with a keyring-first / file-fallback policy.

@@ -31,6 +31,11 @@ func (m *Model) optimisticAct(targets []imap.Email, label string, build func() t
 	if len(targets) == 0 {
 		return nil
 	}
+	if m.cfg != nil && m.cfg.ReadOnly {
+		m.status = readOnlyError(label).Error()
+		m.isError = true
+		return readOnlyBatchCmd(label)
+	}
 	m.optimisticSeq++
 	id := m.optimisticSeq
 

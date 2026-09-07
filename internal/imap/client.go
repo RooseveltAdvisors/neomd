@@ -70,6 +70,7 @@ type Config struct {
 	STARTTLS    bool                   // STARTTLS upgrade (port 143)
 	TLSCertFile string                 // optional PEM CA/cert for self-signed local bridges
 	TokenSource func() (string, error) // The token is used instead of the password for OAuth2 Accounts
+	ReadOnly    bool                   // refuse APPEND, MOVE, STORE, CREATE, and EXPUNGE operations
 }
 
 // Client wraps an IMAP connection with reconnection management.
@@ -186,6 +187,9 @@ func (c *Client) reconnect(ctx context.Context) error {
 // withConn runs fn on the IMAP connection, reconnecting if needed.
 // Does NOT retry on network errors — safe for mutating operations (APPEND, MOVE, STORE).
 func (c *Client) withConn(ctx context.Context, fn func(*imapclient.Client) error) error {
+	if c.cfg.ReadOnly {
+		return ErrReadOnly
+	}
 	return c.withConnRetryable(ctx, fn, false)
 }
 
@@ -241,15 +245,27 @@ func (c *Client) withConnRetryable(ctx context.Context, fn func(*imapclient.Clie
 	return nil
 }
 
+// ErrReadOnly is returned before any remote mutation when read-only mode is enabled.
+var ErrReadOnly = errors.New("neomd read-only mode: remote mutation blocked")
+
 func (c *Client) selectMailbox(mailbox string) error {
 	if c.selectedMailbox == mailbox {
 		return nil
 	}
-	if _, err := c.conn.Select(mailbox, nil).Wait(); err != nil {
-		return fmt.Errorf("SELECT %q: %w", mailbox, err)
+	options := mailboxSelectOptions(c.cfg.ReadOnly)
+	if _, err := c.conn.Select(mailbox, options).Wait(); err != nil {
+		command := "SELECT"
+		if c.cfg.ReadOnly {
+			command = "EXAMINE"
+		}
+		return fmt.Errorf("%s %q: %w", command, mailbox, err)
 	}
 	c.selectedMailbox = mailbox
 	return nil
+}
+
+func mailboxSelectOptions(readOnly bool) *imap.SelectOptions {
+	return &imap.SelectOptions{ReadOnly: readOnly}
 }
 
 // Close logs out and closes the IMAP connection.
@@ -1256,6 +1272,9 @@ func (c *Client) claimReminderSource(ctx context.Context, source Email, folders 
 }
 
 func (c *Client) ParkReminder(ctx context.Context, source Email, folders []string, waiting, trash string, at time.Time) error {
+	if c.cfg.ReadOnly {
+		return ErrReadOnly
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1488,6 +1507,9 @@ func (c *Client) SaveDraft(ctx context.Context, folder string, raw []byte) error
 
 // SaveReminder idempotently APPENDs a parked email to the reminder folder.
 func (c *Client) SaveReminder(ctx context.Context, folder string, raw []byte) error {
+	if c.cfg.ReadOnly {
+		return ErrReadOnly
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}

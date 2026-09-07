@@ -54,6 +54,7 @@ type AccountConfig struct {
 	OAuth2TokenURL     string   `toml:"oauth2_token_url"`  // manual override; skips discovery
 	OAuth2Scopes       []string `toml:"oauth2_scopes"`
 	OAuth2RedirectPort int      `toml:"oauth2_redirect_port"` // local callback port; default 8085
+	OAuth2TokenCommand []string `toml:"oauth2_token_command"` // optional argv returning an access token on stdout
 
 	// Signature
 	Signature SignatureConfig `toml:"signature_block"` // Per account Signature
@@ -336,6 +337,10 @@ type Config struct {
 	// For a single account the legacy [account] block is also accepted.
 	Accounts []AccountConfig `toml:"accounts"`
 	Account  AccountConfig   `toml:"account"` // legacy single-account fallback
+
+	// ReadOnly blocks every remote IMAP mutation and every outbound delivery
+	// path while preserving authenticated fetch, search, and folder browsing.
+	ReadOnly bool `toml:"read_only"`
 
 	// StoreSentDraftsInSendingAccount controls where Sent/Drafts are stored when
 	// multiple SMTP identities are configured. Default false: always use the
@@ -645,12 +650,16 @@ func Load(path string) (*Config, error) {
 		cfg.Accounts[i].Password = expandEnv(cfg.Accounts[i].Password)
 		cfg.Accounts[i].User = expandEnv(cfg.Accounts[i].User)
 		cfg.Accounts[i].TLSCertFile = expandPath(expandEnv(cfg.Accounts[i].TLSCertFile))
-		cfg.Accounts[i].Password = resolveKeyringPassword(cfg.Accounts[i].Name, cfg.Accounts[i].Password)
+		if len(cfg.Accounts[i].OAuth2TokenCommand) == 0 {
+			cfg.Accounts[i].Password = resolveKeyringPassword(cfg.Accounts[i].Name, cfg.Accounts[i].Password)
+		}
 	}
 	cfg.Account.Password = expandEnv(cfg.Account.Password)
 	cfg.Account.User = expandEnv(cfg.Account.User)
 	cfg.Account.TLSCertFile = expandPath(expandEnv(cfg.Account.TLSCertFile))
-	cfg.Account.Password = resolveKeyringPassword(cfg.Account.Name, cfg.Account.Password)
+	if len(cfg.Account.OAuth2TokenCommand) == 0 {
+		cfg.Account.Password = resolveKeyringPassword(cfg.Account.Name, cfg.Account.Password)
+	}
 
 	cfg.Listmonk.APIToken = expandEnv(cfg.Listmonk.APIToken)
 
