@@ -12,195 +12,147 @@ To update both the help overlay and this document at once, edit that file and ru
 
 <!-- keybindings-start -->
 
-### Navigation
+### Actions
 
 | Key | Action |
 |-----|--------|
-| `j / k` | move down / up |
-| `d / u` | page down / up in inbox/help |
-| `gg` | jump to top |
-| `G` | jump to bottom |
-| `enter / l` | open email |
-| `h / q / esc` | back to inbox (from reader) |
-| `?` | toggle help overlay (type to filter) |
+| `e` | mark done / archive (alias A) |
+| `E` | mark not done / move back to Inbox |
+| `h` | remind me |
+| `u` | undo the last move or delete |
+| `U / z` | toggle unread-only view |
+| `n` | mark read / unread |
+| `N` | jump to next unread |
+| `i` | approve sender / screened-in |
+| `o` | open the selected email |
+| `O` | screen out in the inbox; expand all in a conversation |
+| `p` | mark as PaperTrail |
+| `b` | move to Work |
+| `ctrl+e` | open the emoji reaction picker |
+| `@` | show every email from the selected sender across folders |
+| `! / $` | mark spam |
+| `# / dd` | move to Trash |
+| `F` | mark as Feed (uppercase: f is forward) |
+| `S` | dry-run screen |
+| `R` | reload the current folder |
+
+
+### Conversations
+
+| Key | Action |
+|-----|--------|
+| `r` | reply |
+| `ctrl+r` | reply all |
+| `f` | forward |
+| `t` | open the full conversation thread (alias T) |
+| `O` | expand all messages in a conversation / open in browser elsewhere |
+| `enter` | open the selected email |
+| `q / esc` | back to the inbox |
+| `n / p` | next / previous message in a thread |
+
+
+### Messages
+
+| Key | Action |
+|-----|--------|
+| `s / c` | start a new email |
+| `;` | open the snippets picker |
+| `o` | open the selected email (enter is the full-word alias) |
+| `<space>o` | open links and attachments in the browser |
+| `1-9` | open attachment 1-9 |
+| `<space>1-0` | open link 1-10 |
+| `<space>e` | open the raw email in the editor |
+| `y` | open the copy menu (m Message-ID link; w web link) |
 
 
 ### Folders
 
 | Key | Action |
 |-----|--------|
-| `L / ] / tab` | next folder tab |
-| `H / [ / shift+tab` | previous folder tab |
-| `gi` | go to Inbox |
-| `ga` | go to Archive |
-| `gf` | go to Feed |
-| `gp` | go to PaperTrail |
-| `gt` | go to Trash |
-| `gs` | go to Sent |
-| `gk` | go to ToScreen |
-| `go` | go to ScreenedOut |
-| `gw` | go to Waiting |
-| `gc` | go to Scheduled (calendar) |
-| `gb` | go to Work (if configured) |
-| `gm` | go to Someday |
-| `gd` | go to Drafts |
-| `ge` | go to Everything — latest 50 emails across all folders |
-| `gS` | go to Spam (not in tab rotation) |
+| `gi` | Inbox |
+| `gs` | Starred (when configured; otherwise reports unavailable) |
+| `gd` | Drafts |
+| `gt` | Sent |
+| `ge` | Done / Archive |
+| `gh` | Reminders / Waiting |
+| `g;` | Snippets |
+| `g!` | Spam |
+| `g#` | Trash |
+| `ga` | All Mail / Everything |
+| `gl` | open the label / folder picker |
+| `l` | add or remove a label with the folder picker |
+| `go` | Other / ScreenedOut |
+| `gm` | Muted / Someday |
+| `gf` | Feed (neomd) |
+| `gp` | PaperTrail (neomd) |
+| `gk` | ToScreen (neomd) |
+| `gw` | Waiting alias (neomd) |
+| `gc` | Scheduled (neomd) |
+| `gb` | Work (neomd, if configured) |
+| `v / M*` | move to a folder with the picker / quick destination |
+| `y` | remove label / move back to Inbox |
 
 
-### Screener  (marked or cursor, any folder)
-
-| Key | Action |
-|-----|--------|
-| `I` | approve sender → screened_in.txt + move to Inbox (removes from blocked lists) |
-| `O` | block sender → screened_out.txt + move to ScreenedOut (removes from screened_in) |
-| `$` | mark as Spam → spam.txt + move to Spam (removes from screened_in/out) |
-| `F` | mark as Feed → feed.txt + move to Feed |
-| `P` | mark as PaperTrail → papertrail.txt + move to PaperTrail |
-| `Di` | approve whole DOMAIN → @domain.tld appended to screened_in.txt (cursor or open email; y/n) |
-| `Do` | block whole DOMAIN → @domain.tld appended to screened_out.txt (cursor or open email; y/n) |
-| `A` | archive (move to Archive, no screener update) |
-| `B` | move to Work/business (no screener update, if configured) |
-| `S` | dry-run screen inbox (loaded emails), then y/n |
-
-
-### Move  (marked or cursor, no screener update)
+### Selection
 
 | Key | Action |
 |-----|--------|
-| `x` | delete → Trash |
-| `Mi` | move to Inbox |
-| `Ma` | move to Archive |
-| `Mf` | move to Feed |
-| `Mp` | move to PaperTrail |
-| `Mt` | move to Trash |
-| `Ms` | move to Sent |
-| `Mo` | move to ScreenedOut |
-| `Mw` | move to Waiting |
-| `Mc` | move to Scheduled |
-| `Mb` | move to Work (if configured) |
-| `Mm` | move to Someday |
-| `Mk` | move to ToScreen |
+| `x / m` | select or unselect the current email |
+| `V` | visual-select mode; j/k extend the selection |
+| `ctrl+a` | select all loaded emails |
+| `esc` | clear visual selection |
+| `ctrl+d / ctrl+u` | half-page down / up |
 
 
-### Multi-select & Undo
+### Navigation
 
 | Key | Action |
 |-----|--------|
-| `m` | mark / unmark email + advance cursor |
-| `ctrl+u` | clear all marks |
-| `U` | undo last move or delete (reverses x, A, M* — not screener actions) |
-| `X  (Trash only)` | permanently delete marked or cursor email(s) — no undo |
+| `j / k` | move down / up |
+| `gg / G` | jump to top / bottom |
+| `/` | filter the loaded email list |
+| `n / N` | next unread/read action (context dependent) |
+| `tab / shift+tab` | next / previous folder tab |
+| `<space>1 … <space>9` | jump to a folder tab |
+| `<space>/` | search all mail on the server |
+| `?` | toggle this help overlay |
 
 
-### Leader Key Mappings (space prefix)
-
-| Key | Action |
-|-----|--------|
-| `<space>1 … <space>9` | jump to folder tab by number (Inbox=1, ToScreen=2, …) |
-| `<space>/` | IMAP search ALL emails on server (From + Subject) |
-| `<space>c` | contacts picker — browse harvested + [contacts] file names; / filter, y copy address, Y copy "Name <addr>", enter compose to contact |
-| `<space>S` | scan current folder for spy pixels (skips already scanned) |
-| `<space>d  (reader)` | download raw email source (.eml) to ~/Downloads |
-| `<space>n  (reader)` | append open email's sender to notify.txt (desktop notifications opt-in) |
-| `<space>N  (reader)` | append @domain of open email's sender to notify.txt |
-| `<space>va  (reader, calendar invite)` | RSVP accept — send iMIP REPLY to organizer |
-| `<space>vd  (reader, calendar invite)` | RSVP decline |
-| `<space>vt  (reader, calendar invite)` | RSVP tentative |
-| `<space>vo  (reader, calendar invite)` | open .ics in [calendar].open_command (default xdg-open, e.g. morgen) |
-| `<space>w` | show welcome screen |
-
-
-### Sort  (, prefix)
+### Compose
 
 | Key | Action |
 |-----|--------|
-| `,m` | date newest first (default) |
-| `,M` | date oldest first |
-| `,a` | from A→Z |
-| `,A` | from Z→A |
-| `,s` | size smallest first |
-| `,S` | size largest first |
-| `,n` | subject A→Z |
-| `,N` | subject Z→A |
+| `a` | attach in pre-send |
+| `<space>a` | attach in compose / pre-send |
+| `<space>l / l` | send later |
+| `<space>h` | remind while composing |
+| `<space>;` | insert a snippet |
+| `<space>o` | open links / attachments |
+| `ctrl+enter / enter` | send from pre-send |
+| `d` | save a draft from pre-send |
+| `e` | re-open the editor from pre-send |
+| `ctrl+b` | toggle Cc/Bcc |
+| `ctrl+f` | cycle From identities |
+| `x / esc` | discard the unsent message (with confirmation) |
 
 
-### Email actions
-
-| Key | Action |
-|-----|--------|
-| `n` | toggle read/unread  (marked or cursor) |
-| `N` | jump to next unread email |
-| `ctrl+n` | mark all in current folder as read |
-| `R` | reload / refresh folder |
-| `r` | reply  (from inbox or reader) |
-| `ctrl+r` | reply-all — reply to sender + all CC recipients  (from inbox or reader) |
-| `ctrl+e` | react with emoji  (from inbox or reader) |
-| `f` | forward email  (from reader or inbox) |
-| `T` | show full conversation thread across folders  (from inbox or reader) |
-| `V` | show all emails from this sender, across all folders  (from inbox) |
-| `c` | compose new email |
-| `ctrl+b  (compose/pre-send)` | toggle Cc+Bcc fields (both hidden by default) |
-| `ctrl+f  (compose/pre-send)` | cycle From address through all accounts + [[senders]] aliases |
-| `a  (pre-send)` | attach file via yazi file picker (or $NEOMD_FILE_PICKER) |
-| `D  (pre-send)` | remove last attachment |
-| `d  (pre-send)` | save to Drafts folder (IMAP APPEND with \Draft flag) |
-| `l  (pre-send)` | send later — queue in Scheduled folder (+2h, 17:30, tomorrow 09:00, …); the headless daemon delivers it |
-| `s  (pre-send)` | spell check — open in nvim with spell on, jump to first error |
-| `p  (pre-send)` | preview email in $BROWSER (images rendered, same as recipient sees) |
-| `e  (pre-send)` | re-open editor to edit body |
-| `i  (pre-send)` | AI handoff — write draft to temp file, spawn [ai].command (default `claude`; quit the tool to return to neomd, edits round-trip back) |
-| `enter  (pre-send)` | confirm and send |
-| `1-9  (reader)` | download attachment N to ~/Downloads and open with xdg-open |
-| `space+1-0  (reader)` | open link 1-10 in $BROWSER (0 = 10th link) |
-| `space+l11-99  (reader)` | open link 11-99 in $BROWSER (e.g. space+l26 for [26]) |
-| `e  (reader)` | open in $EDITOR read-only — search, copy, vim motions |
-| `E  (reader)` | continue draft — re-open as editable compose (Drafts folder) |
-| `o  (reader)` | open in w3m (terminal browser) |
-| `O  (reader)` | open in $BROWSER (GUI browser, images shown) |
-| `ctrl+o  (reader)` | open web version / newsletter URL in $BROWSER |
-| `ctrl+a  (inbox)` | switch account  (if multiple configured) |
-
-
-### Command line  (: to open, tab to complete)
+### Command line
 
 | Key | Action |
 |-----|--------|
-| `:screen  / :s` | dry-run screen loaded inbox emails |
-| `:screen-all  / :sa` | dry-run screen ALL inbox emails (no limit) |
-| `:reset-toscreen  / :rts` | move all ToScreen emails back to Inbox |
-| `:mark-read  / :mr` | mark all emails in current folder as read |
-| `:reload  / :r` | reload current folder |
-| `:check  / :ch` | show screener classification for selected email |
-| `:everything  / :ev` | show latest 50 emails across all folders |
-| `:search  / :se` | IMAP search all emails on server (From + Subject + To) |
-| `:delete-all  / :da` | permanently delete ALL emails in current folder (y/n) |
-| `:empty-trash  / :et` | permanently delete ALL emails in Trash (y/n) |
-| `:create-folders  / :cf` | create missing IMAP folders from config (safe, idempotent) |
-| `:go-spam  / :spam` | open Spam folder (not in tab rotation) |
-| `:debug  / :dbg` | diagnostic report — IMAP ping, config, folders, state (saved to /tmp/neomd/debug.log) |
-| `:notify-test  / :nt` | fire a single test desktop notification using the current [notifications] config |
-| `:quit  / :q` | quit neomd |
-
-
-### Composing
-
-| Key | Action |
-|-----|--------|
-| `tab  (To/Cc/Bcc)` | accept autocomplete suggestion or next field |
-| `ctrl+n / ctrl+p / arrows  (To/Cc/Bcc)` | cycle through address suggestions |
-| `enter  (on Subject)` | open $EDITOR with a .md temp file |
-| `esc` | cancel |
-
-
-### General
-
-| Key | Action |
-|-----|--------|
-| `/` | filter loaded emails (From + Subject, in-memory) |
-| `z` | toggle unread-only view (zoomed out/zero inbox) |
-| `<space>/  or  :search` | IMAP search ALL emails on server (From + Subject) |
-| `?` | toggle this help |
-| `q` | quit  (from inbox) |
+| `:` | open the vim-style command line |
+| `:screen / :s` | dry-run screening |
+| `:screen-all / :sa` | screen all Inbox mail |
+| `:reload / :r` | reload the current folder |
+| `:search / :se` | search all mail |
+| `:everything / :ev` | show All Mail |
+| `:check / :ch` | show sender classification |
+| `:reset-toscreen / :rts` | move ToScreen mail back to Inbox |
+| `:delete-all / :da` | permanently delete the current folder |
+| `:empty-trash / :et` | empty Trash |
+| `:go-spam / :spam` | open Spam |
+| `:create-folders / :cf` | create configured folders |
+| `:debug / :dbg` | write a diagnostic report |
+| `:quit / :q` | quit neomd |
 
 <!-- keybindings-end -->

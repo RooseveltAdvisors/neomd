@@ -54,6 +54,7 @@ type AccountConfig struct {
 	OAuth2TokenURL     string   `toml:"oauth2_token_url"`  // manual override; skips discovery
 	OAuth2Scopes       []string `toml:"oauth2_scopes"`
 	OAuth2RedirectPort int      `toml:"oauth2_redirect_port"` // local callback port; default 8085
+	OAuth2TokenCommand []string `toml:"oauth2_token_command"` // optional argv returning an access token on stdout
 
 	// Signature
 	Signature SignatureConfig `toml:"signature_block"` // Per account Signature
@@ -337,6 +338,10 @@ type Config struct {
 	Accounts []AccountConfig `toml:"accounts"`
 	Account  AccountConfig   `toml:"account"` // legacy single-account fallback
 
+	// ReadOnly blocks every remote IMAP mutation and every outbound delivery
+	// path while preserving authenticated fetch, search, and folder browsing.
+	ReadOnly bool `toml:"read_only"`
+
 	// StoreSentDraftsInSendingAccount controls where Sent/Drafts are stored when
 	// multiple SMTP identities are configured. Default false: always use the
 	// primary IMAP account (the first configured account). When true, Sent/Drafts
@@ -388,13 +393,13 @@ type Config struct {
 // Only the headless daemon acts on it; the TUI ignores this block.
 type OOOConfig struct {
 	Enabled  bool     `toml:"enabled"`
-	Accounts []string `toml:"accounts"` // [[accounts]] names whose inboxes get auto-replies, each from its own address (e.g. ["Work", "WorkInfo"]); empty = the daemon's own account
-	Timezone string   `toml:"timezone"` // IANA name (e.g. "Europe/Zurich") that from/until are interpreted in; empty = the daemon machine's local time
-	From     string `toml:"from"`      // "YYYY-MM-DD" — active starting at 00:00 of this day (local time); empty = active immediately
-	Until    string `toml:"until"`     // "YYYY-MM-DD" — active through the END of this day (local time); empty = active until enabled=false
-	Subject  string `toml:"subject"`   // reply subject; default "Out of Office"
-	Body     string `toml:"body"`      // reply body in markdown (same rendering as composed emails)
-	BodyFile string `toml:"body_file"` // optional path to a markdown file; overrides body when set
+	Accounts []string `toml:"accounts"`  // [[accounts]] names whose inboxes get auto-replies, each from its own address (e.g. ["Work", "WorkInfo"]); empty = the daemon's own account
+	Timezone string   `toml:"timezone"`  // IANA name (e.g. "Europe/Zurich") that from/until are interpreted in; empty = the daemon machine's local time
+	From     string   `toml:"from"`      // "YYYY-MM-DD" — active starting at 00:00 of this day (local time); empty = active immediately
+	Until    string   `toml:"until"`     // "YYYY-MM-DD" — active through the END of this day (local time); empty = active until enabled=false
+	Subject  string   `toml:"subject"`   // reply subject; default "Out of Office"
+	Body     string   `toml:"body"`      // reply body in markdown (same rendering as composed emails)
+	BodyFile string   `toml:"body_file"` // optional path to a markdown file; overrides body when set
 }
 
 // ListmonkTrigger maps a virtual email address to Listmonk list IDs.
@@ -454,6 +459,16 @@ func DefaultPath() string {
 // cacheDirName is derived from the config directory name (e.g. "neomd" or "neomd-demo").
 // Set during Load() so that different configs use separate cache directories.
 var cacheDirName = "neomd"
+
+// configDirPath is the directory holding the loaded config.toml. Set during
+// Load() so sibling assets (snippets/, lists/) follow the -config flag.
+var configDirPath = filepath.Join(filepath.Dir(DefaultPath()))
+
+// SnippetsDir returns the directory holding email templates, a sibling of the
+// active config file (~/.config/neomd/snippets/ by default).
+func SnippetsDir() string {
+	return filepath.Join(configDirPath, "snippets")
+}
 
 // HistoryPath returns the path for the command history file.
 // Uses the OS cache directory (~/.cache/neomd/ on Linux) so it is never
@@ -583,6 +598,7 @@ func Load(path string) (*Config, error) {
 	// Derive cache dir name from config directory (e.g. "neomd-demo" from
 	// ~/.config/neomd-demo/config.toml) so demo and production don't share cache.
 	cacheDirName = filepath.Base(filepath.Dir(path))
+	configDirPath = filepath.Dir(path)
 
 	cfg := defaults()
 
@@ -634,12 +650,16 @@ func Load(path string) (*Config, error) {
 		cfg.Accounts[i].Password = expandEnv(cfg.Accounts[i].Password)
 		cfg.Accounts[i].User = expandEnv(cfg.Accounts[i].User)
 		cfg.Accounts[i].TLSCertFile = expandPath(expandEnv(cfg.Accounts[i].TLSCertFile))
-		cfg.Accounts[i].Password = resolveKeyringPassword(cfg.Accounts[i].Name, cfg.Accounts[i].Password)
+		if len(cfg.Accounts[i].OAuth2TokenCommand) == 0 {
+			cfg.Accounts[i].Password = resolveKeyringPassword(cfg.Accounts[i].Name, cfg.Accounts[i].Password)
+		}
 	}
 	cfg.Account.Password = expandEnv(cfg.Account.Password)
 	cfg.Account.User = expandEnv(cfg.Account.User)
 	cfg.Account.TLSCertFile = expandPath(expandEnv(cfg.Account.TLSCertFile))
-	cfg.Account.Password = resolveKeyringPassword(cfg.Account.Name, cfg.Account.Password)
+	if len(cfg.Account.OAuth2TokenCommand) == 0 {
+		cfg.Account.Password = resolveKeyringPassword(cfg.Account.Name, cfg.Account.Password)
+	}
 
 	cfg.Listmonk.APIToken = expandEnv(cfg.Listmonk.APIToken)
 

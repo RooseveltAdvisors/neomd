@@ -1,0 +1,49 @@
+name: Deploy neomd
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'internal/**'
+      - 'cmd/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-gpu
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Capture build version
+        run: echo "EXPECTED_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: make build
+
+      - name: Install
+        run: |
+          if [ -e /home/jon/.local/bin/neomd ]; then cp /home/jon/.local/bin/neomd /home/jon/.local/bin/neomd.prev; fi
+          install -Dm755 neomd /home/jon/.local/bin/neomd
+
+      - name: Verify deployed binary
+        run: |
+          actual="$(/home/jon/.local/bin/neomd --version)"
+          test "$actual" = "neomd $EXPECTED_VERSION" || {
+            echo "version mismatch: expected 'neomd $EXPECTED_VERSION', got '$actual'" >&2
+            exit 1
+          }

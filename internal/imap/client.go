@@ -24,6 +24,7 @@ import (
 	"github.com/emersion/go-message/mail"
 	"github.com/sspaeti/neomd/internal/mailtls"
 	"github.com/sspaeti/neomd/internal/oauth2"
+	"github.com/sspaeti/neomd/internal/reminder"
 	"github.com/sspaeti/neomd/internal/schedule"
 )
 
@@ -50,12 +51,13 @@ type Email struct {
 	Answered      bool // \Answered flag — set when replied to from any client
 	Flagged       bool // \Flagged — the send-later daemon uses it as a claim marker
 	Folder        string
-	Size          uint32    // RFC822 size in bytes
-	HasAttachment bool      // true if BODYSTRUCTURE contains an attachment part
-	MessageID     string    // Message-ID from envelope (for threading)
-	InReplyTo     string    // first In-Reply-To message ID (for threading)
-	References    string    // References header (space-separated Message-IDs for threading)
-	SendAt        time.Time // parsed X-Neomd-Send-At — non-zero only for send-later queued messages
+	Size          uint32             // RFC822 size in bytes
+	HasAttachment bool               // true if BODYSTRUCTURE contains an attachment part
+	MessageID     string             // Message-ID from envelope (for threading)
+	InReplyTo     string             // first In-Reply-To message ID (for threading)
+	References    string             // References header (space-separated Message-IDs for threading)
+	SendAt        time.Time          // parsed X-Neomd-Send-At — non-zero only for send-later queued messages
+	Reminder      *reminder.Metadata // optional per-email reminder metadata
 }
 
 // Config holds connection parameters.
@@ -68,6 +70,7 @@ type Config struct {
 	STARTTLS    bool                   // STARTTLS upgrade (port 143)
 	TLSCertFile string                 // optional PEM CA/cert for self-signed local bridges
 	TokenSource func() (string, error) // The token is used instead of the password for OAuth2 Accounts
+	ReadOnly    bool                   // refuse APPEND, MOVE, STORE, CREATE, and EXPUNGE operations
 }
 
 // Client wraps an IMAP connection with reconnection management.
@@ -184,6 +187,9 @@ func (c *Client) reconnect(ctx context.Context) error {
 // withConn runs fn on the IMAP connection, reconnecting if needed.
 // Does NOT retry on network errors — safe for mutating operations (APPEND, MOVE, STORE).
 func (c *Client) withConn(ctx context.Context, fn func(*imapclient.Client) error) error {
+	if c.cfg.ReadOnly {
+		return ErrReadOnly
+	}
 	return c.withConnRetryable(ctx, fn, false)
 }
 
@@ -239,15 +245,27 @@ func (c *Client) withConnRetryable(ctx context.Context, fn func(*imapclient.Clie
 	return nil
 }
 
+// ErrReadOnly is returned before any remote mutation when read-only mode is enabled.
+var ErrReadOnly = errors.New("neomd read-only mode: remote mutation blocked")
+
 func (c *Client) selectMailbox(mailbox string) error {
 	if c.selectedMailbox == mailbox {
 		return nil
 	}
-	if _, err := c.conn.Select(mailbox, nil).Wait(); err != nil {
-		return fmt.Errorf("SELECT %q: %w", mailbox, err)
+	options := mailboxSelectOptions(c.cfg.ReadOnly)
+	if _, err := c.conn.Select(mailbox, options).Wait(); err != nil {
+		command := "SELECT"
+		if c.cfg.ReadOnly {
+			command = "EXAMINE"
+		}
+		return fmt.Errorf("%s %q: %w", command, mailbox, err)
 	}
 	c.selectedMailbox = mailbox
 	return nil
+}
+
+func mailboxSelectOptions(readOnly bool) *imap.SelectOptions {
+	return &imap.SelectOptions{ReadOnly: readOnly}
 }
 
 // Close logs out and closes the IMAP connection.
@@ -294,21 +312,41 @@ func (c *Client) Ping(ctx context.Context) error {
 // sendAtHeaderSection requests only the X-Neomd-Send-At header field (peek,
 // so \Seen is untouched) — it identifies send-later queued messages so the UI
 // can mark them, without ever mutating the stored message.
-func sendAtHeaderSection() []*imap.FetchItemBodySection {
-	return []*imap.FetchItemBodySection{{
+func sendAtHeaderSection() *imap.FetchItemBodySection {
+	return &imap.FetchItemBodySection{
 		Specifier:    imap.PartSpecifierHeader,
 		HeaderFields: []string{schedule.HeaderSendAt},
 		Peek:         true,
-	}}
+	}
+}
+
+func reminderHeaderSection() *imap.FetchItemBodySection {
+	return &imap.FetchItemBodySection{
+		Specifier:    imap.PartSpecifierHeader,
+		HeaderFields: []string{reminder.AtHeader, reminder.StateHeader, reminder.IDHeader},
+		Peek:         true,
+	}
+}
+
+func parseReminder(raw []byte) *reminder.Metadata {
+	if len(raw) == 0 {
+		return nil
+	}
+	metadata, err := reminder.ParseHeader(raw)
+	if err != nil || metadata.At.IsZero() {
+		return nil
+	}
+	return &metadata
 }
 
 // parseSendAtSection extracts the RFC 3339 time from a fetched
 // X-Neomd-Send-At header-fields section. Zero time when absent.
-func parseSendAtSection(sections []imapclient.FetchBodySectionBuffer) time.Time {
-	if len(sections) == 0 {
+func parseSendAtSection(raw []byte) time.Time {
+	if len(raw) == 0 {
 		return time.Time{}
 	}
-	for _, line := range strings.Split(string(sections[0].Bytes), "\r\n") {
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimRight(line, "\r")
 		if i := strings.IndexByte(line, ':'); i > 0 && strings.EqualFold(strings.TrimSpace(line[:i]), schedule.HeaderSendAt) {
 			if at, err := time.Parse(time.RFC3339, strings.TrimSpace(line[i+1:])); err == nil {
 				return at
@@ -319,6 +357,13 @@ func parseSendAtSection(sections []imapclient.FetchBodySectionBuffer) time.Time 
 }
 
 func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Email, error) {
+	return c.FetchHeadersBefore(ctx, folder, 0, n)
+}
+
+// FetchHeadersBefore fetches the n most recent headers with UID strictly below
+// beforeUID — the paging primitive behind the inbox's infinite scroll. A
+// beforeUID of 0 means "no cursor", making it identical to FetchHeaders.
+func (c *Client) FetchHeadersBefore(ctx context.Context, folder string, beforeUID uint32, n int) ([]Email, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -346,6 +391,14 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 		// Take the last n UIDs (most recent) and reverse to newest-first.
 		// n=0 means no limit — fetch all.
 		sort.Slice(allUIDs, func(i, j int) bool { return allUIDs[i] < allUIDs[j] })
+		// Paging cursor: keep only UIDs older than the oldest one already held.
+		if beforeUID > 0 {
+			cut := sort.Search(len(allUIDs), func(i int) bool { return uint32(allUIDs[i]) >= beforeUID })
+			allUIDs = allUIDs[:cut]
+			if len(allUIDs) == 0 {
+				return nil
+			}
+		}
 		if n > 0 && len(allUIDs) > n {
 			allUIDs = allUIDs[len(allUIDs)-n:]
 		}
@@ -358,13 +411,15 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 			fetchSet.AddNum(uid)
 		}
 
+		sendAtSection := sendAtHeaderSection()
+		reminderSection := reminderHeaderSection()
 		msgs, err := conn.Fetch(fetchSet, &imap.FetchOptions{
 			UID:           true,
 			Flags:         true,
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
-			BodySection:   sendAtHeaderSection(),
+			BodySection:   []*imap.FetchItemBodySection{sendAtSection, reminderSection},
 		}).Collect()
 		if err != nil {
 			return fmt.Errorf("FETCH headers: %w", err)
@@ -380,7 +435,7 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 			if !ok {
 				continue
 			}
-			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.BodySection)}
+			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.FindBodySection(sendAtSection)), Reminder: parseReminder(m.FindBodySection(reminderSection))}
 			for _, f := range m.Flags {
 				if f == imap.FlagSeen {
 					e.Seen = true
@@ -774,19 +829,21 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 		for _, uid := range uids {
 			fetchSet.AddNum(imap.UID(uid))
 		}
+		sendAtSection := sendAtHeaderSection()
+		reminderSection := reminderHeaderSection()
 		msgs, err := conn.Fetch(fetchSet, &imap.FetchOptions{
 			UID:           true,
 			Flags:         true,
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
-			BodySection:   sendAtHeaderSection(),
+			BodySection:   []*imap.FetchItemBodySection{sendAtSection, reminderSection},
 		}).Collect()
 		if err != nil {
 			return fmt.Errorf("FETCH headers: %w", err)
 		}
 		for _, m := range msgs {
-			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.BodySection)}
+			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.FindBodySection(sendAtSection)), Reminder: parseReminder(m.FindBodySection(reminderSection))}
 			for _, f := range m.Flags {
 				if f == imap.FlagSeen {
 					e.Seen = true
@@ -1023,6 +1080,242 @@ func (c *Client) MoveMessage(ctx context.Context, src string, uid uint32, dst st
 	return destUID, err
 }
 
+func reminderID(source Email) string {
+	if source.Reminder != nil && strings.TrimSpace(source.Reminder.ID) != "" {
+		return strings.TrimSpace(source.Reminder.ID)
+	}
+	if strings.TrimSpace(source.MessageID) != "" {
+		return strings.TrimSpace(source.MessageID)
+	}
+	return fmt.Sprintf("neomd:%s:%d", source.Folder, source.UID)
+}
+
+func reminderIDEqual(a, b string) bool {
+	return strings.TrimSpace(a) != "" && strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+func reminderAddress(field string) string {
+	addrs := SplitAddrs(field)
+	if len(addrs) == 0 {
+		return ""
+	}
+	return addrs[0]
+}
+
+func sameReminderEmail(source, candidate Email, id string) bool {
+	if candidate.Reminder != nil && reminderIDEqual(candidate.Reminder.ID, id) {
+		return true
+	}
+	if source.MessageID != "" {
+		return reminderIDEqual(source.MessageID, candidate.MessageID)
+	}
+	if candidate.MessageID != "" || reminderAddress(source.From) == "" || reminderAddress(candidate.From) == "" {
+		return false
+	}
+	if !strings.EqualFold(reminderAddress(source.From), reminderAddress(candidate.From)) || source.Subject != candidate.Subject {
+		return false
+	}
+	if !source.Date.IsZero() && !candidate.Date.IsZero() && !source.Date.Equal(candidate.Date) {
+		return false
+	}
+	if source.Size != 0 && candidate.Size != 0 && source.Size != candidate.Size {
+		return false
+	}
+	return true
+}
+
+func reminderSearchFolders(folders []string, source, waiting, trash string) []string {
+	all := make([]string, 0, len(folders)+3)
+	all = append(all, folders...)
+	all = append(all, source, waiting, trash)
+	seen := make(map[string]struct{}, len(all))
+	unique := make([]string, 0, len(all))
+	for _, folder := range all {
+		if folder == "" {
+			continue
+		}
+		if _, ok := seen[folder]; ok {
+			continue
+		}
+		seen[folder] = struct{}{}
+		unique = append(unique, folder)
+	}
+	return unique
+}
+
+func (c *Client) reminderCopies(ctx context.Context, source Email, id string, folders []string) ([]Email, error) {
+	var matches []Email
+	var scanErrs []error
+	for _, folder := range folders {
+		emails, err := c.FetchHeaders(ctx, folder, 0)
+		if err != nil {
+			var imapErr *imap.Error
+			if errors.As(err, &imapErr) && imapErr.Code == imap.ResponseCodeNonExistent {
+				continue
+			}
+			scanErrs = append(scanErrs, fmt.Errorf("%s: %w", folder, err))
+			continue
+		}
+		for _, candidate := range emails {
+			if sameReminderEmail(source, candidate, id) {
+				matches = append(matches, candidate)
+			}
+		}
+	}
+	if len(scanErrs) > 0 {
+		return matches, fmt.Errorf("scan reminder folders: %w", errors.Join(scanErrs...))
+	}
+	return matches, nil
+}
+
+func (c *Client) reminderCopyInFolder(ctx context.Context, source Email, id, folder string, hint uint32) (Email, bool, error) {
+	if hint != 0 {
+		if emails, err := c.FetchHeadersByUID(ctx, folder, []uint32{hint}); err == nil {
+			for _, candidate := range emails {
+				if sameReminderEmail(source, candidate, id) {
+					return candidate, true, nil
+				}
+			}
+		}
+	}
+	emails, err := c.FetchHeaders(ctx, folder, 0)
+	if err != nil {
+		return Email{}, false, err
+	}
+	for _, candidate := range emails {
+		if sameReminderEmail(source, candidate, id) {
+			return candidate, true, nil
+		}
+	}
+	return Email{}, false, nil
+}
+
+func (c *Client) reminderSourceExists(ctx context.Context, source Email) (bool, error) {
+	emails, err := c.FetchHeadersByUID(ctx, source.Folder, []uint32{source.UID})
+	if err != nil {
+		return false, err
+	}
+	return len(emails) > 0, nil
+}
+
+func (c *Client) claimReminderSource(ctx context.Context, source Email, folders []string, waiting, trash, id string) (Email, bool, error) {
+	searchFolders := reminderSearchFolders(folders, source.Folder, waiting, trash)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		sourceExists, checkErr := c.reminderSourceExists(ctx, source)
+		if checkErr != nil {
+			lastErr = fmt.Errorf("check source message uid=%d: %w", source.UID, checkErr)
+		} else if sourceExists {
+			destUID, moveErr := c.MoveMessage(ctx, source.Folder, source.UID, trash)
+			if moveErr == nil {
+				copy, found, findErr := c.reminderCopyInFolder(ctx, source, id, trash, destUID)
+				if findErr == nil && found {
+					return copy, false, nil
+				}
+				if findErr != nil {
+					lastErr = findErr
+				} else {
+					lastErr = fmt.Errorf("moved message uid=%d to %s but could not find it there", source.UID, trash)
+				}
+				continue
+			}
+			lastErr = fmt.Errorf("move message uid=%d to %s: %w", source.UID, trash, moveErr)
+		} else {
+			lastErr = fmt.Errorf("source message uid=%d is no longer in %s", source.UID, source.Folder)
+		}
+
+		copies, scanErr := c.reminderCopies(ctx, source, id, searchFolders)
+		if scanErr != nil {
+			lastErr = scanErr
+			continue
+		}
+		if len(copies) == 0 {
+			continue
+		}
+		if len(copies) > 1 {
+			waitingReminders, trashCopies := 0, 0
+			owned := true
+			for _, copy := range copies {
+				switch {
+				case copy.Folder == waiting && copy.Reminder != nil && reminderIDEqual(copy.Reminder.ID, id):
+					waitingReminders++
+				case copy.Folder == trash:
+					trashCopies++
+				default:
+					owned = false
+				}
+			}
+			if owned && waitingReminders == 1 && trashCopies <= 1 {
+				return Email{}, true, nil
+			}
+			// Same-Message-ID copies are not enough to identify the source. Do
+			// not move any of them: Archive/Sent/Drafts may contain legitimate
+			// copies of the message.
+			return Email{}, false, fmt.Errorf("claim reminder source: ambiguous %d matching copies", len(copies))
+		}
+		copy := copies[0]
+		if copy.Folder == waiting && copy.Reminder != nil && reminderIDEqual(copy.Reminder.ID, id) {
+			return Email{}, true, nil
+		}
+		if copy.Folder == trash {
+			return copy, false, nil
+		}
+		if _, moveErr := c.MoveMessage(ctx, copy.Folder, copy.UID, trash); moveErr != nil {
+			lastErr = fmt.Errorf("reconcile message uid=%d from %s: %w", copy.UID, copy.Folder, moveErr)
+			continue
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("source message could not be located")
+	}
+	return Email{}, false, fmt.Errorf("claim reminder source: %w", lastErr)
+}
+
+func (c *Client) ParkReminder(ctx context.Context, source Email, folders []string, waiting, trash string, at time.Time) error {
+	if c.cfg.ReadOnly {
+		return ErrReadOnly
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if source.Folder == "" || source.UID == 0 {
+		return fmt.Errorf("reminder source is missing its folder or UID")
+	}
+	if waiting == "" || trash == "" || strings.EqualFold(waiting, trash) {
+		return fmt.Errorf("reminders require distinct Waiting and Trash folders")
+	}
+	if strings.EqualFold(source.Folder, trash) {
+		return fmt.Errorf("cannot remind an email already in Trash")
+	}
+	if strings.EqualFold(source.Folder, waiting) {
+		return fmt.Errorf("reminder source must be outside Waiting")
+	}
+	if at.IsZero() {
+		return fmt.Errorf("reminder time is required")
+	}
+
+	id := reminderID(source)
+	claimed, alreadyParked, err := c.claimReminderSource(ctx, source, folders, waiting, trash, id)
+	if err != nil {
+		return err
+	}
+	if alreadyParked {
+		return nil
+	}
+	raw, err := c.FetchRaw(ctx, claimed.Folder, claimed.UID)
+	if err != nil {
+		return fmt.Errorf("fetch claimed reminder: %w", err)
+	}
+	updated, err := reminder.SetHeaders(raw, at, id)
+	if err != nil {
+		return fmt.Errorf("prepare reminder: %w", err)
+	}
+	if err := c.SaveReminder(ctx, waiting, updated); err != nil {
+		return fmt.Errorf("save reminder: %w", err)
+	}
+	return nil
+}
+
 // EnsureFolders creates and subscribes any folders in the list that do not
 // yet exist on the server. Already-existing folders are silently skipped.
 // Returns the names of folders that were actually created.
@@ -1207,6 +1500,53 @@ func (c *Client) SaveDraft(ctx context.Context, folder string, raw []byte) error
 		}
 		if _, err := cmd.Wait(); err != nil {
 			return fmt.Errorf("APPEND wait: %w", err)
+		}
+		return nil
+	})
+}
+
+// SaveReminder idempotently APPENDs a parked email to the reminder folder.
+func (c *Client) SaveReminder(ctx context.Context, folder string, raw []byte) error {
+	if c.cfg.ReadOnly {
+		return ErrReadOnly
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	metadata, err := reminder.ParseHeader(raw)
+	if err != nil {
+		return fmt.Errorf("parse reminder before save: %w", err)
+	}
+	return c.withConn(ctx, func(conn *imapclient.Client) error {
+		if err := c.selectMailbox(folder); err != nil {
+			return err
+		}
+		if metadata.ID != "" {
+			searchData, err := conn.UIDSearch(&imap.SearchCriteria{
+				Header: []imap.SearchCriteriaHeaderField{{Key: reminder.IDHeader, Value: metadata.ID}},
+			}, nil).Wait()
+			if err != nil {
+				return fmt.Errorf("SEARCH existing reminder: %w", err)
+			}
+			if searchData != nil {
+				if uidSet, ok := searchData.All.(imap.UIDSet); ok {
+					uids, _ := uidSet.Nums()
+					if len(uids) > 0 {
+						return nil
+					}
+				}
+			}
+		}
+		opts := &imap.AppendOptions{Flags: []imap.Flag{imap.FlagSeen}, Time: time.Now()}
+		cmd := conn.Append(folder, int64(len(raw)), opts)
+		if _, err := cmd.Write(raw); err != nil {
+			return fmt.Errorf("APPEND reminder write: %w", err)
+		}
+		if err := cmd.Close(); err != nil {
+			return fmt.Errorf("APPEND reminder close: %w", err)
+		}
+		if _, err := cmd.Wait(); err != nil {
+			return fmt.Errorf("APPEND reminder wait: %w", err)
 		}
 		return nil
 	})

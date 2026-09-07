@@ -1,5 +1,140 @@
 # Changelog
 
+# 2026-09-07
+
+- **Yank menu actually reaches the clipboard (OSC 52)** — the reader's `y` → `m`
+  copy landed nowhere whenever neomd ran over ssh: the shared helper only tried
+  local tools, and on a headless host `xclip` is on `PATH` but `DISPLAY` is empty,
+  so it was invoked and failed with a bare `exit status 1` (verified on the gpu
+  box). Even a *successful* local tool would have set the remote machine's
+  clipboard, not the terminal the user pastes from. `copyToClipboard` now writes an
+  OSC 52 sequence to the terminal first — doubled with a DCS passthrough form
+  inside tmux — and only then falls back to a local tool, skipping any tool whose
+  display variable is unset and surfacing its stderr when it does fail. The helper
+  moved out of `internal/ui/contacts_picker.go` into `internal/ui/clipboard.go`,
+  so the contacts picker (`y`/`Y`) is fixed by the same change. Where:
+  `internal/ui/clipboard.go`, `internal/ui/contacts_picker.go`. Tests:
+  `TestYankMenuMessageIDIsOSC52Encoded`, `TestOSC52TmuxPassthroughDoublesEscapes`,
+  `TestLocalClipboardToolSkippedWithoutDisplay`.
+
+- **Message-ID share links** — the reader's `y` copy menu now offers a stable
+  `neomd://mid/<url-encoded-message-id>` URI, plus an available web-version URL;
+  the URI is based on the RFC Message-ID rather than IMAP location data. Tests:
+  `TestMessageIDURIRoundTrip`, `TestReaderYOpensCopyMenu`,
+  `TestCopyMenuMessageIDBinding`.
+
+- **Superhuman-inspired vim keyboard map** — rebuilt the `?` overlay, context-aware
+  footer hints, generated keybinding docs, and a complete decision table from the
+  Superhuman v7 sheet. Captain-selected `e` done, `h` remind, `s` compose, and `;`
+  snippets remain primary; vim navigation now owns `gg/G`, `ctrl+d/u`, `u` undo,
+  `x/m` selection, `V` visual selection, `dd/#` trash, and `ctrl+a` select-all.
+  Superhuman folder gotos map to neomd's mailboxes, command-key-only features are
+  documented as dropped, and the former sender view remains available at `@`.
+  New folder/label picker and compose leader sequences are read-only safe before
+  any network mutation. Where: `internal/ui/keys.go`, `internal/ui/model.go`,
+  `internal/ui/reader.go`, `docs/keys.md`, `docs/content/docs/keybindings.md`.
+  Tests: `TestDocumentedKeyBindings`, `TestReadOnlyBlocksExpandedMutatingBindingsBeforeNetwork`,
+  `go test ./...`, `go vet ./...`.
+
+- **External XOAUTH2 token helpers and read-only mode** — accounts may use
+  `oauth2_token_command` to obtain an in-memory access token from a fixed argv
+  helper without native OAuth client/issuer, keyring, or token-file settings.
+  Root-level `read_only = true` selects IMAP `EXAMINE`, blocks all IMAP mutations
+  and outbound paths before network access, suppresses first-run folder creation,
+  and refuses `--headless`. Where: `internal/config`, `internal/oauth2`,
+  `internal/imap`, `internal/ui`, `cmd/neomd`. Tests: `TestCommandTokenSource`,
+  `TestLoadOAuth2TokenCommandWithoutNativeOAuthSettings`,
+  `TestReadOnlyBlocksMutationsBeforeDial`, `TestReadOnlyBlocksPR5ActionsBeforeNetwork`.
+
+- **GPU deployment follows GitHub Actions** — merges to `main` now build and install
+  neomd on the self-hosted GPU runner, preserving the previous binary as `neomd.prev`.
+  Manual rebuilds on GPU are no longer part of the deployment path. Where:
+  `.github/workflows/deploy.yml`, `README.md`. Tests: `go build ./...`, `go vet ./...`.
+
+# 2026-09-05
+
+- **Keyboard-driven email handling: `e` archive, `h` remind, `s` start, `;` snippets** —
+  the four Superhuman-style actions are now bound in both the inbox and the reader.
+  `e` archives (mark done), `h` opens the remind-me prompt for the marked/cursor
+  emails (or the open one), `s` starts a new email, and `;` opens a snippet picker
+  reading `<config dir>/snippets/*.md` (an optional leading `Subject:` line sets the
+  subject, the rest becomes the body, staged into the `$EDITOR` buffer). All four are
+  guarded behind the existing input-mode early returns, so they never fire while the
+  filter, `:` command line, IMAP search, or reminder prompt owns the keyboard.
+  Where: `internal/ui/model.go`, `internal/ui/snippets.go`, `internal/snippets/`.
+  Tests: `TestEmailBindingMap`, `TestEmailBindingsGuardedInsideInputFields`,
+  `TestReaderArchiveAndRemindKeys`, `TestSnippetPickerComposesPrefilled`.
+
+- **Email bindings standardised on lowercase** — `i`/`o`/`p`/`b`/`t`/`v` are now the
+  documented keys for screen-in, screen-out, PaperTrail, Work, thread and sender views;
+  the historical uppercase keys keep working as aliases, as do `A` (archive) and `c`
+  (compose). Six keys stay uppercase because their lowercase letter is already taken:
+  `F` (f=forward), `S` (s=compose), `U` (u=page up), `X` (x=trash), `N` (n=toggle read),
+  `R` (r=reply). Two visible moves: `h` no longer exits the reader (`q`/`esc` do, so `h`
+  can mean remind everywhere), and the reader's read-only `$EDITOR` view moved from `e`
+  to `<space>e`. Where: `internal/ui/keys.go` (mapping table + case convention),
+  `internal/ui/model.go`. Test: `TestEmailBindingMap`.
+
+- **Every list action is instantaneous** — archive, delete, screener moves, Work moves and
+  reminders now apply to the list on the keystroke and reconcile with the server in place.
+  Previously each one waited for IMAP and then re-fetched the whole folder, so a single
+  archive felt like a page load. Rows leave the list immediately, the IMAP work runs
+  behind them, and a server failure puts the rows back visibly with an error status rather
+  than dropping the action. Overlapping actions are tracked by batch id so one
+  acknowledgement can never consume another's rollback snapshot.
+  Where: `internal/ui/optimistic.go`, `batchDoneMsg`/`reminderDoneMsg` handlers in
+  `internal/ui/model.go`. Tests: `TestOptimisticArchiveIsInstant`,
+  `TestOptimisticArchiveRollsBackVisiblyOnFailure`,
+  `TestOverlappingOptimisticBatchesRollBackIndependently`,
+  `TestOptimisticRemindMovesRowsAtOnce`.
+
+- **Infinite scroll in the email list** — reaching the bottom of a folder automatically
+  fetches and appends the next page instead of stopping at `ui.inbox_count`. Paging is by
+  UID (`imap.Client.FetchHeadersBefore`), the cursor stays exactly where it was when a page
+  lands, an empty page latches the folder as exhausted, and cross-folder views (IMAP search,
+  `Everything`, conversation, sender) are deliberately not paged.
+  Where: `internal/imap/client.go`, `internal/ui/optimistic.go`, `internal/ui/model.go`.
+  Tests: `TestScrollToBottomTriggersNextPage`, `TestNextPageAppendsAndKeepsScrollPosition`,
+  `TestScrollDoesNotPageAdHocViews`, `TestEmptyNextPageMarksFolderExhausted`,
+  `TestNextPageForAnotherFolderIsDropped`, `TestFullFolderLoadResetsPagingState`.
+
+# 2026-09-02
+
+- **Reminder safety fixes** — reminder headers without a durable identity no
+  longer bypass sender screening; parking refuses ambiguous same-message
+  copies instead of moving legitimate Archive/Sent/Drafts mail to Trash; and
+  `Waiting = Inbox` is rejected before any IMAP operation. Tests:
+  `TestParseReminderRejectsUnidentifiedHeader`,
+  `TestClassifyForScreen`, `TestParkReminderRejectsWaitingSource`.
+
+# 2026-09-01
+
+- **Superhuman-style per-email reminders** — press `H` while reading an email,
+  choose a future time (`+2h`, `tomorrow 09:00`, or an absolute local time), and
+  neomd stores that one message in Waiting with durable `X-Neomd-Reminder-*`
+  headers while moving the original to recoverable Trash. No SMTP path is used.
+  The daemon and TUI background sync return due reminders to Inbox, where the
+  `R` marker and reader status show the reminder state. Added the reminder
+  metadata parser, safe body-preserving header rewrite, IMAP peek fetches, and
+  behavioral tests in `internal/reminder`, `internal/imap`, and `internal/ui`.
+  Tests: `TestReminderKeyStartsPerEmailPrompt`, `TestParseReminderSection`,
+  `TestParseHeaderAndStatus`.
+
+- **Reminder delivery hardening** — header fetches now match reminder and
+  send-later sections by their IMAP descriptors, mixed line-ending messages
+  keep their complete body bytes during header rewriting, and due reminders
+  bypass automatic screener moves after returning to Inbox. Tests:
+  `TestParseHeaderSectionsByDescriptor`,
+  `TestHeadersPreserveBodyWithMixedLineEndings`,
+  `TestClassifyForScreen`.
+
+- **Reminder parking is race-safe and idempotent** — reminder parking claims
+  the source in recoverable Trash before creating the Waiting copy, reconciles
+  a source moved by screening, and deduplicates retries by reminder ID;
+  screen-all now uses the same due-reminder exclusion as regular screening.
+  Tests: `TestParkReminderReconcilesMovedSourceAndIsIdempotent`,
+  `TestDeepScreenSkipsDueReminder`.
+
 # 2026-08-31
 
 - **Out-of-office auto-replies — screened-in senders only** — new `[ooo]` config block (`enabled`, `from`, `until`, `subject`, `body`/`body_file`; `from`/`until` take `"YYYY-MM-DD"` or `"YYYY-MM-DD HH:MM"`, interpreted in the optional `timezone` (IANA name, e.g. `"Europe/Zurich"`; default: the daemon machine's local time — servers often run UTC, so set it), so you can arm OOO in advance — e.g. `from = "2026-08-31 16:00"` the afternoon before leaving; date-only `until` is inclusive through end of day, with a time it's exact; `accounts = ["Work", "WorkInfo"]` watches those accounts' inboxes instead of the daemon's own, each replying from its own From address/signature with the Sent copy in its own Sent folder — unknown/`imap_disabled` names are hard errors, and the reply-once cache stays shared across accounts so a sender mailing several of your addresses still gets one reply) processed exclusively by the headless daemon: each sync cycle it answers new Inbox mail from **screened-in senders only** — spam, sales pitches, and unscreened senders never learn you're away, which no server-side autoresponder can do. Replies go solely to the sender (`Reply-To` pref, `From` fallback), never to Cc; exactly once per sender per OOO period (persisted `~/.cache/neomd/ooo_replied` cache, marked BEFORE the SMTP send so a crash can never duplicate; changing `from`/`until` starts a fresh period); mail that arrived before activation is never answered; RFC 3834 loop protection both ways (skips incoming `Auto-Submitted`/`Precedence: bulk|junk|list`/`List-Id`/`List-Unsubscribe` mail, stamps outgoing `Auto-Submitted: auto-replied` + `X-Auto-Response-Suppress: All`); auto-expires after the inclusive `until` day. Every reply ends with a transparency footer (`*automatically sent from [neomd](https://neomd.ssp.sh)*`, `ooo.Footer`, test `TestBody_FooterMarksAutomatedReply`) — skipped when the text or HTML signature already links neomd.ssp.sh so the line never duplicates (tests `TestBody_SkipsFooterWhen*`). The reply body is markdown built with the same `BuildMessageWithThreading` pipeline as composed mail — identical MIME shape, text/HTML signatures, and proper `In-Reply-To`/`References` threading — plus a Sent copy. New `internal/ooo/` package, daemon glue `processOOO` in `internal/daemon/daemon.go`, `config.OOOConfig` + `OOOCachePath()`. Docs: headless page → "Out-of-Office Auto-Replies". Tests: `TestActive_*`, `TestIsAutoGenerated`, `TestReplyAddress_*`, `TestBody_*`, `TestBuildReply_LooksLikeNormalNeomdMailPlusAutoHeaders`, `TestCache_*`, `TestShouldConsider`

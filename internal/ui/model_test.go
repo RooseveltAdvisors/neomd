@@ -11,9 +11,110 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sspaeti/neomd/internal/calendar"
 	"github.com/sspaeti/neomd/internal/config"
 	"github.com/sspaeti/neomd/internal/imap"
+	"github.com/sspaeti/neomd/internal/reminder"
+	"github.com/sspaeti/neomd/internal/screener"
 )
+
+func TestReadOnlyBlocksPR5ActionsBeforeNetwork(t *testing.T) {
+	client := imap.New(imap.Config{Host: "imap.example.com", Port: "993", TLS: true, ReadOnly: true})
+	m := Model{
+		cfg:        &config.Config{ReadOnly: true},
+		clients:    []*imap.Client{client},
+		emails:     []imap.Email{{UID: 1, Folder: "INBOX", From: "sender@example.com"}},
+		markedUIDs: map[uint32]bool{1: true},
+	}
+
+	assertBatchBlocked := func(name string, cmd tea.Cmd) {
+		t.Helper()
+		if cmd == nil {
+			t.Fatalf("%s returned nil", name)
+		}
+		msg, ok := cmd().(batchDoneMsg)
+		if !ok || msg.err == nil || !strings.Contains(msg.err.Error(), "read-only") {
+			t.Fatalf("%s result = %#v, want read-only batch error", name, msg)
+		}
+	}
+
+	assertBatchBlocked("archive", m.batchMoveCmd(m.emails, "Archive"))
+	assertBatchBlocked("screener", m.batchScreenerCmd(m.emails, "I"))
+	assertBatchBlocked("mark read", m.toggleSeenCmd(&m.emails[0]))
+	updated, cmd := m.handleChord("M", "a")
+	if cmd != nil || !strings.Contains(updated.(Model).status, "read-only") {
+		t.Fatalf("M* move did not report read-only before network: status=%q cmd=%v", updated.(Model).status, cmd != nil)
+	}
+
+	updated, cmd = m.updateInbox(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	if cmd == nil || !strings.Contains(updated.(Model).status, "read-only") {
+		t.Fatalf("e archive did not report read-only before network: status=%q cmd=%v", updated.(Model).status, cmd != nil)
+	}
+}
+
+func TestReadOnlyBlocksExpandedMutatingBindingsBeforeNetwork(t *testing.T) {
+	for _, key := range []string{"E", "#", "!", "y"} {
+		t.Run(key, func(t *testing.T) {
+			m := keysTestModel(t, 2)
+			m.cfg.ReadOnly = true
+			updated, cmd := m.updateInbox(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+			got := updated.(Model)
+			if cmd == nil || !got.isError || !strings.Contains(got.status, "read-only") {
+				t.Fatalf("%s: status=%q error=%v cmd=%v", key, got.status, got.isError, cmd != nil)
+			}
+		})
+	}
+
+	for _, key := range []string{"v", "l"} {
+		t.Run("folder picker/"+key, func(t *testing.T) {
+			m := keysTestModel(t, 2)
+			m.cfg.ReadOnly = true
+			opened, cmd := m.updateInbox(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+			if cmd != nil || !opened.(Model).movePickerActive {
+				t.Fatalf("%s should only open the local picker: active=%v cmd=%v", key, opened.(Model).movePickerActive, cmd != nil)
+			}
+			updated, cmd := opened.(Model).updateInbox(tea.KeyMsg{Type: tea.KeyEnter})
+			got := updated.(Model)
+			if cmd == nil || !got.isError || !strings.Contains(got.status, "read-only") {
+				t.Fatalf("picker enter: status=%q error=%v cmd=%v", got.status, got.isError, cmd != nil)
+			}
+		})
+	}
+}
+
+func TestReadOnlyBlocksOutboundActionsBeforeNetwork(t *testing.T) {
+	m := Model{cfg: &config.Config{ReadOnly: true}}
+
+	assertBlocked := func(name string, cmd tea.Cmd) {
+		t.Helper()
+		if cmd == nil {
+			t.Fatalf("%s returned nil instead of a blocked result", name)
+		}
+		var err error
+		switch msg := cmd().(type) {
+		case sendDoneMsg:
+			err = msg.err
+		case scheduleDoneMsg:
+			err = msg.err
+		case rsvpDoneMsg:
+			err = msg.err
+		case saveDraftDoneMsg:
+			err = msg.err
+		default:
+			t.Fatalf("%s result = %T, want blocked result", name, msg)
+		}
+		if err == nil || !strings.Contains(err.Error(), "read-only") {
+			t.Fatalf("%s error = %v, want read-only refusal", name, err)
+		}
+	}
+
+	assertBlocked("email", m.sendEmailCmd(config.AccountConfig{}, "", "", "", "", "", "", nil, false, 0, "", "", "", ""))
+	assertBlocked("scheduled email", m.scheduleSendCmd(config.AccountConfig{}, "", "", "", "", "", "", nil, false, "", "", time.Now()))
+	assertBlocked("campaign", m.sendListmonkCmd("", "", nil, 0))
+	assertBlocked("reaction", m.sendReactionCmd(config.AccountConfig{}, "", "", "", "", &imap.Email{}))
+	assertBlocked("calendar response", m.sendRSVPCmd(calendar.StatusAccepted))
+	assertBlocked("draft", m.saveDraftCmd(imap.New(imap.Config{Host: "imap.example.com"}), "", "", "", "", "", "", nil))
+}
 
 func TestMaskEmail(t *testing.T) {
 	tests := []struct {
@@ -33,6 +134,42 @@ func TestMaskEmail(t *testing.T) {
 				t.Errorf("maskEmail(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestReminderKeyStartsPerEmailPrompt(t *testing.T) {
+	m := Model{openEmail: &imap.Email{UID: 7}, state: stateReading}
+	updated, cmd := m.updateReader(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'H'}})
+	got := updated.(Model)
+	if !got.reminderActive || got.reminderInput.Placeholder == "" || cmd != nil {
+		t.Fatalf("H prompt state = active %v placeholder %q cmd %v", got.reminderActive, got.reminderInput.Placeholder, cmd)
+	}
+}
+
+func TestReminderMetadataIsVisibleState(t *testing.T) {
+	at := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	e := imap.Email{Reminder: &reminder.Metadata{At: at, State: "scheduled"}}
+	if e.Reminder.Status(at.Add(time.Minute)) != "due" {
+		t.Fatal("scheduled reminder should become due at its timestamp")
+	}
+}
+
+func TestDeepScreenSkipsDueReminder(t *testing.T) {
+	m := Model{
+		cfg:      &config.Config{Folders: config.FoldersConfig{Inbox: "INBOX", ToScreen: "ToScreen"}},
+		screener: &screener.Screener{},
+	}
+	updated, _ := m.Update(deepScreenBatchMsg{
+		emails: []imap.Email{{
+			UID:      9,
+			From:     "unknown@example.com",
+			Reminder: &reminder.Metadata{At: time.Now().Add(-time.Minute), State: "scheduled", ID: "id-9"},
+		}},
+		total: 1,
+	})
+	got := updated.(Model)
+	if len(got.pendingMoves) != 0 {
+		t.Fatalf("screen-all planned %d move(s) for a due reminder", len(got.pendingMoves))
 	}
 }
 

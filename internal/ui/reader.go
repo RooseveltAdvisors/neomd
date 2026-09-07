@@ -190,24 +190,24 @@ func calendarInviteCard(attachments []imap.Attachment) string {
 // readerHelp returns the one-line help string for the reader view.
 // When isDraft is true, "E draft" is shown so the user knows they can re-open in compose.
 func readerHelp(isDraft bool, hasLinks bool) string {
-	keys := []string{"j/k scroll", "h/q back", "r reply", "ctrl+r reply-all", "ctrl+e react", "f fwd", "e nvim"}
+	keys := []string{"j/k scroll", "ctrl+d/u half-page", "q/esc back", "h remind", "r reply", "ctrl+r all", "f fwd", "t thread"}
 	if isDraft {
 		keys = append(keys, "E draft")
 	}
-	keys = append(keys, "o w3m", "O browser", "ctrl+o web", "1-9 attach", "space+d eml")
+	keys = append(keys, "o terminal", "O browser", "1-9 attach", "space+o links")
 	if hasLinks {
-		keys = append(keys, "space+1-0 links", "space+l11-99 links 11+")
+		keys = append(keys, "space+1-0 links")
 	}
-	keys = append(keys, "? help")
+	keys = append(keys, "y copy link", "? help")
 	return styleHelp.Render("  " + strings.Join(keys, " · "))
 }
 
 // inboxHelp returns the one-line help string for the inbox view.
 func inboxHelp(folder string) string {
-	base := []string{"enter/l open", "d/u page", "r reply", "ctrl+r reply-all", "ctrl+e react", "f fwd", "c compose", "I/O/F/P/A screen", "g goto", "M move", ", sort", "/ filter", "R reload", ": cmds", "space more", "? help", "q quit"}
+	base := []string{"j/k move", "enter/o open", "e done", "h remind", "s compose", "r reply", "f forward", "x select", "dd/# trash", "g goto", "v move", "/ filter", "? help"}
 	_ = folder
 	if folder == "ToScreen" {
-		base = []string{"I approve", "O block", "F feed", "P papertrail", "q back"}
+		base = []string{"j/k move", "i approve", "O block", "F feed", "p papertrail", "x select", "? help"}
 	}
 	return styleHelp.Render("  " + strings.Join(base, " · "))
 }
@@ -220,11 +220,11 @@ func composeHelp(step int, hasSenders bool) string {
 	}
 	switch step {
 	case 0: // stepTo
-		return styleHelp.Render("  tab/enter next · ctrl+b toggle Cc/Bcc · ctrl+t attach" + fromHint + " · esc cancel")
+		return styleHelp.Render("  tab/enter next · ctrl+b Cc/Bcc · ctrl+t attach" + fromHint + " · esc cancel")
 	case 1, 2: // stepCC, stepBCC
-		return styleHelp.Render("  tab next · shift+tab prev · ctrl+b hide Cc/Bcc · ctrl+t attach" + fromHint + " · esc cancel")
+		return styleHelp.Render("  tab next · shift+tab prev · ctrl+b hide · ctrl+t attach" + fromHint + " · esc cancel")
 	default: // stepSubject
-		return styleHelp.Render("  enter open editor · shift+tab prev · ctrl+t attach · D remove last" + fromHint + " · esc cancel")
+		return styleHelp.Render("  enter editor · ctrl+t attach · D remove last" + fromHint + " · esc cancel")
 	}
 }
 

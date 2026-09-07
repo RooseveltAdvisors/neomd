@@ -44,14 +44,15 @@ func (d emailDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
 
 // Column widths
 const (
-	colNumWidth    = 4 // "  1 "
-	colFlagWidth   = 2 // "N " or "  "
-	colReplyWidth  = 1 // "·" or " "
-	colThreadWidth = 2 // "│ " or "╰ " or "  "
-	colDateWidth   = 7 // "Feb 03 "
-	colAttachWidth = 2 // "@ " or "  "
-	colSpyWidth    = 2 // "°" or "  " — spy pixel indicator
-	colSizeWidth   = 7 // "(38.2K)"
+	colNumWidth      = 4 // "  1 "
+	colFlagWidth     = 2 // "N " or "  "
+	colReplyWidth    = 1 // "·" or " "
+	colThreadWidth   = 2 // "│ " or "╰ " or "  "
+	colDateWidth     = 7 // "Feb 03 "
+	colAttachWidth   = 2 // "@ " or "  "
+	colSpyWidth      = 2 // "°" or "  " — spy pixel indicator
+	colReminderWidth = 2 // "R " or "  " — scheduled/due reminder
+	colSizeWidth     = 7 // "(38.2K)"
 )
 
 func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
@@ -99,9 +100,13 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	if e.hasSpyPixel {
 		spyStr = "° "
 	}
+	reminderStr := "  "
+	if e.email.Reminder != nil {
+		reminderStr = "R "
+	}
 	sizeStr := fmtSize(e.email.Size)
 
-	fixed := colNumWidth + colFlagWidth + colReplyWidth + colThreadWidth + colDateWidth + colAttachWidth + colSpyWidth + colSizeWidth + 2 // 2 spaces padding
+	fixed := colNumWidth + colFlagWidth + colReplyWidth + colThreadWidth + colDateWidth + colAttachWidth + colSpyWidth + colReminderWidth + colSizeWidth + 2 // 2 spaces padding
 	fromMax := 20
 	subjectMax := width - fixed - fromMax - 2
 	if subjectMax < 8 {
@@ -123,7 +128,7 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	subject := truncate(displaySafe(subjectText), subjectMax)
 
 	if isSelected {
-		row := num + flag + replyStr + threadStr + dateStr + attachStr + spyStr +
+		row := num + flag + replyStr + threadStr + dateStr + attachStr + spyStr + reminderStr +
 			padRight(from, fromMax) + "  " +
 			padRight(subject, subjectMax) + "  " +
 			sizeStr
@@ -153,6 +158,10 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	if e.hasSpyPixel {
 		spyS = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(spyStr) // orange warning
 	}
+	reminderS := lipgloss.NewStyle().Foreground(colorMuted).Render(reminderStr)
+	if e.email.Reminder != nil {
+		reminderS = lipgloss.NewStyle().Foreground(colorPrimary).Render(reminderStr)
+	}
 
 	fromStyle := lipgloss.NewStyle().Foreground(colorAuthorRead)
 	subStyle := lipgloss.NewStyle().Foreground(colorSubjectRead)
@@ -164,7 +173,7 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	subS := subStyle.Render(padRight(subject, subjectMax))
 	sizeS := lipgloss.NewStyle().Foreground(colorSizeCol).Render(sizeStr)
 
-	fmt.Fprint(w, numS+flagS+replyS+threadS+dateS+attachS+spyS+fromS+"  "+subS+"  "+sizeS)
+	fmt.Fprint(w, numS+flagS+replyS+threadS+dateS+attachS+spyS+reminderS+fromS+"  "+subS+"  "+sizeS)
 }
 
 // cleanFrom strips the <addr> part when a display name is present.

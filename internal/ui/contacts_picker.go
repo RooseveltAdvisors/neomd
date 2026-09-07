@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,36 +14,6 @@ import (
 // `/` filters by name or address, j/k move, `y` copies the address to the
 // clipboard, `Y` copies "Name <addr>", enter starts a compose to the
 // selected contact, esc/q closes.
-
-// clipboardDoneMsg reports the result of a clipboard copy.
-type clipboardDoneMsg struct {
-	text string
-	err  error
-}
-
-// copyToClipboardCmd copies text using the first available clipboard tool.
-func copyToClipboardCmd(text string) tea.Cmd {
-	return func() tea.Msg {
-		return clipboardDoneMsg{text: text, err: copyToClipboard(text)}
-	}
-}
-
-func copyToClipboard(text string) error {
-	for _, c := range [][]string{
-		{"wl-copy"}, // Wayland
-		{"xclip", "-selection", "clipboard"},
-		{"xsel", "--clipboard", "--input"},
-		{"pbcopy"}, // macOS
-	} {
-		if _, err := exec.LookPath(c[0]); err != nil {
-			continue
-		}
-		cmd := exec.Command(c[0], c[1:]...)
-		cmd.Stdin = strings.NewReader(text)
-		return cmd.Run()
-	}
-	return fmt.Errorf("no clipboard tool found (wl-copy, xclip, xsel, pbcopy)")
-}
 
 // filteredContacts returns the address book filtered by the picker's query
 // (case-insensitive substring on name or address).

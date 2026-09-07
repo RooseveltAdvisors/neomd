@@ -164,7 +164,7 @@ Keep your inbox clean without effort.
 - **Attachments** — attach files from the pre-send screen via yazi (`a`); images appear inline in the email body, other files as attachments; also attach from within Neovim via `<leader>a`; the reader lists all attachments and `1`–`9` downloads and opens them [→](https://neomd.ssp.sh/docs/sending/#attachments)
 - **Emoji reactions** — press `ctrl+e` from inbox or reader to react with emoji (👍 ❤️ 😂 🎉 🙏 💯 👀 ✅); instant send with proper threading and quoted message history, no editor needed [→](https://neomd.ssp.sh/docs/sending/#emoji-reactions)
 - **Multi-select** — `m` marks emails, then batch-delete, move, or screen them all at once [→](https://neomd.ssp.sh/docs/keybindings/#multi-select--undo)
-- **Undo** — `u` reverses the last move or delete (`x`, `A`, `M*`) using the UIDPLUS destination UID [→](https://neomd.ssp.sh/docs/keybindings/#multi-select--undo)
+- **Undo** — `U` reverses the last move or delete (`x`, `e`, `M*`) using the UIDPLUS destination UID [→](https://neomd.ssp.sh/docs/keybindings/#multi-select--undo)
 
 ### Reading
 
@@ -183,6 +183,10 @@ Keep your inbox clean without effort.
 - **CC, BCC, Reply-all** — optional Cc/Bcc fields (toggle with `ctrl+b`); `R` in the reader replies to sender + all CC recipients [→](https://neomd.ssp.sh/docs/sending/#cc-bcc-reply-all-and-forward)
 - **Drafts** — `d` in pre-send saves to Drafts (IMAP APPEND); `E` in the reader re-opens a draft as an editable compose; compose sessions are auto-backed up to `~/.cache/neomd/drafts/` so you never lose an unsent email (`:recover` to reopen) [→](https://neomd.ssp.sh/docs/sending/#drafts)
 - **Send later** — `l` in pre-send schedules delivery (`+2h`, `17:30`, `tomorrow 09:00`); the message queues in your Scheduled folder and the headless daemon delivers it on time — delete from Scheduled to cancel [→](https://neomd.ssp.sh/docs/sending/#send-later)
+- **Keyboard-driven, instantly** — `e` archive, `h` remind, `s` start an email, `;` snippets. Every action applies to the list the moment you press the key; the IMAP round-trip happens behind it and only a server failure puts the row back [→](https://neomd.ssp.sh/docs/keybindings/)
+- **Infinite scroll** — reaching the bottom of the list appends the next page automatically; no pager, and the cursor stays where you left it
+- **Snippets** — `;` opens a template picker reading `~/.config/neomd/snippets/*.md`; an optional first `Subject: ...` line sets the subject, the rest becomes the body
+- **Per-email reminders** — press `h` on a message (from the inbox or the reader), enter `+2h`, `tomorrow 09:00`, or a date/time; it moves to Waiting and returns to Inbox when due. No mail is sent; the original stays recoverable in Trash [→](https://neomd.ssp.sh/docs/sending/#reminders)
 - **Recipient names & contacts** — names are harvested from email headers (plus an optional contacts file / Google Contacts CSV export), used to find people by name in search and to send `Louise Nachname <l@domain.io>` instead of a bare address [→](https://neomd.ssp.sh/docs/sending/#recipient-names)
 - **Multiple From addresses** — define SMTP-only `[[senders]]` aliases (e.g. `s@ssp.sh` through an existing account); cycle with `ctrl+f` in compose and pre-send; sent copies always land in the Sent folder [→](https://neomd.ssp.sh/docs/sending/#multiple-from-addresses)
 - **OS keyring credentials** — set `password = "keyring"` to fetch the IMAP/SMTP password from your OS keyring (macOS Keychain, Linux Secret Service, Windows Credential Manager); OAuth2 tokens also stored in keyring with file fallback for headless/SSH; resolution happens at config load so `[[senders]]` aliases inherit the resolved password automatically [→](https://neomd.ssp.sh/docs/configuration/#storing-passwords-in-the-os-keyring)
@@ -291,14 +295,14 @@ By default, neomd loads and auto-screens only the newest `200` Inbox emails (`[u
 
 **Getting started with the screener:**
 
-1. From your Inbox, pick an email and press `I` (screen **in**) to approve the sender, or `O` (screen **out**) to block them. This creates your first screener list entry.
+1. From your Inbox, pick an email and press `i` (screen **in**) to approve the sender, or `o` (screen **out**) to block them. This creates your first screener list entry.
 2. Once you've classified at least one sender, auto-screening activates on every Inbox load — new emails from known senders are sorted automatically.
 3. Unknown senders land in the `ToScreen` tab. Jump there with `gk` (or `Tab`, use `L` or click the tab) and classify them:
-   - `I` screen **in** — sender stays in Inbox forever
-   - `O` screen **out** — sender never reaches Inbox again
+   - `i` screen **in** — sender stays in Inbox forever
+   - `o` screen **out** — sender never reaches Inbox again
    - `F` **feed** — newsletters go to the Feed tab
    - `P` **papertrail** — receipts go to the PaperTrail tab
-4. Use `m` to mark multiple emails, then `I` to batch-approve them all at once. From the `ToScreen` folder, approving/blocking a single unmarked message now applies to all currently queued mail from that sender.
+4. Use `m` to mark multiple emails, then `i` to batch-approve them all at once. From the `ToScreen` folder, approving/blocking a single unmarked message now applies to all currently queued mail from that sender.
 
 **The best part:** all classifications are saved permanently in your screener lists (`screened_in.txt`, `screened_out.txt`, etc.). An email address screened in will automatically go to your Inbox, and any email screened out will never be in your Inbox again.
 
@@ -361,6 +365,8 @@ make help     print this list
 ## FAQ
 
 You have more questions, check out the [docs](https://neomd.ssp.sh/) with more information, or check [Frequently Asked Questions](https://neomd.ssp.sh/docs/faq/).
+
+For why neomd exists and the principles behind it, see [VISION.md](VISION.md).
 
 ## Changelog
 

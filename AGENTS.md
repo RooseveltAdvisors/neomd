@@ -93,6 +93,20 @@ When you add a new field or path to outgoing messages, extend the round-trip sui
 the same commit — a field that isn't parse-back-asserted is a field that can silently
 break.
 
+## Authentication & Safety Modes
+
+- **External OAuth2 helper** — `[[accounts]].oauth2_token_command` is a fixed argv
+  token source (`internal/oauth2`, wired in `cmd/neomd/main.go`): only a leading
+  `~/` in argv[0] expands, stderr is discarded, empty stdout fails, and the token
+  remains in memory; it bypasses native OAuth client/URL/keyring/token-file setup.
+  Test: `TestConfigureIMAPAuthUsesCommandTokenWithoutNativeOAuth`.
+- **Read-only profile** — root `read_only` makes IMAP selection use EXAMINE, blocks
+  every mutating IMAP method and UI outbound/action path before network access,
+  suppresses first-run folder creation, blocks the mutating `screen` CLI, and
+  refuses `--headless` (`internal/imap/client.go`, `internal/ui/model.go`,
+  `cmd/neomd/main.go`). Tests: `TestReadOnlyBlocksMutationsBeforeDial`,
+  `TestReadOnlyBlocksPR5ActionsBeforeNetwork`.
+
 **Hardening assertions may only be extended, never weakened.** If a hardening test
 fails after a code change, the default assumption is that the CODE broke a
 user-visible contract — investigate the code first. Relaxing, deleting, or rewriting
@@ -101,7 +115,40 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 
 ---
 
+## Per-email Reminders
+
+- **Superhuman-style reminders** — `H` in the reader prompts for a future time,
+  stores the selected message in Waiting with `X-Neomd-Reminder-*` metadata,
+  and moves the original to recoverable Trash without SMTP. The headless daemon
+  and TUI background sync return due reminders to Inbox; metadata remains visible
+  as the `R` indicator and reader status. Tests: `TestReminderKeyStartsPerEmailPrompt`,
+  `TestParseReminderSection`, `TestParseHeaderAndStatus`.
+
 ## Reply & Threading
+
+- **Message-ID share links** — in the reader, `y` opens the copy menu and `m` copies
+  `neomd://mid/<url-encoded-message-id>`; the URI encodes the RFC Message-ID, never
+  an IMAP UID or folder path. Tests: `internal/link/message_id_test.go`,
+  `internal/ui/copy_menu_test.go`.
+
+- **Every copy goes out as OSC 52 first** — `copyToClipboard`
+  (`internal/ui/clipboard.go`) writes the escape sequence to the terminal, and only
+  then tries a local tool (`wl-copy`/`xclip`/`xsel`/`pbcopy`); either succeeding is a
+  success. neomd is routinely run over ssh, where a local tool sets the wrong
+  machine's clipboard or fails outright, so a local-tool-only copy is a silent no-op
+  for the user. A tool whose display variable is unset is skipped, never run and
+  failed. Inside tmux the sequence is emitted twice — plain and DCS-passthrough
+  wrapped with every ESC doubled — so it lands under either `set-clipboard on` or
+  `allow-passthrough on`. Tests: `TestYankMenuMessageIDIsOSC52Encoded`,
+  `TestOSC52TmuxPassthroughDoublesEscapes`,
+  `TestLocalClipboardToolSkippedWithoutDisplay`.
+- **Clipboard standard is non-negotiable for any copy path** — new yank/copy features
+  must follow `copyToClipboard` (`internal/ui/clipboard.go`): always emit OSC 52 to the
+  TUI stdout so it reaches the terminal (Ghostty) first, wrap for tmux when `TMUX` is
+  set, and only try a local tool (`wl-copy`/`xclip`/`xsel`) when `WAYLAND_DISPLAY` or
+  `DISPLAY` exists. Never treat a clipboard binary merely present on `PATH` as
+  sufficient - on a headless box that sets a clipboard nobody can see. Route every new
+  copy through the shared helper instead of shelling out directly.
 
 - **`·` reply indicator** — after sending a reply, the original email gets the IMAP
   `\Answered` flag (`MarkAnswered` in `internal/imap/client.go`, called from `sendEmailCmd`
@@ -129,12 +176,12 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 - **Threaded inbox rendering** — threads grouped via `In-Reply-To`/`Message-ID` with
   subject+participant fallback, `│`/`╰` connectors, newest on top; the Sent folder is
   intentionally **not** threaded. Tests: `TestNormalizeSubject`, `TestParticipantMatch`.
-- **Sender view (`V`)** — from the inbox list, searches `from:<addr>` (bare address
+- **Sender view (`@`)** — from the inbox list, searches `from:<addr>` (bare address
   from the selected email) across every configured folder via the same
   `SearchAllFolders` IMAP infra as `/`-search, opening results in a `Sender` off-tab
   (`internal/ui/search.go`: `senderAddr`, `fetchSenderCmd`, `handleSenderResult`).
-  `V` was chosen over `E`/`F` — both already bound (`E` = continue draft in the reader,
-  `F` = mark as Feed). Tests: `TestSenderAddr`, `TestHandleSenderResultSetsOffTabAndEmails`,
+  `@` preserves sender search while `V` is now vim visual-select mode; `E`/`F` remain
+  occupied by mark-not-done and Feed. Tests: `TestSenderAddr`, `TestHandleSenderResultSetsOffTabAndEmails`,
   `TestHandleSenderResultNoMatches`.
 
 ## Compose → Pre-send → Send Pipeline
@@ -307,8 +354,8 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 - **The user's `[contacts]` file is read-only** — `contacts.MergeFile` only reads;
   neomd persists exclusively to its own cache (`config.ContactsCachePath()`), so the
   cache can be deleted anytime and rebuilds from harvesting + the file. The picker
-  (`space c`, `internal/ui/contacts_picker.go`) copies via external clipboard tools
-  and never mutates the store. Tests: `TestMergeFileGoogleCSVRealExport`,
+  (`space c`, `internal/ui/contacts_picker.go`) copies via the shared
+  `copyToClipboard` helper and never mutates the store. Tests: `TestMergeFileGoogleCSVRealExport`,
   `TestContactsPickerFilterAndSelect`.
 
 ## Reading & Security
@@ -367,11 +414,82 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   messages never include tokens/passwords. Tests: `TestTokenErrors_NoTokenLeak`,
   `TestSaveToken_FilePermissions`.
 
+## Core Keyboard Contract (e / h / s / ;)
+
+The client is driven from the home row. These four keys are the product, not a convenience
+layer — do not rebind them, and do not let a new binding shadow one.
+
+- **`e` archive · `h` remind · `s` start an email · `;` snippets** — bound in both the
+  inbox (`updateInbox`) and the reader (`updateReader`) in `internal/ui/model.go`. The
+  pre-5.0 keys still work as aliases (`A` archive, `H` remind, `c` compose).
+  Test: `TestEmailBindingMap`, `TestReaderArchiveAndRemindKeys`.
+- **Case convention is LOWERCASE for email actions.** `i`/`o`/`p`/`b`/`t` remain the
+  primary action keys, while `F` stays uppercase because `f` is forward. Vim-shaped
+  selection uses `x/m`, `V`, and `ctrl+a`; `dd/#` trashes; `u` undoes; `U/z` filters
+  unread; `ctrl+d/u` are half-page movement. The final map and dropped shortcuts live
+  in `docs/keys.md`; `internal/ui/keys.go` drives the overlay and generated docs.
+- **`h` no longer exits the reader** — `q`/`esc` do. Reverting that would shadow remind.
+- **Reader `e` moved the old $EDITOR view to `<space>e`.**
+- **Superhuman/vim shortcut map is user-visible contract** — `internal/ui/keys.go`,
+  `docs/keys.md`, and the context footers must stay aligned: `x/m` select,
+  `V` extends selection with j/k, `dd/#` trash, `u` undo, `U/z` unread-only,
+  `ctrl+d/u` half-page, and the final `g` folder routes. Tests:
+  `TestDocumentedKeyBindings`, `TestReadOnlyBlocksExpandedMutatingBindingsBeforeNetwork`.
+- **Bindings must not fire inside a text field** — the inbox handler's early returns for
+  `cmdMode`, `imapSearchActive`, `filterActive`, `reminderActive` and `pendingKey` are what
+  guarantee this; new bindings go in the main `switch` *after* those guards, never before.
+  Test: `TestEmailBindingsGuardedInsideInputFields`.
+
+## Instant Actions (optimistic UI)
+
+- **Every list action applies before the IMAP round-trip.** Archive/delete/screen/move/
+  remind route through `Model.optimisticAct` (`internal/ui/optimistic.go`): the rows leave
+  `m.emails` and the list immediately, the IMAP command runs behind it, and `batchDoneMsg`
+  / `reminderDoneMsg` *confirm in place* — **no folder re-fetch**. Regressing to
+  `fetchFolderCmd` on ack is the failure mode this exists to prevent.
+  Test: `TestOptimisticArchiveIsInstant`.
+- **Failures roll back visibly** — the rows return to the list and `isError` is set; a
+  refused action is never silently dropped. Test:
+  `TestOptimisticArchiveRollsBackVisiblyOnFailure`.
+- **Overlapping actions are independent** — each batch gets an `optID`; one batch's ack must
+  never consume another's rollback snapshot.
+  Test: `TestOverlappingOptimisticBatchesRollBackIndependently`.
+
+## Infinite Scroll
+
+- **Reaching the bottom appends the next page** — `maybeLoadMoreCmd` fires within
+  `loadMoreThreshold` rows of the end and pages on UID via
+  `imap.Client.FetchHeadersBefore(folder, beforeUID, n)`.
+  Test: `TestScrollToBottomTriggersNextPage`.
+- **The cursor must not move when a page lands** — appends go through `sortEmails` and then
+  re-`Select` the previous index. Test: `TestNextPageAppendsAndKeepsScrollPosition`.
+- **Ad-hoc views are never paged** — IMAP search results, `Everything`, conversation and
+  sender views span folders, so UID paging is meaningless there.
+  Test: `TestScrollDoesNotPageAdHocViews`.
+- **An empty page latches `moreExhausted`** so the client stops asking; a full folder load
+  (`emailsLoadedMsg`) resets paging and clears pending optimistic snapshots.
+  Tests: `TestEmptyNextPageMarksFolderExhausted`, `TestFullFolderLoadResetsPagingState`.
+
+## Snippets
+
+- **`;` reads `<config dir>/snippets/*.md` at open time** (`internal/snippets`), so a new
+  template needs no restart. An optional leading `Subject:` line sets the subject; the rest
+  is the body, staged through `mailtoBody` so `launchEditorCmd` drops it into the editor
+  buffer. Tests: `TestSnippetParseSplitsSubjectAndBody`, `TestSnippetPickerComposesPrefilled`.
+
 ## Keybindings & Docs
 
 - **`internal/ui/keys.go` is the single source of truth** — drives the `?` overlay and the
   generated `docs/keybindings.md` (`make docs`, runs in `make build`). Never hand-edit the
   markdown tables.
-- **Avoid modifier keys for new bindings** — user's tmux prefix is `C-t`; `ctrl+a`/`ctrl+e`
-  collide with textinput line-start/end. Prefer plain letters, especially on pre-send.
+- **Avoid modifier keys for new bindings** — user's tmux prefix is `C-t`; compose text
+  fields still own their editing chords, while inbox `ctrl+a`/`ctrl+d`/`ctrl+u` follow
+  the final vim map. Prefer plain letters, especially on pre-send.
 - **README.md syncs to the docs site** (`scripts/sync-readme-to-docs.sh` via `make docs`).
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
