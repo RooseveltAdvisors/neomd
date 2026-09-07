@@ -131,6 +131,18 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   an IMAP UID or folder path. Tests: `internal/link/message_id_test.go`,
   `internal/ui/copy_menu_test.go`.
 
+- **Every copy goes out as OSC 52 first** — `copyToClipboard`
+  (`internal/ui/clipboard.go`) writes the escape sequence to the terminal, and only
+  then tries a local tool (`wl-copy`/`xclip`/`xsel`/`pbcopy`); either succeeding is a
+  success. neomd is routinely run over ssh, where a local tool sets the wrong
+  machine's clipboard or fails outright, so a local-tool-only copy is a silent no-op
+  for the user. A tool whose display variable is unset is skipped, never run and
+  failed. Inside tmux the sequence is emitted twice — plain and DCS-passthrough
+  wrapped with every ESC doubled — so it lands under either `set-clipboard on` or
+  `allow-passthrough on`. Tests: `TestYankMenuMessageIDIsOSC52Encoded`,
+  `TestOSC52TmuxPassthroughDoublesEscapes`,
+  `TestLocalClipboardToolSkippedWithoutDisplay`.
+
 - **`·` reply indicator** — after sending a reply, the original email gets the IMAP
   `\Answered` flag (`MarkAnswered` in `internal/imap/client.go`, called from `sendEmailCmd`
   in `internal/ui/model.go`) and the inbox shows `·` (or `·╰` inside a thread,
@@ -335,8 +347,8 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 - **The user's `[contacts]` file is read-only** — `contacts.MergeFile` only reads;
   neomd persists exclusively to its own cache (`config.ContactsCachePath()`), so the
   cache can be deleted anytime and rebuilds from harvesting + the file. The picker
-  (`space c`, `internal/ui/contacts_picker.go`) copies via external clipboard tools
-  and never mutates the store. Tests: `TestMergeFileGoogleCSVRealExport`,
+  (`space c`, `internal/ui/contacts_picker.go`) copies via the shared
+  `copyToClipboard` helper and never mutates the store. Tests: `TestMergeFileGoogleCSVRealExport`,
   `TestContactsPickerFilterAndSelect`.
 
 ## Reading & Security
