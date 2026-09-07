@@ -51,6 +51,11 @@ const (
 	stateSnippets           // snippet/template picker (;)
 )
 
+type folderChoice struct {
+	label string
+	path  string
+}
+
 // async message types
 type (
 	emailsLoadedMsg struct {
@@ -676,6 +681,18 @@ type Model struct {
 
 	// Chord prefix: "g" or "M" while waiting for second key
 	pendingKey string
+	// lastInboxKey lets the vim-style dd operator coexist with d page-down:
+	// the first d moves, a consecutive second d trashes.
+	lastInboxKey string
+
+	// Visual selection and the folder picker are intentionally model state so
+	// they never perform network work until the user confirms a destination.
+	visualSelect     bool
+	visualAnchor     int
+	movePickerActive bool
+	movePickerIndex  int
+	movePicker       []folderChoice
+	composeLeader    bool
 
 	// prevState is the state to return to when closing the help overlay
 	prevState viewState
@@ -1345,6 +1362,83 @@ func (m Model) moveEmailCmd(e *imap.Email, dst string) tea.Cmd {
 		destUID, err := m.imapCli().MoveMessage(nil, src, uid, dst)
 		return moveDoneMsg{err: err, undo: []undoMove{{uid: destUID, fromFolder: src, toFolder: dst}}}
 	}
+}
+
+// folderChoices is the destination list used by v and gl. The configured
+// folders are deliberately presented with neomd's stable labels, while
+// duplicate paths are removed so aliases cannot make a move ambiguous.
+func (m Model) folderChoices() []folderChoice {
+	if m.cfg == nil {
+		return nil
+	}
+	choices := []folderChoice{
+		{label: "Inbox", path: m.cfg.Folders.Inbox},
+		{label: "Archive", path: m.cfg.Folders.Archive},
+		{label: "Feed", path: m.cfg.Folders.Feed},
+		{label: "PaperTrail", path: m.cfg.Folders.PaperTrail},
+		{label: "Sent", path: m.cfg.Folders.Sent},
+		{label: "Drafts", path: m.cfg.Folders.Drafts},
+		{label: "Trash", path: m.cfg.Folders.Trash},
+		{label: "ScreenedOut", path: m.cfg.Folders.ScreenedOut},
+		{label: "Waiting", path: m.cfg.Folders.Waiting},
+		{label: "Scheduled", path: m.cfg.Folders.Scheduled},
+		{label: "Someday", path: m.cfg.Folders.Someday},
+		{label: "ToScreen", path: m.cfg.Folders.ToScreen},
+		{label: "Spam", path: m.cfg.Folders.Spam},
+	}
+	if m.cfg.Folders.Work != "" {
+		choices = append(choices, folderChoice{label: "Work", path: m.cfg.Folders.Work})
+	}
+	seen := make(map[string]bool, len(choices))
+	out := choices[:0]
+	for _, choice := range choices {
+		if choice.path == "" || seen[choice.path] {
+			continue
+		}
+		seen[choice.path] = true
+		out = append(out, choice)
+	}
+	return out
+}
+
+func (m Model) openMovePicker() (tea.Model, tea.Cmd) {
+	m.movePicker = m.folderChoices()
+	m.movePickerIndex = 0
+	m.movePickerActive = len(m.movePicker) > 0
+	if !m.movePickerActive {
+		m.status = "No configured destination folders."
+		m.isError = true
+	} else {
+		m.status = "move to: " + m.movePicker[0].label + "  · j/k choose · enter move · esc cancel"
+		m.isError = false
+	}
+	return m, nil
+}
+
+func (m *Model) extendVisualSelection() {
+	if m.markedUIDs == nil {
+		m.markedUIDs = make(map[uint32]bool)
+	}
+	start, end := m.visualAnchor, m.inbox.Index()
+	if start > end {
+		start, end = end, start
+	}
+	for i := start; i <= end && i < len(m.inbox.Items()); i++ {
+		if item, ok := m.inbox.Items()[i].(emailItem); ok {
+			m.markedUIDs[item.email.UID] = true
+		}
+	}
+}
+
+func (m Model) trashTargets() (tea.Model, tea.Cmd) {
+	targets := m.targetEmails()
+	if len(targets) == 0 {
+		return m, nil
+	}
+	trash := m.cfg.Folders.Trash
+	return m, m.optimisticAct(targets, "Deleting", func() tea.Cmd {
+		return m.batchMoveCmd(targets, trash)
+	})
 }
 
 // targetEmails returns marked emails if any are marked, otherwise just the cursor email.
@@ -3367,6 +3461,71 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Folder/label picker opened by v or gl. It is a local UI mode; only
+	// enter starts the guarded optimistic move.
+	if m.movePickerActive {
+		switch key {
+		case "esc", "q":
+			m.movePickerActive = false
+			m.status = ""
+			return m, nil
+		case "j", "down":
+			if m.movePickerIndex < len(m.movePicker)-1 {
+				m.movePickerIndex++
+			}
+		case "k", "up":
+			if m.movePickerIndex > 0 {
+				m.movePickerIndex--
+			}
+		case "enter":
+			choice := m.movePicker[m.movePickerIndex]
+			m.movePickerActive = false
+			targets := m.targetEmails()
+			return m, m.optimisticAct(targets, "Moving to "+choice.label, func() tea.Cmd {
+				return m.batchMoveCmd(targets, choice.path)
+			})
+		default:
+			return m, nil
+		}
+		m.status = "move to: " + m.movePicker[m.movePickerIndex].label + "  · j/k choose · enter move · esc cancel"
+		return m, nil
+	}
+
+	// V enters a vim visual selection. Movement extends the selected range;
+	// any action key exits visual mode and is then handled normally.
+	if m.visualSelect {
+		switch key {
+		case "esc":
+			m.visualSelect = false
+			m.markedUIDs = make(map[uint32]bool)
+			return m, m.applyFilter()
+		case "ctrl+a":
+			m.markedUIDs = make(map[uint32]bool, len(m.emails))
+			for _, e := range m.emails {
+				m.markedUIDs[e.UID] = true
+			}
+			return m, m.applyFilter()
+		case "j", "down", "k", "up":
+			var cmd tea.Cmd
+			m.inbox, cmd = m.inbox.Update(msg)
+			m.extendVisualSelection()
+			return m, tea.Batch(cmd, m.applyFilter())
+		case "V":
+			m.visualSelect = false
+			return m, nil
+		default:
+			m.visualSelect = false
+		}
+	}
+
+	if m.lastInboxKey == "d" && key == "d" {
+		m.lastInboxKey = ""
+		return m.trashTargets()
+	}
+	if key != "d" {
+		m.lastInboxKey = ""
+	}
+
 	// Handle pending chord prefix (g or M) — consume the second key
 	if m.pendingKey != "" {
 		prefix := m.pendingKey
@@ -3418,12 +3577,12 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// ── Chord prefixes ──────────────────────────────────────────────
 	case "g":
 		m.pendingKey = "g"
-		m.status = "go to:  gi inbox  ga archive  gf feed  gp papertrail  gt trash  gs sent  gk toscreen  go screened-out  gw waiting  gc scheduled  gm someday  gd drafts  gS spam  ge everything  gg top"
+		m.status = "go to: gi inbox  gs starred  gd drafts  gt sent  ge archive  gh waiting  g; snippets  g! spam  g# trash  ga all mail  gl labels  go other  gm someday  gg top"
 		return m, nil
 
 	case " ": // leader key — wait for digit or shortcut
 		m.pendingKey = " "
-		m.status = "leader:  1-9 folder tab  / IMAP search  c contacts  S scan spy pixels  w welcome  (esc to cancel)"
+		m.status = "leader:  1-9 tabs  / search  c contacts  S scan  w welcome  (esc to cancel)"
 		return m, nil
 
 	case "M":
@@ -3441,13 +3600,30 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "sort:  ,m date↓  ,M date↑  ,a from A-Z  ,A from Z-A  ,s size↑  ,S size↓  ,n subject A-Z  ,N subject Z-A"
 		return m, nil
 
-	// ── Mark for batch / delete ─────────────────────────────────────
-	case "x":
-		targets := m.targetEmails()
-		trash := m.cfg.Folders.Trash
-		return m, m.optimisticAct(targets, "Deleting", func() tea.Cmd {
-			return m.batchMoveCmd(targets, trash)
-		})
+	// ── Vim visual selection / delete operator ──────────────────────
+	case "x", "m":
+		e := selectedEmail(m.inbox)
+		if e == nil {
+			break
+		}
+		if m.markedUIDs == nil {
+			m.markedUIDs = make(map[uint32]bool)
+		}
+		if m.markedUIDs[e.UID] {
+			delete(m.markedUIDs, e.UID)
+		} else {
+			m.markedUIDs[e.UID] = true
+		}
+		return m, m.applyFilter()
+
+	case "#", "!":
+		if key == "!" {
+			targets := m.targetEmails()
+			return m, m.optimisticAct(targets, "Screening", func() tea.Cmd {
+				return m.batchScreenerCmd(targets, "$")
+			})
+		}
+		return m.trashTargets()
 
 	case "X": // permanent delete (marked or cursor) — only in Trash
 		if m.activeFolder() != m.cfg.Folders.Trash {
@@ -3466,11 +3642,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.deleteAllExecCmd(m.cfg.Folders.Trash, uids))
 
-	case "ctrl+u": // clear all marks
-		m.markedUIDs = make(map[uint32]bool)
-		return m, m.applyFilter()
-
-	case "U": // undo last move/delete
+	case "u": // undo last move/delete
 		if len(m.undoStack) == 0 {
 			m.status = "Nothing to undo."
 			return m, nil
@@ -3480,11 +3652,15 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.undoMovesCmd(last))
 
+	case "U": // Superhuman shift-U: unread-only filter
+		m.showUnreadOnly = !m.showUnreadOnly
+		return m, m.applyFilter()
+
 	// ── Screener actions — operate on marked emails or cursor email ──
 	// Screener actions. Lowercase is the documented binding; the historical
 	// uppercase keys stay as aliases. `F` has no lowercase form — `f` is
 	// forward — so feed keeps its uppercase key (see keys.go mapping table).
-	case "i", "I", "o", "O", "F", "p", "P", "$":
+	case "i", "I", "O", "F", "p", "P", "$":
 		targets := m.targetEmails()
 		action := strings.ToUpper(key)
 		return m, m.optimisticAct(targets, "Screening", func() tea.Cmd {
@@ -3499,6 +3675,20 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.optimisticAct(targets, "Archiving", func() tea.Cmd {
 			return m.batchMoveCmd(targets, archive)
 		})
+
+	case "E":
+		targets := m.targetEmails()
+		return m, m.optimisticAct(targets, "Marking not done", func() tea.Cmd {
+			return m.batchMoveCmd(targets, m.cfg.Folders.Inbox)
+		})
+
+	case "o":
+		e := selectedEmail(m.inbox)
+		if e == nil {
+			return m, nil
+		}
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, m.fetchBodyCmd(e))
 
 	// h = remind me — park the email in Waiting until the chosen time.
 	case "h":
@@ -3582,7 +3772,10 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, m.resetToScreenMoveCmd(uids))
 		}
 		if len(m.pendingMoves) == 0 {
-			break
+			targets := m.targetEmails()
+			return m, m.optimisticAct(targets, "Removing label", func() tea.Cmd {
+				return m.batchMoveCmd(targets, m.cfg.Folders.Inbox)
+			})
 		}
 		moves := m.pendingMoves
 		m.pendingMoves = nil
@@ -3666,6 +3859,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, more
 
 	case "d":
+		m.lastInboxKey = "d"
 		next := m.inbox.Index() + m.inboxPageStep()
 		if max := len(m.inbox.Items()) - 1; next > max {
 			next = max
@@ -3676,7 +3870,17 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		more := m.maybeLoadMoreCmd()
 		return m, more
 
-	case "u":
+	case "ctrl+d":
+		next := m.inbox.Index() + m.inboxPageStep()
+		if max := len(m.inbox.Items()) - 1; next > max {
+			next = max
+		}
+		if next >= 0 {
+			m.inbox.Select(next)
+		}
+		return m, m.maybeLoadMoreCmd()
+
+	case "ctrl+u":
 		prev := m.inbox.Index() - m.inboxPageStep()
 		if prev < 0 {
 			prev = 0
@@ -3709,18 +3913,11 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.spinner.Tick, cmd)
 
 	case "ctrl+a":
-		if len(m.clients) > 1 {
-			// Skip IMAP-disabled accounts (nil clients).
-			for range m.clients {
-				m.accountI = (m.accountI + 1) % len(m.clients)
-				if m.clients[m.accountI] != nil {
-					break
-				}
-			}
-			m.activeFolderI = 0
-			m.loading = true
-			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
+		m.markedUIDs = make(map[uint32]bool, len(m.emails))
+		for _, e := range m.emails {
+			m.markedUIDs[e.UID] = true
 		}
+		return m, m.applyFilter()
 
 	case "s", "c":
 		m.attachments = nil
@@ -3736,13 +3933,16 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
 
-	case "enter", "l":
+	case "enter":
 		e := selectedEmail(m.inbox)
 		if e == nil {
 			return m, nil
 		}
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchBodyCmd(e))
+
+	case "l":
+		return m.openMovePicker()
 
 	case "r":
 		e := selectedEmail(m.inbox)
@@ -3799,29 +3999,24 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchConversationCmd(e))
 
-	case "v", "V":
+	case "v":
+		return m.openMovePicker()
+
+	case "V":
+		m.visualSelect = true
+		m.visualAnchor = m.inbox.Index()
+		m.markedUIDs = make(map[uint32]bool)
+		m.extendVisualSelection()
+		m.status = "VISUAL  j/k extend  · actions apply to selection  · esc clear"
+		return m, nil
+
+	case "@": // compatibility escape hatch for the former sender view key
 		e := selectedEmail(m.inbox)
 		if e == nil {
 			return m, nil
 		}
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchSenderCmd(e))
-
-	case "m": // mark/unmark current email for batch, advance cursor
-		e := selectedEmail(m.inbox)
-		if e == nil {
-			break
-		}
-		if m.markedUIDs[e.UID] {
-			delete(m.markedUIDs, e.UID)
-		} else {
-			m.markedUIDs[e.UID] = true
-		}
-		next := m.inbox.Index() + 1
-		if next < len(m.inbox.Items()) {
-			m.inbox.Select(next)
-		}
-		return m, m.applyFilter()
 
 	}
 
@@ -4065,6 +4260,33 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 			m.inbox.Select(0)
 			return m, nil
 		}
+		if key == "s" {
+			m.status = "Starred is not configured as a distinct folder in neomd."
+			return m, nil
+		}
+		if key == ";" {
+			return m.openSnippets()
+		}
+		if key == "l" {
+			return m.openMovePicker()
+		}
+		if key == "a" {
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.fetchEverythingCmd())
+		}
+		if key == "!" {
+			m.loading = true
+			m.offTabFolder = "Spam"
+			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.cfg.Folders.Spam))
+		}
+		if key == "#" {
+			m.loading = true
+			m.offTabFolder = "Trash"
+			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.cfg.Folders.Trash))
+		}
+		if key == "h" {
+			key = "w"
+		}
 		if key == "S" { // gS — go to Spam (not in tab rotation)
 			m.loading = true
 			m.offTabFolder = "Spam"
@@ -4079,18 +4301,13 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 			m.status = "Drafts folder — press R to reload, tab to leave"
 			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.cfg.Folders.Drafts))
 		}
-		if key == "e" { // ge — Everything: latest emails across all folders
-			m.loading = true
-			return m, tea.Batch(m.spinner.Tick, m.fetchEverythingCmd())
-		}
 		folderMap := map[string]string{
 			"i": "Inbox",
 			"f": "Feed",
 			"p": "PaperTrail",
-			"t": "Trash",
-			"s": "Sent",
+			"t": "Sent",
 			"k": "ToScreen",
-			"a": "Archive",
+			"e": "Archive",
 			"w": "Waiting",
 			"b": "Work",
 			"c": "Scheduled",
@@ -4267,6 +4484,9 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if key == "e" {
 				return m.openInNeovim()
 			}
+			if key == "o" {
+				return m.openInBrowser()
+			}
 			// space + d = download raw EML source
 			if key == "d" {
 				m.status = "Downloading EML…"
@@ -4431,6 +4651,13 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ";":
 		return m.openSnippets()
 	case "E":
+		if m.openEmail != nil && m.openEmail.Folder != m.cfg.Folders.Drafts {
+			targets := []imap.Email{*m.openEmail}
+			m.state = stateInbox
+			return m, m.optimisticAct(targets, "Marking not done", func() tea.Cmd {
+				return m.batchMoveCmd(targets, m.cfg.Folders.Inbox)
+			})
+		}
 		return m.continueDraft()
 	case "o":
 		return m.openInW3m()
@@ -4465,6 +4692,15 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.openEmail != nil {
 			return m.launchForwardCmd()
 		}
+	case "ctrl+d":
+		m.reader.HalfPageDown()
+		return m, nil
+	case "ctrl+u":
+		m.reader.HalfPageUp()
+		return m, nil
+	case "n", "p":
+		m.status = "Thread message navigation is available from the conversation view."
+		return m, nil
 	case "t", "T":
 		if m.openEmail != nil {
 			m.loading = true
@@ -5201,6 +5437,40 @@ func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	var leaderCmd tea.Cmd
+	if m.composeLeader {
+		key := msg.String()
+		m.composeLeader = false
+		switch key {
+		case "a":
+			return m.launchAttachPickerCmd()
+		case ";":
+			return m.openSnippets()
+		case "h":
+			m.status = "Reminder will be available after this message is sent."
+			return m, nil
+		case "o":
+			m.status = "Open links/attachments from the pre-send review."
+			return m, nil
+		case " ":
+			// Two spaces are a normal field value, not two leader commands.
+			m.composeLeader = true
+			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}}
+		default:
+			// A non-command key means the first space was literal. Replay it
+			// into the active text field before processing the current key.
+			spaceMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}}
+			var launch bool
+			m.compose, leaderCmd, launch = m.compose.update(spaceMsg)
+			if launch {
+				return m.launchEditorCmd()
+			}
+		}
+	} else if msg.String() == " " {
+		m.composeLeader = true
+		m.status = "compose leader: a attach · h remind · ; snippet · o preview"
+		return m, nil
+	}
 
 	switch msg.String() {
 	case "esc":
@@ -5249,7 +5519,7 @@ func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.launchEditorCmd()
 	}
-	return m, cmd
+	return m, tea.Batch(leaderCmd, cmd)
 }
 
 // updatePresend handles keys in the pre-send review screen.
@@ -5327,8 +5597,32 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.sendLaterInput, cmd = m.sendLaterInput.Update(msg)
 		return m, cmd
 	}
+	if m.composeLeader {
+		key := msg.String()
+		m.composeLeader = false
+		switch key {
+		case "a":
+			return m.launchAttachPickerCmd()
+		case "l":
+			return m.updatePresend(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+		case "h":
+			m.status = "Reminder in compose: send later or use h after delivery."
+			return m, nil
+		case ";":
+			return m.openSnippets()
+		case "o":
+			return m.previewInBrowser()
+		default:
+			m.status = "compose leader: a attach · l send later · h remind · ; snippet"
+			return m, nil
+		}
+	}
 	switch msg.String() {
-	case "enter":
+	case " ":
+		m.composeLeader = true
+		m.status = "compose leader: a attach · l send later · h remind · ; snippet · o preview"
+		return m, nil
+	case "enter", "ctrl+enter":
 		m.loading = true
 		m.state = stateInbox
 		from := m.presendFrom()
@@ -6394,6 +6688,11 @@ func (m Model) viewPresend() string {
 	} else if m.sendLaterActive {
 		b.WriteString(styleInputLabel.Render("Send at:") + " " + m.sendLaterInput.View() +
 			styleHelp.Render("  · enter schedule · esc cancel"))
+	} else if m.movePickerActive {
+		choice := m.movePicker[m.movePickerIndex]
+		b.WriteString(styleHelp.Render("  move to: " + choice.label + "  · j/k choose · enter move · esc cancel"))
+	} else if m.visualSelect {
+		b.WriteString(styleHelp.Render("  VISUAL  j/k extend · e done · h remind · v move · dd trash · esc clear"))
 	} else if m.status != "" {
 		b.WriteString(statusBar(m.status, m.isError))
 	} else {
@@ -6404,7 +6703,7 @@ func (m Model) viewPresend() string {
 			if strings.TrimSpace(m.cfg.AI.Command) != "" {
 				aiHint = " · i AI (quit to return)"
 			}
-			b.WriteString(styleHelp.Render("  enter send · l later · e edit · s spell · p preview · a attach · D remove attach" + aiHint + " · ctrl+f from · ctrl+b cc/bcc · d draft · esc cancel · x discard"))
+			b.WriteString(styleHelp.Render("  enter send · l later · e edit · p preview · a attach · D remove attach" + aiHint + " · ctrl+f from · ctrl+b cc/bcc · d draft · esc cancel · x discard"))
 		}
 	}
 	return b.String()
@@ -6427,7 +6726,7 @@ func (m Model) viewInbox() string {
 		header = acct + "  " + header
 	}
 	if len(m.markedUIDs) > 0 {
-		header += styleDate.Render(fmt.Sprintf("  [%d marked · U to clear]", len(m.markedUIDs)))
+		header += styleDate.Render(fmt.Sprintf("  [%d selected · x toggles · esc clears]", len(m.markedUIDs)))
 	}
 	b.WriteString(header + "\n")
 	b.WriteString(styleSeparator.Render(strings.Repeat("─", m.width)) + "\n")
@@ -6459,9 +6758,6 @@ func (m Model) viewInbox() string {
 		b.WriteString(statusBar(m.status, m.isError))
 	} else {
 		help := inboxHelp(m.folders[m.activeFolderI])
-		if len(m.accounts) > 1 {
-			help += styleHelp.Render(" · ctrl+a switch account")
-		}
 		if len(m.emails) > 0 {
 			help += styleDate.Render(fmt.Sprintf("  │  %d loaded", len(m.emails)))
 		}
@@ -6704,7 +7000,7 @@ func (m Model) viewHelp() string {
 	} else if filter != "" {
 		searchLine = matchStyle.Render("  /"+m.helpSearch) + styleHelp.Render("  · j/k scroll · / edit filter · esc clear")
 	} else {
-		searchLine = styleHelp.Render("  j/k scroll · d/u page · / filter · ? or q close")
+		searchLine = styleHelp.Render("  j/k scroll · ctrl+d/u page · / filter · ? or q close")
 	}
 
 	contentHeight := m.height - 1

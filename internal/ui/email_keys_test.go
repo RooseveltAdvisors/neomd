@@ -116,9 +116,14 @@ func TestEmailBindingMap(t *testing.T) {
 				t.Fatalf("; : state = %v, want stateSnippets", after.state)
 			}
 		}},
-		{"x", func(t *testing.T, before, after Model) { // delete
+		{"x", func(t *testing.T, before, after Model) { // select
+			if len(after.emails) != len(before.emails) || !after.markedUIDs[before.emails[0].UID] {
+				t.Fatalf("x: selection changed unexpectedly: emails=%d selected=%v", len(after.emails), after.markedUIDs)
+			}
+		}},
+		{"#", func(t *testing.T, before, after Model) { // trash
 			if len(after.emails) != len(before.emails)-1 {
-				t.Fatalf("x: %d emails left, want %d", len(after.emails), len(before.emails)-1)
+				t.Fatalf("#: %d emails left, want %d", len(after.emails), len(before.emails)-1)
 			}
 		}},
 		{"i", func(t *testing.T, before, after Model) { // screen in (was I)
@@ -126,9 +131,9 @@ func TestEmailBindingMap(t *testing.T) {
 				t.Fatalf("i: %d emails left, want %d", len(after.emails), len(before.emails)-1)
 			}
 		}},
-		{"o", func(t *testing.T, before, after Model) { // screen out (was O)
+		{"O", func(t *testing.T, before, after Model) { // screen out (legacy action)
 			if len(after.emails) != len(before.emails)-1 {
-				t.Fatalf("o: %d emails left, want %d", len(after.emails), len(before.emails)-1)
+				t.Fatalf("O: %d emails left, want %d", len(after.emails), len(before.emails)-1)
 			}
 		}},
 		{"p", func(t *testing.T, before, after Model) { // papertrail (was P)
@@ -301,8 +306,8 @@ func TestOptimisticArchiveRollsBackVisiblyOnFailure(t *testing.T) {
 // actions before either acks does not let one ack clobber the other's undo.
 func TestOverlappingOptimisticBatchesRollBackIndependently(t *testing.T) {
 	m := keysTestModel(t, 4)
-	first := press(m, "e")      // archive newest
-	second := press(first, "x") // delete the next one
+	first := press(m, "e")                  // archive newest
+	second := press(press(first, "d"), "d") // dd deletes the next one
 	if len(second.emails) != 2 || len(second.optimistic) != 2 {
 		t.Fatalf("two pending batches: emails=%d snapshots=%d", len(second.emails), len(second.optimistic))
 	}

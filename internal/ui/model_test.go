@@ -52,6 +52,36 @@ func TestReadOnlyBlocksPR5ActionsBeforeNetwork(t *testing.T) {
 	}
 }
 
+func TestReadOnlyBlocksExpandedMutatingBindingsBeforeNetwork(t *testing.T) {
+	for _, key := range []string{"E", "#", "!", "y"} {
+		t.Run(key, func(t *testing.T) {
+			m := keysTestModel(t, 2)
+			m.cfg.ReadOnly = true
+			updated, cmd := m.updateInbox(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+			got := updated.(Model)
+			if cmd == nil || !got.isError || !strings.Contains(got.status, "read-only") {
+				t.Fatalf("%s: status=%q error=%v cmd=%v", key, got.status, got.isError, cmd != nil)
+			}
+		})
+	}
+
+	for _, key := range []string{"v", "l"} {
+		t.Run("folder picker/"+key, func(t *testing.T) {
+			m := keysTestModel(t, 2)
+			m.cfg.ReadOnly = true
+			opened, cmd := m.updateInbox(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+			if cmd != nil || !opened.(Model).movePickerActive {
+				t.Fatalf("%s should only open the local picker: active=%v cmd=%v", key, opened.(Model).movePickerActive, cmd != nil)
+			}
+			updated, cmd := opened.(Model).updateInbox(tea.KeyMsg{Type: tea.KeyEnter})
+			got := updated.(Model)
+			if cmd == nil || !got.isError || !strings.Contains(got.status, "read-only") {
+				t.Fatalf("picker enter: status=%q error=%v cmd=%v", got.status, got.isError, cmd != nil)
+			}
+		})
+	}
+}
+
 func TestReadOnlyBlocksOutboundActionsBeforeNetwork(t *testing.T) {
 	m := Model{cfg: &config.Config{ReadOnly: true}}
 

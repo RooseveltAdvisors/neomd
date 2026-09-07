@@ -152,12 +152,12 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 - **Threaded inbox rendering** — threads grouped via `In-Reply-To`/`Message-ID` with
   subject+participant fallback, `│`/`╰` connectors, newest on top; the Sent folder is
   intentionally **not** threaded. Tests: `TestNormalizeSubject`, `TestParticipantMatch`.
-- **Sender view (`V`)** — from the inbox list, searches `from:<addr>` (bare address
+- **Sender view (`@`)** — from the inbox list, searches `from:<addr>` (bare address
   from the selected email) across every configured folder via the same
   `SearchAllFolders` IMAP infra as `/`-search, opening results in a `Sender` off-tab
   (`internal/ui/search.go`: `senderAddr`, `fetchSenderCmd`, `handleSenderResult`).
-  `V` was chosen over `E`/`F` — both already bound (`E` = continue draft in the reader,
-  `F` = mark as Feed). Tests: `TestSenderAddr`, `TestHandleSenderResultSetsOffTabAndEmails`,
+  `@` preserves sender search while `V` is now vim visual-select mode; `E`/`F` remain
+  occupied by mark-not-done and Feed. Tests: `TestSenderAddr`, `TestHandleSenderResultSetsOffTabAndEmails`,
   `TestHandleSenderResultNoMatches`.
 
 ## Compose → Pre-send → Send Pipeline
@@ -399,13 +399,18 @@ layer — do not rebind them, and do not let a new binding shadow one.
   inbox (`updateInbox`) and the reader (`updateReader`) in `internal/ui/model.go`. The
   pre-5.0 keys still work as aliases (`A` archive, `H` remind, `c` compose).
   Test: `TestEmailBindingMap`, `TestReaderArchiveAndRemindKeys`.
-- **Case convention is LOWERCASE for email actions.** `i`/`o`/`p`/`b`/`t`/`v` replaced
-  `I`/`O`/`P`/`B`/`T`/`V` (uppercase kept as aliases). Six keys had to stay uppercase
-  because their lowercase letter is already load-bearing — the exception list is
-  `F` (f=forward), `S` (s=compose), `U` (u=page up), `X` (x=trash), `N` (n=toggle read),
-  `R` (r=reply). Documented in the `keys.go` header comment; keep both in sync.
+- **Case convention is LOWERCASE for email actions.** `i`/`o`/`p`/`b`/`t` remain the
+  primary action keys, while `F` stays uppercase because `f` is forward. Vim-shaped
+  selection uses `x/m`, `V`, and `ctrl+a`; `dd/#` trashes; `u` undoes; `U/z` filters
+  unread; `ctrl+d/u` are half-page movement. The final map and dropped shortcuts live
+  in `docs/keys.md`; `internal/ui/keys.go` drives the overlay and generated docs.
 - **`h` no longer exits the reader** — `q`/`esc` do. Reverting that would shadow remind.
 - **Reader `e` moved the old $EDITOR view to `<space>e`.**
+- **Superhuman/vim shortcut map is user-visible contract** — `internal/ui/keys.go`,
+  `docs/keys.md`, and the context footers must stay aligned: `x/m` select,
+  `V` extends selection with j/k, `dd/#` trash, `u` undo, `U/z` unread-only,
+  `ctrl+d/u` half-page, and the final `g` folder routes. Tests:
+  `TestDocumentedKeyBindings`, `TestReadOnlyBlocksExpandedMutatingBindingsBeforeNetwork`.
 - **Bindings must not fire inside a text field** — the inbox handler's early returns for
   `cmdMode`, `imapSearchActive`, `filterActive`, `reminderActive` and `pendingKey` are what
   guarantee this; new bindings go in the main `switch` *after* those guards, never before.
@@ -453,8 +458,9 @@ layer — do not rebind them, and do not let a new binding shadow one.
 - **`internal/ui/keys.go` is the single source of truth** — drives the `?` overlay and the
   generated `docs/keybindings.md` (`make docs`, runs in `make build`). Never hand-edit the
   markdown tables.
-- **Avoid modifier keys for new bindings** — user's tmux prefix is `C-t`; `ctrl+a`/`ctrl+e`
-  collide with textinput line-start/end. Prefer plain letters, especially on pre-send.
+- **Avoid modifier keys for new bindings** — user's tmux prefix is `C-t`; compose text
+  fields still own their editing chords, while inbox `ctrl+a`/`ctrl+d`/`ctrl+u` follow
+  the final vim map. Prefer plain letters, especially on pre-send.
 - **README.md syncs to the docs site** (`scripts/sync-readme-to-docs.sh` via `make docs`).
 
 ## Maintaining this file
