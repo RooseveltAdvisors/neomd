@@ -1,5 +1,12 @@
 # Changelog
 
+# 2026-09-07
+
+- **GPU deployment follows GitHub Actions** — merges to `main` now build and install
+  neomd on the self-hosted GPU runner, preserving the previous binary as `neomd.prev`.
+  Manual rebuilds on GPU are no longer part of the deployment path. Where:
+  `.github/workflows/deploy.yml`, `README.md`. Tests: `go build ./...`, `go vet ./...`.
+
 # 2026-09-05
 
 - **Keyboard-driven email handling: `e` archive, `h` remind, `s` start, `;` snippets** —

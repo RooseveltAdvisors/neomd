@@ -1,5 +1,9 @@
 # neomd
 
+## Deployment
+
+Merging to `main` deploys neomd to the GPU host through [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). Never rebuild the binary by hand on GPU; merge to `main` instead. The workflow keeps the previous binary at `~/.local/bin/neomd.prev` for rollback.
+
 A keyboard-first TUI email: write in Neovim, render as Markdown, screen senders first, organize emails once.
 
 _Neomd is my way of implementing an email TUI based on my experience with Neomutt, focusing on [Neovim](https://www.ssp.sh/brain/neovim) (input) and reading/writing in [Markdown](https://www.ssp.sh/brain/markdown) and navigating with [Vim Motions](https://www.ssp.sh/brain/vim-language-and-motions) with the GTD workflow and [HEY-Screener](https://www.hey.com/features/the-screener/)._
