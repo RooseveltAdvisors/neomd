@@ -2,6 +2,12 @@
 
 # 2026-09-07
 
+- **Message-ID share links** — the reader's `y` copy menu now offers a stable
+  `neomd://mid/<url-encoded-message-id>` URI, plus an available web-version URL;
+  the URI is based on the RFC Message-ID rather than IMAP location data. Tests:
+  `TestMessageIDURIRoundTrip`, `TestReaderYOpensCopyMenu`,
+  `TestCopyMenuMessageIDBinding`.
+
 - **Superhuman-inspired vim keyboard map** — rebuilt the `?` overlay, context-aware
   footer hints, generated keybinding docs, and a complete decision table from the
   Superhuman v7 sheet. Captain-selected `e` done, `h` remind, `s` compose, and `;`

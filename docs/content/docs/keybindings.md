@@ -62,6 +62,7 @@ To update both the help overlay and this document at once, edit that file and ru
 | `1-9` | open attachment 1-9 |
 | `<space>1-0` | open link 1-10 |
 | `<space>e` | open the raw email in the editor |
+| `y` | open the copy menu (m Message-ID link; w web link) |
 
 
 ### Folders

@@ -51,6 +51,7 @@ var HelpSections = []HelpSection{
 		{"1-9", "open attachment 1-9"},
 		{"<space>1-0", "open link 1-10"},
 		{"<space>e", "open the raw email in the editor"},
+		{"y", "open the copy menu (m Message-ID link; w web link)"},
 	}},
 	{"Folders", [][2]string{
 		{"gi", "Inbox"},
