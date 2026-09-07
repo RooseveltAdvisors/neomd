@@ -940,7 +940,7 @@ func (m Model) Init() tea.Cmd {
 		m.scheduleBgSync(),
 		m.checkOverdueScheduledCmd(),
 	}
-	if config.IsFirstRun() {
+	if config.IsFirstRun() && !m.cfg.ReadOnly {
 		cmds = append(cmds, m.ensureFoldersCmd())
 	}
 	return tea.Batch(cmds...)
@@ -1047,7 +1047,22 @@ func (m Model) fetchBodyCmd(e *imap.Email) tea.Cmd {
 	}
 }
 
+func readOnlyError(kind string) error {
+	return fmt.Errorf("neomd read-only mode: %s blocked", kind)
+}
+
+func readOnlyBatchCmd(kind string) tea.Cmd {
+	return func() tea.Msg {
+		return batchDoneMsg{err: readOnlyError(kind)}
+	}
+}
+
 func (m Model) sendEmailCmd(smtpAcct config.AccountConfig, from, to, cc, bcc, subject, body string, attachments []string, includeHTMLSig bool, replyToUID uint32, replyToFolder, replyToAccount, inReplyTo, references string) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return func() tea.Msg {
+			return sendDoneMsg{err: readOnlyError("outbound email")}
+		}
+	}
 	h, p := splitAddr(smtpAcct.SMTP)
 	cfg := smtp.Config{
 		Host:        h,
@@ -1105,6 +1120,11 @@ func (m Model) sendEmailCmd(smtpAcct config.AccountConfig, from, to, cc, bcc, su
 // --headless`) — see internal/schedule. Reply \Answered marking is skipped:
 // the TUI may be long gone when the message actually goes out.
 func (m Model) scheduleSendCmd(smtpAcct config.AccountConfig, from, to, cc, bcc, subject, body string, attachments []string, includeHTMLSig bool, inReplyTo, references string, sendAt time.Time) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return func() tea.Msg {
+			return scheduleDoneMsg{err: readOnlyError("scheduled email")}
+		}
+	}
 	cli := m.presendIMAPClient()
 	folder := m.cfg.Folders.Scheduled
 	htmlSignature := ""
@@ -1139,6 +1159,11 @@ func (m Model) listmonkTriggers() []listmonk.Trigger {
 }
 
 func (m Model) sendListmonkCmd(subject, markdownBody string, listIDs []int, templateID int) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return func() tea.Msg {
+			return sendDoneMsg{err: readOnlyError("outbound campaign")}
+		}
+	}
 	cfg := m.cfg.Listmonk
 	delay := time.Duration(cfg.DelayMinutes) * time.Minute
 	if delay == 0 {
@@ -1212,6 +1237,11 @@ func (m Model) sendReaction(emojiIndex int) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) sendReactionCmd(smtpAcct config.AccountConfig, from, to, subject, bodyMarkdown string, originalEmail *imap.Email) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return func() tea.Msg {
+			return sendDoneMsg{err: readOnlyError("outbound reaction")}
+		}
+	}
 	h, p := splitAddr(smtpAcct.SMTP)
 	cfg := smtp.Config{
 		Host:        h,
@@ -1287,6 +1317,9 @@ func collectRcptTo(to, cc, bcc string) []string {
 
 // toggleSeenCmd flips the \Seen flag on an email and updates local state.
 func (m Model) toggleSeenCmd(e *imap.Email) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return readOnlyBatchCmd("mark read")
+	}
 	uid := e.UID
 	folder := e.Folder
 	newSeen := !e.Seen
@@ -1303,6 +1336,9 @@ func (m Model) toggleSeenCmd(e *imap.Email) tea.Cmd {
 
 // moveEmailCmd moves a single email to dst without updating screener lists.
 func (m Model) moveEmailCmd(e *imap.Email, dst string) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return readOnlyBatchCmd("IMAP move")
+	}
 	src := e.Folder
 	uid := e.UID
 	return func() tea.Msg {
@@ -1466,6 +1502,9 @@ func (m *Model) cancelDiscardConfirm() {
 
 // batchMoveCmd moves a slice of emails to dst, emitting batchDoneMsg.
 func (m Model) batchMoveCmd(emails []imap.Email, dst string) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return readOnlyBatchCmd("IMAP move")
+	}
 	type mv struct {
 		folder string
 		uid    uint32
@@ -1494,6 +1533,9 @@ func (m Model) batchMoveCmd(emails []imap.Email, dst string) tea.Cmd {
 // undoMovesCmd reverses a batch of moves by moving each email back to its
 // original folder. Non-fatal per-email errors are reported as a batchDoneMsg.
 func (m Model) undoMovesCmd(moves []undoMove) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return readOnlyBatchCmd("IMAP move")
+	}
 	cli := m.imapCli()
 	return func() tea.Msg {
 		for i, u := range moves {
@@ -1507,6 +1549,9 @@ func (m Model) undoMovesCmd(moves []undoMove) tea.Cmd {
 
 // batchScreenerCmd runs a screener action (I/O/F/P) on multiple emails.
 func (m Model) batchScreenerCmd(emails []imap.Email, action string) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return readOnlyBatchCmd("screener action")
+	}
 	sc := m.screener
 	cfg := m.cfg
 	type op struct {
@@ -1631,6 +1676,9 @@ func (m Model) batchScreenerCmd(emails []imap.Email, action string) tea.Cmd {
 
 // markAllSeenCmd marks every currently loaded email in the folder as \Seen.
 func (m Model) markAllSeenCmd() tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return readOnlyBatchCmd("mark read")
+	}
 	type op struct {
 		folder string
 		uid    uint32
@@ -1656,6 +1704,9 @@ func (m Model) markAllSeenCmd() tea.Cmd {
 
 // batchToggleSeenCmd toggles \Seen on multiple emails, emitting batchDoneMsg.
 func (m Model) batchToggleSeenCmd(emails []imap.Email) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return readOnlyBatchCmd("mark read")
+	}
 	type op struct {
 		folder   string
 		uid      uint32
@@ -1701,6 +1752,11 @@ func (m Model) classifyForScreen(emails []imap.Email) []autoScreenMove {
 // (Approve or Block on a "@domain" entry). Reloads the active folder so the
 // view reflects any senders that have just been reclassified.
 func (m Model) execDomainScreen(op *pendingDomainAction) (tea.Model, tea.Cmd) {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		m.status = readOnlyError("domain screener action").Error()
+		m.isError = true
+		return m, nil
+	}
 	var err error
 	switch op.action {
 	case "I":
@@ -1883,6 +1939,9 @@ func (m Model) resetToScreenSearchCmd() tea.Cmd {
 
 // resetToScreenMoveCmd bulk-moves all given UIDs from ToScreen back to Inbox.
 func (m Model) resetToScreenMoveCmd(uids []uint32) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return readOnlyBatchCmd("IMAP move")
+	}
 	src := m.cfg.Folders.ToScreen
 	dst := m.cfg.Folders.Inbox
 	return func() tea.Msg {
@@ -1897,6 +1956,11 @@ func (m Model) resetToScreenMoveCmd(uids []uint32) tea.Cmd {
 
 // ensureFoldersCmd creates any configured folders that don't exist yet.
 func (m Model) ensureFoldersCmd() tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return func() tea.Msg {
+			return ensureFoldersDoneMsg{err: readOnlyError("folder creation")}
+		}
+	}
 	f := m.cfg.Folders
 	folders := []string{
 		f.Inbox, f.Sent, f.Trash, f.Drafts,
@@ -1939,6 +2003,9 @@ func (m Model) emptyTrashSearchCmd() tea.Cmd {
 
 // deleteAllExecCmd permanently deletes all given UIDs from folder.
 func (m Model) deleteAllExecCmd(folder string, uids []uint32) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return readOnlyBatchCmd("IMAP expunge")
+	}
 	return func() tea.Msg {
 		return batchDoneMsg{err: m.imapCli().ExpungeAll(nil, folder, uids)}
 	}
@@ -2009,6 +2076,11 @@ func newReminderInput() textinput.Model {
 
 // setRemindersCmd parks every target email, emitting a single reminderDoneMsg.
 func (m Model) setRemindersCmd(targets []imap.Email, at time.Time) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return func() tea.Msg {
+			return reminderDoneMsg{err: readOnlyError("reminder")}
+		}
+	}
 	waiting, trash, inbox := m.cfg.Folders.Waiting, m.cfg.Folders.Trash, m.cfg.Folders.Inbox
 	if strings.EqualFold(waiting, inbox) {
 		return func() tea.Msg {
@@ -2032,6 +2104,11 @@ func (m Model) setRemindersCmd(targets []imap.Email, at time.Time) tea.Cmd {
 }
 
 func (m Model) setReminderCmd(e *imap.Email, at time.Time) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return func() tea.Msg {
+			return reminderDoneMsg{err: readOnlyError("reminder")}
+		}
+	}
 	var source imap.Email
 	if e != nil {
 		source = *e
@@ -2171,6 +2248,9 @@ func folderLabelToIMAP(label string, fc config.FoldersConfig) string {
 
 // bgExecAutoScreenCmd silently moves emails and returns bgScreenDoneMsg.
 func (m Model) bgExecAutoScreenCmd(moves []autoScreenMove) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return readOnlyBatchCmd("automatic screening")
+	}
 	src := m.cfg.Folders.Inbox
 	total := len(moves)
 	return func() tea.Msg {
@@ -2187,6 +2267,9 @@ func (m Model) bgExecAutoScreenCmd(moves []autoScreenMove) tea.Cmd {
 
 // execAutoScreenCmd performs the IMAP moves for a pre-approved list of moves.
 func (m Model) execAutoScreenCmd(moves []autoScreenMove) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return readOnlyBatchCmd("automatic screening")
+	}
 	src := m.cfg.Folders.Inbox
 	bp := m.bulkProgress
 	return func() tea.Msg {
@@ -2203,6 +2286,9 @@ func (m Model) execAutoScreenCmd(moves []autoScreenMove) tea.Cmd {
 }
 
 func (m Model) screenerCmd(e *imap.Email, action string) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return readOnlyBatchCmd("screener action")
+	}
 	folder := m.activeFolder()
 	return func() tea.Msg {
 		var dst string
@@ -2344,7 +2430,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Controlled by ui.auto_screen_on_load (default true).
 		// Skip when all screener lists are empty — otherwise every email would
 		// be moved to ToScreen on first run, confusing new users.
-		if msg.folder == m.cfg.Folders.Inbox && m.cfg.UI.AutoScreen() && !m.screener.IsEmpty() {
+		if msg.folder == m.cfg.Folders.Inbox && !m.cfg.ReadOnly && m.cfg.UI.AutoScreen() && !m.screener.IsEmpty() {
 			if err := m.validateScreenerSafety(); err != nil {
 				m.status = err.Error()
 				m.isError = true
@@ -2955,6 +3041,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clear it only on early-exit paths where no follow-up work is scheduled.
 		if msg.emails == nil {
 			// Error case (network down, etc.) - silently skip until next tick
+			m.bgSyncInProgress = false
+			return m, nil
+		}
+		if m.cfg.ReadOnly {
 			m.bgSyncInProgress = false
 			return m, nil
 		}
@@ -4028,6 +4118,11 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 		if len(targets) == 0 {
 			return m, nil
 		}
+		if m.cfg != nil && m.cfg.ReadOnly {
+			m.status = readOnlyError("IMAP move").Error()
+			m.isError = true
+			return m, nil
+		}
 		dstMap := map[string]string{
 			"i": m.cfg.Folders.Inbox,
 			"a": m.cfg.Folders.Archive,
@@ -4748,6 +4843,11 @@ func (m Model) calendarInvite() *imap.Attachment {
 // sendRSVPCmd builds an iMIP REPLY message and sends it to the event
 // organizer. The responder address is the active account's user email.
 func (m Model) sendRSVPCmd(status calendar.Status) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return func() tea.Msg {
+			return rsvpDoneMsg{status: status, err: readOnlyError("outbound calendar response")}
+		}
+	}
 	att := m.calendarInvite()
 	if att == nil {
 		m.status = "No calendar invite to RSVP to."
@@ -5556,6 +5656,11 @@ func (m Model) previewInBrowser() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) saveDraftCmd(imapCli *imap.Client, from, to, cc, bcc, subject, body string, attachments []string) tea.Cmd {
+	if m.cfg != nil && m.cfg.ReadOnly {
+		return func() tea.Msg {
+			return saveDraftDoneMsg{err: readOnlyError("draft save")}
+		}
+	}
 	folder := m.cfg.Folders.Drafts
 	return func() tea.Msg {
 		raw, err := smtp.BuildDraftMessage(from, to, cc, bcc, subject, body, attachments)

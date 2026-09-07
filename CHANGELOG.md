@@ -2,6 +2,16 @@
 
 # 2026-09-07
 
+- **External XOAUTH2 token helpers and read-only mode** — accounts may use
+  `oauth2_token_command` to obtain an in-memory access token from a fixed argv
+  helper without native OAuth client/issuer, keyring, or token-file settings.
+  Root-level `read_only = true` selects IMAP `EXAMINE`, blocks all IMAP mutations
+  and outbound paths before network access, suppresses first-run folder creation,
+  and refuses `--headless`. Where: `internal/config`, `internal/oauth2`,
+  `internal/imap`, `internal/ui`, `cmd/neomd`. Tests: `TestCommandTokenSource`,
+  `TestLoadOAuth2TokenCommandWithoutNativeOAuthSettings`,
+  `TestReadOnlyBlocksMutationsBeforeDial`, `TestReadOnlyBlocksPR5ActionsBeforeNetwork`.
+
 - **GPU deployment follows GitHub Actions** — merges to `main` now build and install
   neomd on the self-hosted GPU runner, preserving the previous binary as `neomd.prev`.
   Manual rebuilds on GPU are no longer part of the deployment path. Where:

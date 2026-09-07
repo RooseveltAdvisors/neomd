@@ -41,6 +41,30 @@ func TestXOAuth2Client_Next(t *testing.T) {
 	}
 }
 
+func TestCommandTokenSource(t *testing.T) {
+	ts := CommandTokenSource([]string{"sh", "-c", "printf 'fake-access-token\\n'"})
+	token, err := ts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "fake-access-token" {
+		t.Fatalf("token = %q, want trimmed command output", token)
+	}
+}
+
+func TestCommandTokenSourceRejectsEmptyOutput(t *testing.T) {
+	ts := CommandTokenSource([]string{"sh", "-c", "exit 0"})
+	if _, err := ts(); err == nil {
+		t.Fatal("expected empty token command output to fail")
+	}
+}
+
+func TestCommandTokenSourceRejectsEmptyArgv(t *testing.T) {
+	if _, err := CommandTokenSource(nil)(); err == nil {
+		t.Fatal("expected empty token command argv to fail")
+	}
+}
+
 // --- Token persistence ---
 
 func TestSaveAndLoadToken(t *testing.T) {

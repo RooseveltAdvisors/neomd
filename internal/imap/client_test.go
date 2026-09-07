@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"errors"
 	"math/big"
 	"net"
 	"strings"
@@ -930,5 +931,51 @@ func TestResetMailboxSelection(t *testing.T) {
 
 	if c.selectedMailbox != "" {
 		t.Errorf("ResetMailboxSelection() did not clear selectedMailbox: got %q, want empty string", c.selectedMailbox)
+	}
+}
+
+func TestReadOnlyBlocksMutationsBeforeDial(t *testing.T) {
+	c := New(Config{
+		Host:     "imap.example.com",
+		Port:     "993",
+		TLS:      true,
+		ReadOnly: true,
+	})
+
+	checks := []struct {
+		name string
+		run  func() error
+	}{
+		{"move", func() error { _, err := c.MoveMessage(nil, "INBOX", 1, "Trash"); return err }},
+		{"create", func() error { _, err := c.EnsureFolders(nil, []string{"Archive"}); return err }},
+		{"expunge", func() error { return c.ExpungeAll(nil, "Trash", []uint32{1}) }},
+		{"mark seen", func() error { return c.MarkSeen(nil, "INBOX", 1) }},
+		{"mark unseen", func() error { return c.MarkUnseen(nil, "INBOX", 1) }},
+		{"mark answered", func() error { return c.MarkAnswered(nil, "INBOX", 1) }},
+		{"mark flagged", func() error { return c.MarkFlagged(nil, "INBOX", 1) }},
+		{"save sent", func() error { return c.SaveSent(nil, "Sent", []byte("message")) }},
+		{"save draft", func() error { return c.SaveDraft(nil, "Drafts", []byte("message")) }},
+		{"park reminder", func() error { return c.ParkReminder(nil, Email{}, nil, "Waiting", "Trash", time.Now()) }},
+		{"save reminder", func() error { return c.SaveReminder(nil, "Waiting", nil) }},
+	}
+
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			if err := check.run(); !errors.Is(err, ErrReadOnly) {
+				t.Fatalf("error = %v, want ErrReadOnly", err)
+			}
+		})
+	}
+	if c.conn != nil {
+		t.Fatal("read-only mutation guard dialed IMAP")
+	}
+}
+
+func TestReadOnlyMailboxSelectionUsesExamine(t *testing.T) {
+	if !mailboxSelectOptions(true).ReadOnly {
+		t.Fatal("read-only client must request IMAP EXAMINE")
+	}
+	if mailboxSelectOptions(false).ReadOnly {
+		t.Fatal("ordinary client must retain IMAP SELECT behavior")
 	}
 }

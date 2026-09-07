@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
 	"testing"
+
+	"github.com/sspaeti/neomd/internal/config"
+	goIMAP "github.com/sspaeti/neomd/internal/imap"
 )
 
 func TestInferIMAPSecurity(t *testing.T) {
@@ -76,6 +80,30 @@ func TestInferIMAPSecurity(t *testing.T) {
 				t.Errorf("%s: got STARTTLS=%v, want STARTTLS=%v", tt.description, gotSTARTTLS, tt.wantSTARTTLS)
 			}
 		})
+	}
+}
+
+func TestConfigureIMAPAuthUsesCommandTokenWithoutNativeOAuth(t *testing.T) {
+	acc := config.AccountConfig{
+		Name:               "Arcs",
+		User:               "jon@example.com",
+		AuthType:           "oauth2",
+		OAuth2TokenCommand: []string{"/bin/echo", "fake-token"},
+	}
+	imapCfg := goIMAP.Config{Host: "imap.example.com", Port: "993", User: acc.User, TLS: true}
+	if err := configureIMAPAuth(context.Background(), acc, &imapCfg); err != nil {
+		t.Fatalf("configureIMAPAuth() = %v", err)
+	}
+	client := goIMAP.New(imapCfg)
+	if client.TokenSource() == nil {
+		t.Fatal("command-sourced OAuth2 account did not select a token source")
+	}
+	token, err := client.TokenSource()()
+	if err != nil {
+		t.Fatalf("command token source: %v", err)
+	}
+	if token != "fake-token" {
+		t.Fatalf("token = %q, want fake-token", token)
 	}
 }
 

@@ -93,6 +93,20 @@ When you add a new field or path to outgoing messages, extend the round-trip sui
 the same commit — a field that isn't parse-back-asserted is a field that can silently
 break.
 
+## Authentication & Safety Modes
+
+- **External OAuth2 helper** — `[[accounts]].oauth2_token_command` is a fixed argv
+  token source (`internal/oauth2`, wired in `cmd/neomd/main.go`): only a leading
+  `~/` in argv[0] expands, stderr is discarded, empty stdout fails, and the token
+  remains in memory; it bypasses native OAuth client/URL/keyring/token-file setup.
+  Test: `TestConfigureIMAPAuthUsesCommandTokenWithoutNativeOAuth`.
+- **Read-only profile** — root `read_only` makes IMAP selection use EXAMINE, blocks
+  every mutating IMAP method and UI outbound/action path before network access,
+  suppresses first-run folder creation, blocks the mutating `screen` CLI, and
+  refuses `--headless` (`internal/imap/client.go`, `internal/ui/model.go`,
+  `cmd/neomd/main.go`). Tests: `TestReadOnlyBlocksMutationsBeforeDial`,
+  `TestReadOnlyBlocksPR5ActionsBeforeNetwork`.
+
 **Hardening assertions may only be extended, never weakened.** If a hardening test
 fails after a code change, the default assumption is that the CODE broke a
 user-visible contract — investigate the code first. Relaxing, deleting, or rewriting

@@ -52,6 +52,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "neomd: config error: %v\n", err)
 		os.Exit(1)
 	}
+	if *headless && cfg.ReadOnly {
+		fmt.Fprintln(os.Stderr, "neomd: --headless is disabled by read_only mode")
+		os.Exit(1)
+	}
 
 	accounts := cfg.ActiveAccounts()
 	if len(accounts) == 0 {
@@ -79,40 +83,11 @@ func main() {
 			STARTTLS:    useSTARTTLS,
 			TLSCertFile: acc.TLSCertFile,
 		}
-		if acc.IsOAuth2() {
-			if acc.OAuth2ClientID == "" {
-				fmt.Fprintf(os.Stderr, "neomd: account %q: oauth2_client_id is required\n", acc.Name)
-				os.Exit(1)
-			}
-			if acc.OAuth2IssuerURL == "" && (acc.OAuth2AuthURL == "" || acc.OAuth2TokenURL == "") {
-				fmt.Fprintf(os.Stderr, "neomd: account %q: set oauth2_issuer_url or both oauth2_auth_url and oauth2_token_url\n", acc.Name)
-				os.Exit(1)
-			}
-			tokenFile, err := config.TokenFilePath(acc.Name)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "neomd: account %q: %v\n", acc.Name, err)
-				os.Exit(1)
-			}
-			ts, err := oauth2.TokenSource(ctx, oauth2.Config{
-				ClientID:     acc.OAuth2ClientID,
-				ClientSecret: acc.OAuth2ClientSecret,
-				IssuerURL:    acc.OAuth2IssuerURL,
-				AuthURL:      acc.OAuth2AuthURL,
-				TokenURL:     acc.OAuth2TokenURL,
-				Scopes:       acc.OAuth2Scopes,
-				RedirectPort: acc.OAuth2RedirectPort,
-				TokenFile:    tokenFile,
-				AccountName:  acc.Name, // enables keyring storage; TokenFile remains as headless fallback
-			})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "neomd: account %q: oauth2: %v\n", acc.Name, err)
-				os.Exit(1)
-			}
-			imapCfg.TokenSource = ts
-		} else if acc.User == "" || acc.Password == "" {
-			fmt.Fprintf(os.Stderr, "neomd: account %q: user/password not set\n", acc.Name)
+		if err := configureIMAPAuth(ctx, acc, &imapCfg); err != nil {
+			fmt.Fprintf(os.Stderr, "neomd: account %q: %v\n", acc.Name, err)
 			os.Exit(1)
 		}
+		imapCfg.ReadOnly = cfg.ReadOnly
 		imapClients = append(imapClients, goIMAP.New(imapCfg))
 	}
 	defer func() {
@@ -182,6 +157,10 @@ func main() {
 	// sender from an external widget: screener list update + sender-level
 	// ToScreen move, same semantics as the TUI's I/O/F/P keys.
 	if flag.NArg() > 0 && flag.Arg(0) == "screen" {
+		if cfg.ReadOnly {
+			writeScreenJSON(os.Stdout, screenOutput{Error: "neomd read-only mode: screener action blocked"})
+			os.Exit(0)
+		}
 		var screenCli *goIMAP.Client
 		for _, c := range imapClients {
 			if c != nil {
@@ -238,6 +217,45 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+func configureIMAPAuth(ctx context.Context, acc config.AccountConfig, imapCfg *goIMAP.Config) error {
+	if len(acc.OAuth2TokenCommand) > 0 {
+		imapCfg.TokenSource = oauth2.CommandTokenSource(acc.OAuth2TokenCommand)
+		return nil
+	}
+	if acc.IsOAuth2() {
+		if acc.OAuth2ClientID == "" {
+			return fmt.Errorf("oauth2_client_id is required")
+		}
+		if acc.OAuth2IssuerURL == "" && (acc.OAuth2AuthURL == "" || acc.OAuth2TokenURL == "") {
+			return fmt.Errorf("set oauth2_issuer_url or both oauth2_auth_url and oauth2_token_url")
+		}
+		tokenFile, err := config.TokenFilePath(acc.Name)
+		if err != nil {
+			return err
+		}
+		ts, err := oauth2.TokenSource(ctx, oauth2.Config{
+			ClientID:     acc.OAuth2ClientID,
+			ClientSecret: acc.OAuth2ClientSecret,
+			IssuerURL:    acc.OAuth2IssuerURL,
+			AuthURL:      acc.OAuth2AuthURL,
+			TokenURL:     acc.OAuth2TokenURL,
+			Scopes:       acc.OAuth2Scopes,
+			RedirectPort: acc.OAuth2RedirectPort,
+			TokenFile:    tokenFile,
+			AccountName:  acc.Name,
+		})
+		if err != nil {
+			return fmt.Errorf("oauth2: %w", err)
+		}
+		imapCfg.TokenSource = ts
+		return nil
+	}
+	if acc.User == "" || acc.Password == "" {
+		return fmt.Errorf("user/password not set")
+	}
+	return nil
 }
 
 func splitAddr(addr string) (host, port string) {

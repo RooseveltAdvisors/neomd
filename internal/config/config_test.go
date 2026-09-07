@@ -266,6 +266,51 @@ func TestLoad_MissingConfigCreatesDefault(t *testing.T) {
 	}
 }
 
+func TestLoadOAuth2TokenCommandWithoutNativeOAuthSettings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	listDir := filepath.Join(dir, "lists")
+	contents := `read_only = true
+
+[[accounts]]
+name = "Arcs"
+imap = "imap.example.com:993"
+smtp = "smtp.example.com:587"
+user = "jon@example.com"
+password = "keyring"
+auth_type = "oauth2"
+oauth2_token_command = ["/bin/echo", "fake-token"]
+
+[screener]
+screened_in = "` + filepath.Join(listDir, "screened_in.txt") + `"
+screened_out = "` + filepath.Join(listDir, "screened_out.txt") + `"
+feed = "` + filepath.Join(listDir, "feed.txt") + `"
+papertrail = "` + filepath.Join(listDir, "papertrail.txt") + `"
+spam = "` + filepath.Join(listDir, "spam.txt") + `"
+notify = "` + filepath.Join(listDir, "notify.txt") + `"
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() rejected command-sourced OAuth2 config: %v", err)
+	}
+	if !cfg.ReadOnly {
+		t.Fatal("read_only = true was not parsed")
+	}
+	if len(cfg.Accounts) != 1 || len(cfg.Accounts[0].OAuth2TokenCommand) != 2 {
+		t.Fatalf("OAuth2TokenCommand = %#v, want two argv entries", cfg.Accounts[0].OAuth2TokenCommand)
+	}
+	if cfg.Accounts[0].OAuth2ClientID != "" || cfg.Accounts[0].OAuth2IssuerURL != "" {
+		t.Fatal("fixture unexpectedly supplied native OAuth settings")
+	}
+	if cfg.Accounts[0].Password != keyringSentinel {
+		t.Fatalf("command-sourced account password = %q, want untouched keyring sentinel", cfg.Accounts[0].Password)
+	}
+}
+
 func TestWriteDefault_FilePermissions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")

@@ -275,6 +275,15 @@ spam         = "~/.config/neomd/lists/spam.txt"
 
 Use an app-specific password (Gmail, Fastmail, Hostpoint, etc.) rather than your main account password. The `password` and `user` fields support environment variable expansion (`$VAR` or `${VAR}`) so you can avoid storing secrets in the config file.
 
+For an existing external XOAUTH2 helper, set `auth_type = "oauth2"` and provide
+`oauth2_token_command = ["~/bin/oauth-token.sh"]` in the account. The fixed argv
+command's trimmed stdout is used as the in-memory access token; only a leading
+`~/` in its executable is expanded, stderr is discarded, and native OAuth client,
+issuer/URL, keyring, and token-file settings are not used. Set root-level
+`read_only = true` to browse with IMAP `EXAMINE` while refusing every IMAP
+mutation and outbound delivery; first-run folder creation and `--headless` are
+also disabled.
+
 For the full configuration reference including multiple accounts, OAuth2 authentication, `[[senders]]` aliases, folder customization, signatures, and UI options, see [docs/content/docs/configuration](docs/content/docs/configuration/_index.md).
 
 **Provider-specific guides:**
