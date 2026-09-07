@@ -29,6 +29,9 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Capture build version
+        run: echo "EXPECTED_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
+
       - name: Build
         run: make build
 
@@ -39,9 +42,8 @@ jobs:
 
       - name: Verify deployed binary
         run: |
-          expected="$(git describe --tags --always --dirty)"
           actual="$(/home/jon/.local/bin/neomd --version)"
-          test "$actual" = "neomd $expected" || {
-            echo "version mismatch: expected 'neomd $expected', got '$actual'" >&2
+          test "$actual" = "neomd $EXPECTED_VERSION" || {
+            echo "version mismatch: expected 'neomd $EXPECTED_VERSION', got '$actual'" >&2
             exit 1
           }
