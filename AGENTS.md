@@ -366,6 +366,18 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   break comma-splitting fall back to the bare address. Tests:
   `TestFormatEnvelopeAddr`, `TestExpandSearchQueries`,
   `TestContactNamesForResolvesBareAddresses`.
+
+- **Universal `/` search** — `internal/search` indexes every configured account and
+  folder using decoded envelope/body text fetched with `BODY.PEEK`; sender/recipient
+  names and addresses, subject, body terms, prefixes, small typos, relevance, and
+  explicit field/date/folder filters are supported. Missing folders/body fetches,
+  cancellation, and indexing scope are visible; an incomplete index must not show a
+  false zero. Search results retain their owning account so opening and actions use
+  the correct IMAP client. Attachments are intentionally not retained or searched.
+  Tests: `internal/search/index_test.go`,
+  `TestUniversalSearchInputIsCancelable`,
+  `TestUniversalSearchResultShowsPartialStateAndKeepsResultActionable`,
+  `TestSearchResultUsesOwningAccountForMessageClient`.
 - **The user's `[contacts]` file is read-only** — `contacts.MergeFile` only reads;
   neomd persists exclusively to its own cache (`config.ContactsCachePath()`), so the
   cache can be deleted anytime and rebuilds from harvesting + the file. The picker

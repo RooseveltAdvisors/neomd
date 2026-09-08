@@ -1,5 +1,12 @@
 # Changelog
 
+- **Universal full-text `/` search** — `/` now searches every configured account and
+  folder over sender/recipient names and addresses, subject, and decoded plain/HTML
+  body using a private disposable index. Prefixes, small typos, relevance, and the
+  existing explicit filters compose; partial scope, cancellation, and fetch failures
+  remain visible, and search results preserve their owning account for opening/actions.
+  Attachments/OCR are not searched. Regression coverage: `internal/search/index_test.go`.
+
 # 2026-09-08
 
 - **Reminders are resilient and show their fire time** — header fetches retry

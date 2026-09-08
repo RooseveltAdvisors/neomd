@@ -1,17 +1,148 @@
 package ui
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sspaeti/neomd/internal/config"
 	"github.com/sspaeti/neomd/internal/contacts"
 	"github.com/sspaeti/neomd/internal/imap"
+	fulltext "github.com/sspaeti/neomd/internal/search"
 )
+
+type universalSearchResultMsg struct {
+	emails          []imap.Email
+	query           string
+	indexed, bodies int
+	total           int
+	failedScopes    int
+	failedBodies    int
+	canceled        bool
+}
+
+// searchFolders is the explicit, configured scope for universal search. Empty
+// paths are omitted and duplicate aliases are visited once.
+func (m Model) searchFolders() []string {
+	if m.cfg == nil {
+		return nil
+	}
+	f := m.cfg.Folders
+	paths := []string{f.Inbox, f.Sent, f.Trash, f.Drafts, f.ToScreen, f.Feed, f.PaperTrail, f.ScreenedOut, f.Archive, f.Waiting, f.Scheduled, f.Someday, f.Spam, f.Work}
+	seen := make(map[string]bool, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path != "" && !seen[path] {
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func (m Model) canUniversalSearch() bool {
+	return m.cfg != nil && m.searchIndex != nil && len(m.clients) > 0
+}
+
+func (m Model) universalSearchCmd(query string, ctx context.Context) tea.Cmd {
+	index := m.searchIndex
+	accounts := append([]config.AccountConfig(nil), m.accounts...)
+	clients := append([]*imap.Client(nil), m.clients...)
+	folders := m.searchFolders()
+	aliases := m.folderAliases()
+	return func() tea.Msg {
+		var total, indexed, bodies, failedScopes, failedBodies int
+		present := make(map[string]struct{})
+		successfulScopes := make(map[string]struct{})
+		for ai, account := range accounts {
+			if ctx.Err() != nil {
+				return universalSearchResultMsg{query: query, indexed: indexed, bodies: bodies, total: total, failedScopes: failedScopes, failedBodies: failedBodies, canceled: true}
+			}
+			if ai >= len(clients) || clients[ai] == nil {
+				continue
+			}
+			cli := clients[ai]
+			for _, folder := range folders {
+				if ctx.Err() != nil {
+					return universalSearchResultMsg{query: query, indexed: indexed, bodies: bodies, total: total, failedScopes: failedScopes, failedBodies: failedBodies, canceled: true}
+				}
+				scopeKey := account.Name + "\x00" + folder
+				headers, err := cli.FetchHeaders(ctx, folder, 0)
+				if err != nil {
+					log.Printf("universal search scope failure: %v", err)
+					failedScopes++
+					continue
+				}
+				successfulScopes[scopeKey] = struct{}{}
+				for _, e := range headers {
+					e.Account = account.Name
+					present[fulltext.Key(e)] = struct{}{}
+					total++
+					contactText := m.contactNamesFor(e.From, e.To, e.CC, e.BCC)
+					index.UpsertHeader(e, contactText)
+					indexed++
+					if !index.NeedsBody(e) {
+						continue
+					}
+					plain, html, _, _, _, _, fetchErr := cli.FetchBody(ctx, folder, e.UID)
+					if fetchErr != nil {
+						log.Printf("universal search body failure: %v", fetchErr)
+						failedBodies++
+						continue
+					}
+					index.UpsertBody(e, contactText, plain, html)
+					bodies++
+				}
+			}
+		}
+		index.RemoveMissing(present, successfulScopes)
+		bodies = index.Stats().Bodies
+		matches := index.Search(query)
+		fq := parseFilterQuery(query, time.Now(), aliases)
+		filtered := matches[:0]
+		for _, e := range matches {
+			if fq.matchesEmail(e) {
+				filtered = append(filtered, e)
+			}
+		}
+		return universalSearchResultMsg{emails: filtered, query: query, indexed: indexed, bodies: bodies, total: total, failedScopes: failedScopes, failedBodies: failedBodies}
+	}
+}
+
+func (m *Model) handleUniversalSearchResult(msg universalSearchResultMsg) (tea.Model, tea.Cmd) {
+	m.loading = false
+	m.universalSearchActive = false
+	m.universalSearchRunning = false
+	m.searchCancel = nil
+	if msg.canceled {
+		m.universalSearchResults = false
+		m.status = "Search canceled; index remains partial."
+		return m, nil
+	}
+	m.universalSearchResults = true
+	m.universalSearchText = msg.query
+	m.filterText = msg.query
+	m.offTabFolder = "Search"
+	m.emails = msg.emails
+	m.markedUIDs = make(map[uint32]bool)
+	var state string
+	if msg.failedScopes > 0 || msg.failedBodies > 0 {
+		state = fmt.Sprintf(" · partial (%d folder failures, %d body failures)", msg.failedScopes, msg.failedBodies)
+	}
+	m.status = fmt.Sprintf("Universal search: %d result(s), %d bodies indexed across %d envelopes%s · attachments not searched", len(msg.emails), msg.bodies, msg.total, state)
+	if len(msg.emails) == 0 && (msg.failedScopes > 0 || msg.failedBodies > 0) {
+		m.status = fmt.Sprintf("No matches in partial index: %d bodies indexed across %d envelopes · %d folder failures, %d body failures", msg.bodies, msg.total, msg.failedScopes, msg.failedBodies)
+	}
+	return m, m.sortEmails()
+}
 
 // ── IMAP server-side search ──────────────────────────────────────────────
 //
-// Local filter (/) searches loaded emails in the current folder in-memory.
+// Universal filter (/) searches every configured account/folder with the
+// private decoded-text index below.
 //
 // IMAP search (space + /) queries ALL emails across ALL folders on the server
 // using IMAP SEARCH. Results are displayed in a temporary "Search" tab
