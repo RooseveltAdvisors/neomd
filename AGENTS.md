@@ -340,9 +340,21 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   the original subject is never mutated (reply/forward/thread logic uses the real RFC
   subject). Tests: `TestRowFitsTerminalWidth`, `TestDisplaySafe`.
 - **Indicator columns** — unread, `·` replied, `°` spy pixel, `│`/`╰` thread connectors.
-- **Undo (`u`)** — reverses the last move/delete using UIDPLUS destination UIDs captured
-  on move; batch operations preserve partial-undo info on failure. Integration test:
+- **Undo (`u`) is universal** — the journal (`undoStack []undoAction`, `pushUndo` in
+  `internal/ui/model.go`) records every reversible effect of the most recent action:
+  IMAP moves (archive, screener I/O/F/P/$, dd/# trash, M-chords, move picker) AND
+  `\Seen` toggles (`n`, ctrl+n mark-all-read). `u` pops LIFO and reverses the exact
+  action type via `undoActionCmd`; server-side failure surfaces in the status line.
+  Screener classification lists are intentionally kept on undo (mail moves back, sender
+  lists don't). Permanent `X` delete is never journaled. Tests: `TestUndoJournal*`,
+  `TestUndoNothingToDo`, `TestUndoRefusesInReadOnly`, integration
   `TestIntegration_IMAPMoveAndUndo`.
+- **Quick peek (`<space><space>`)** — leader+space toggles a preview pane (From/To/
+  Subject/body) of the highlighted email without leaving the inbox list; `esc` or the
+  chord again closes it, the cursor never moves, j/k re-targets the pane, and the body
+  is fetched with BODY.PEEK (never sets `\Seen`). The pane is exactly `peekPaneHeight`
+  lines so the status bar never overflows. Tests: `TestPeek*` in
+  `internal/ui/undo_peek_test.go`.
 
 - **Search matches contact names** — `internal/contacts` harvests `Name <addr>` pairs
   from loaded headers into `~/.cache/neomd/contacts`; the local `/` filter appends
@@ -424,11 +436,13 @@ layer — do not rebind them, and do not let a new binding shadow one.
   inbox (`updateInbox`) and the reader (`updateReader`) in `internal/ui/model.go`. The
   pre-5.0 keys still work as aliases (`A` archive, `H` remind, `c` compose).
   Test: `TestEmailBindingMap`, `TestReaderArchiveAndRemindKeys`.
-- **Case convention is LOWERCASE for email actions.** `i`/`o`/`p`/`b`/`t` remain the
-  primary action keys, while `F` stays uppercase because `f` is forward. Vim-shaped
-  selection uses `x/m`, `V`, and `ctrl+a`; `dd/#` trashes; `u` undoes; `U/z` filters
-  unread; `ctrl+d/u` are half-page movement. The final map and dropped shortcuts live
-  in `docs/keys.md`; `internal/ui/keys.go` drives the overlay and generated docs.
+- **Mailbox ACTION keys are UPPERCASE.** `I` approve, `O` screen-out, `P` papertrail,
+  `B` work, `F` feed (uppercase because `f` is forward), `$` spam; the former lowercase
+  `i`/`p`/`b` no longer fire (pinned by `TestLowercaseMailboxActionsAreDead`). The four
+  core keys stay lowercase by contract, as do `o` open, `t` thread, `n` read toggle.
+  Vim-shaped selection uses `x/m`, `V`, and `ctrl+a`; `dd/#` trashes; `u` undoes; `U/z`
+  filters unread; `ctrl+d/u` are half-page movement. The final map and dropped shortcuts
+  live in `docs/keys.md`; `internal/ui/keys.go` drives the overlay and generated docs.
 - **`h` no longer exits the reader** — `q`/`esc` do. Reverting that would shadow remind.
 - **Reader `e` moved the old $EDITOR view to `<space>e`.**
 - **Superhuman/vim shortcut map is user-visible contract** — `internal/ui/keys.go`,

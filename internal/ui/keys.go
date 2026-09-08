@@ -8,28 +8,31 @@ type HelpSection struct {
 }
 
 // HelpSections is the single source of truth for the user-facing shortcut map.
-// The map deliberately keeps the captain's lowercase actions while borrowing
-// vim's movement, operators, counts, and command-line habits. Compatibility
-// aliases are called out inline so the primary map remains easy to scan.
+// Mailbox action keys are uppercase (I/O/P/F/B) while vim's movement,
+// operators, counts, and command-line habits stay lowercase. The four core
+// keys (e archive, h remind, s compose, ; snippets) remain lowercase by
+// contract. Compatibility aliases are called out inline so the primary map
+// remains easy to scan.
 var HelpSections = []HelpSection{
 	{"Actions", [][2]string{
 		{"e", "mark done / archive (alias A)"},
 		{"E", "mark not done / move back to Inbox"},
 		{"h", "remind me (quick picks / natural language)"},
-		{"u", "undo the last move or delete"},
+		{"u", "undo the last action (move, delete, read state)"},
 		{"U / z", "toggle unread-only view"},
 		{"n", "mark read / unread"},
 		{"N", "jump to next unread"},
-		{"i", "approve sender / screened-in"},
+		{"I", "approve sender / screened-in"},
 		{"o", "open the selected email"},
 		{"O", "screen out in the inbox; expand all in a conversation"},
-		{"p", "mark as PaperTrail"},
-		{"b", "move to Work"},
+		{"P", "mark as PaperTrail"},
+		{"B", "move to Work"},
 		{"ctrl+e", "open the emoji reaction picker"},
 		{"@", "show every email from the selected sender across folders"},
 		{"! / $", "mark spam"},
 		{"# / dd", "move to Trash"},
 		{"F", "mark as Feed (uppercase: f is forward)"},
+		{"<space><space>", "toggle the quick peek preview of the highlighted email"},
 		{"S", "dry-run screen"},
 		{"R", "reload the current folder"},
 	}},

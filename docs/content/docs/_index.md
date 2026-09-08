@@ -325,14 +325,14 @@ By default, neomd loads and auto-screens only the newest `200` Inbox emails (`[u
 
 **Getting started with the screener:**
 
-1. From your Inbox, pick an email and press `i` (screen **in**) to approve the sender, or `o` (screen **out**) to block them. This creates your first screener list entry.
+1. From your Inbox, pick an email and press `I` (screen **in**) to approve the sender, or `O` (screen **out**) to block them. This creates your first screener list entry.
 2. Once you've classified at least one sender, auto-screening activates on every Inbox load — new emails from known senders are sorted automatically.
 3. Unknown senders land in the `ToScreen` tab. Jump there with `gk` (or `Tab`, use `L` or click the tab) and classify them:
-   - `i` screen **in** — sender stays in Inbox forever
-   - `o` screen **out** — sender never reaches Inbox again
+   - `I` screen **in** — sender stays in Inbox forever
+   - `O` screen **out** — sender never reaches Inbox again
    - `F` **feed** — newsletters go to the Feed tab
    - `P` **papertrail** — receipts go to the PaperTrail tab
-4. Use `m` to mark multiple emails, then `i` to batch-approve them all at once. From the `ToScreen` folder, approving/blocking a single unmarked message now applies to all currently queued mail from that sender.
+4. Use `m` to mark multiple emails, then `I` to batch-approve them all at once. From the `ToScreen` folder, approving/blocking a single unmarked message now applies to all currently queued mail from that sender.
 
 **The best part:** all classifications are saved permanently in your screener lists (`screened_in.txt`, `screened_out.txt`, etc.). An email address screened in will automatically go to your Inbox, and any email screened out will never be in your Inbox again.
 

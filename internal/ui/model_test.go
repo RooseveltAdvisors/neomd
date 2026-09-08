@@ -53,7 +53,7 @@ func TestReadOnlyBlocksPR5ActionsBeforeNetwork(t *testing.T) {
 }
 
 func TestReadOnlyBlocksExpandedMutatingBindingsBeforeNetwork(t *testing.T) {
-	for _, key := range []string{"E", "#", "!", "y"} {
+	for _, key := range []string{"E", "I", "O", "P", "B", "#", "!", "y"} {
 		t.Run(key, func(t *testing.T) {
 			m := keysTestModel(t, 2)
 			m.cfg.ReadOnly = true

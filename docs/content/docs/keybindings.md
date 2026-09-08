@@ -19,20 +19,21 @@ To update both the help overlay and this document at once, edit that file and ru
 | `e` | mark done / archive (alias A) |
 | `E` | mark not done / move back to Inbox |
 | `h` | remind me (quick picks / natural language) |
-| `u` | undo the last move or delete |
+| `u` | undo the last action (move, delete, read state) |
 | `U / z` | toggle unread-only view |
 | `n` | mark read / unread |
 | `N` | jump to next unread |
-| `i` | approve sender / screened-in |
+| `I` | approve sender / screened-in |
 | `o` | open the selected email |
 | `O` | screen out in the inbox; expand all in a conversation |
-| `p` | mark as PaperTrail |
-| `b` | move to Work |
+| `P` | mark as PaperTrail |
+| `B` | move to Work |
 | `ctrl+e` | open the emoji reaction picker |
 | `@` | show every email from the selected sender across folders |
 | `! / $` | mark spam |
 | `# / dd` | move to Trash |
 | `F` | mark as Feed (uppercase: f is forward) |
+| `<space><space>` | toggle the quick peek preview of the highlighted email |
 | `S` | dry-run screen |
 | `R` | reload the current folder |
 

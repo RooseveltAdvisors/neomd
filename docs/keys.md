@@ -16,6 +16,7 @@ example, `in 3 days`, `friday 2pm`, or `next week`).
 | S star | dropped | dropped | neomd has no star state. |
 | X select conversation | `x` | vim-adapted | x toggles the current selection; V extends it visually. |
 | neomd sender view | `@` | same | Preserves cross-folder sender search while V is visual-select. |
+| neomd quick peek | `<space><space>` | neomd-native | Leader+space toggles a preview pane (subject, headers, body) without leaving the inbox list; esc closes it and the cursor stays put. |
 | neomd screen-out action | `O` in the inbox | vim-adapted | O expands conversations in reader context; inbox keeps its screener action. |
 | U read or unread | `n` | vim-adapted | n is the established read/unread action. |
 | # trash | `dd` / `#` | vim-adapted | Vim delete operator plus the Superhuman alias. |
@@ -37,7 +38,7 @@ example, `in 3 days`, `friday 2pm`, or `next week`).
 | V move | `v` | vim-adapted | v opens the same folder/label picker. |
 | shift-U unread filter | `U` / `z` | same | Both the requested filter and the existing zoom alias work. |
 | shift-S starred filter | dropped | dropped | No star state exists. |
-| shift-I important filter | `i` | vim-adapted | Screened-in is the closest available priority filter. |
+| shift-I important filter | `I` | vim-adapted | Screened-in is the closest available priority filter; mailbox action keys are uppercase. |
 | shift-R no-reply filter | dropped | dropped | No reliable no-reply classification exists. |
 | G then I Inbox | `gi` | same | Required folder goto. |
 | G then O Other | `go` | same | Maps Other to ScreenedOut. |
