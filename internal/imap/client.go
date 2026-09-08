@@ -413,14 +413,17 @@ func (c *Client) FetchHeadersBefore(ctx context.Context, folder string, beforeUI
 
 		sendAtSection := sendAtHeaderSection()
 		reminderSection := reminderHeaderSection()
-		msgs, err := conn.Fetch(fetchSet, &imap.FetchOptions{
+		fetchOpts := &imap.FetchOptions{
 			UID:           true,
 			Flags:         true,
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
 			BodySection:   []*imap.FetchItemBodySection{sendAtSection, reminderSection},
-		}).Collect()
+		}
+		msgs, err := collectHeaderFetch(func(opts *imap.FetchOptions) ([]*imapclient.FetchMessageBuffer, error) {
+			return conn.Fetch(fetchSet, opts).Collect()
+		}, fetchOpts)
 		if err != nil {
 			return fmt.Errorf("FETCH headers: %w", err)
 		}
@@ -531,6 +534,10 @@ func (c *Client) SearchUIDs(ctx context.Context, folder string) ([]uint32, error
 // mailbox is selected read-only when the client was configured with ReadOnly;
 // SEARCH itself never changes message flags.
 func (c *Client) SearchMessageIDs(ctx context.Context, folder, id string) ([]uint32, error) {
+	return c.searchHeader(ctx, folder, "Message-ID", id)
+}
+
+func (c *Client) searchHeader(ctx context.Context, folder, key, value string) ([]uint32, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -541,10 +548,10 @@ func (c *Client) SearchMessageIDs(ctx context.Context, folder, id string) ([]uin
 			return err
 		}
 		searchData, err := conn.UIDSearch(&imap.SearchCriteria{
-			Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: id}},
+			Header: []imap.SearchCriteriaHeaderField{{Key: key, Value: value}},
 		}, nil).Wait()
 		if err != nil {
-			return fmt.Errorf("UID SEARCH Message-ID: %w", err)
+			return fmt.Errorf("UID SEARCH %s: %w", key, err)
 		}
 		uidSet, ok := searchData.All.(imap.UIDSet)
 		if !ok {
@@ -863,14 +870,17 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 		}
 		sendAtSection := sendAtHeaderSection()
 		reminderSection := reminderHeaderSection()
-		msgs, err := conn.Fetch(fetchSet, &imap.FetchOptions{
+		fetchOpts := &imap.FetchOptions{
 			UID:           true,
 			Flags:         true,
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
 			BodySection:   []*imap.FetchItemBodySection{sendAtSection, reminderSection},
-		}).Collect()
+		}
+		msgs, err := collectHeaderFetch(func(opts *imap.FetchOptions) ([]*imapclient.FetchMessageBuffer, error) {
+			return conn.Fetch(fetchSet, opts).Collect()
+		}, fetchOpts)
 		if err != nil {
 			return fmt.Errorf("FETCH headers: %w", err)
 		}
@@ -927,6 +937,19 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 		return nil
 	})
 	return emails, err
+}
+
+// collectHeaderFetch retries a header fetch without BODYSTRUCTURE when the
+// server returns a malformed nested MIME structure. The message headers and
+// reminder/send-later sections are still sufficient for the list view; the
+// safe fallback is simply HasAttachment=false.
+func collectHeaderFetch(fetch func(*imap.FetchOptions) ([]*imapclient.FetchMessageBuffer, error), opts *imap.FetchOptions) ([]*imapclient.FetchMessageBuffer, error) {
+	msgs, err := fetch(opts)
+	if err == nil || opts.BodyStructure == nil {
+		return msgs, err
+	}
+	opts.BodyStructure = nil
+	return fetch(opts)
 }
 
 // FetchBody fetches the body of a single message.
@@ -1139,7 +1162,12 @@ func sameReminderEmail(source, candidate Email, id string) bool {
 		return true
 	}
 	if source.MessageID != "" {
-		return reminderIDEqual(source.MessageID, candidate.MessageID)
+		if candidate.MessageID != "" {
+			return reminderIDEqual(source.MessageID, candidate.MessageID)
+		}
+		// A few IMAP bridges omit Message-ID from the ENVELOPE even though
+		// SEARCH HEADER Message-ID found the UID. Continue with the legacy
+		// envelope fingerprint instead of rejecting that authoritative hit.
 	}
 	if candidate.MessageID != "" || reminderAddress(source.From) == "" || reminderAddress(candidate.From) == "" {
 		return false
@@ -1179,12 +1207,38 @@ func (c *Client) reminderCopies(ctx context.Context, source Email, id string, fo
 	var matches []Email
 	var scanErrs []error
 	for _, folder := range folders {
-		emails, err := c.FetchHeaders(ctx, folder, 0)
+		var (
+			uids []uint32
+			err  error
+		)
+		if source.MessageID != "" {
+			uids, err = c.reminderCopyUIDs(ctx, folder, source.MessageID, id)
+		} else {
+			// Legacy messages without Message-ID have no safe bounded search
+			// key. This is the deliberately rare, last-resort full scan.
+			var emails []Email
+			emails, err = c.FetchHeaders(ctx, folder, 0)
+			if err == nil {
+				for _, candidate := range emails {
+					if sameReminderEmail(source, candidate, id) {
+						matches = append(matches, candidate)
+					}
+				}
+			}
+		}
 		if err != nil {
 			var imapErr *imap.Error
 			if errors.As(err, &imapErr) && imapErr.Code == imap.ResponseCodeNonExistent {
 				continue
 			}
+			scanErrs = append(scanErrs, fmt.Errorf("%s: %w", folder, err))
+			continue
+		}
+		if source.MessageID == "" {
+			continue
+		}
+		emails, err := c.FetchHeadersByUID(ctx, folder, uids)
+		if err != nil {
 			scanErrs = append(scanErrs, fmt.Errorf("%s: %w", folder, err))
 			continue
 		}
@@ -1200,6 +1254,45 @@ func (c *Client) reminderCopies(ctx context.Context, source Email, id string, fo
 	return matches, nil
 }
 
+func (c *Client) reminderCopyUIDs(ctx context.Context, folder, messageID, id string) ([]uint32, error) {
+	var all []uint32
+	seen := make(map[uint32]struct{})
+	querySucceeded := false
+	queries := []struct{ key, value string }{
+		{"Message-ID", messageID},
+		{reminder.IDHeader, id},
+	}
+	var errs []error
+	for _, query := range queries {
+		var uids []uint32
+		var err error
+		if query.key == "Message-ID" {
+			uids, err = c.SearchMessageIDs(ctx, folder, query.value)
+		} else {
+			uids, err = c.searchHeader(ctx, folder, query.key, query.value)
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		querySucceeded = true
+		for _, uid := range uids {
+			if _, ok := seen[uid]; ok {
+				continue
+			}
+			seen[uid] = struct{}{}
+			all = append(all, uid)
+		}
+	}
+	// Some test bridges and older servers reject arbitrary header SEARCH. A
+	// successful Message-ID query is still enough to identify the copy, so an
+	// optional reminder-ID query failure must not discard those results.
+	if len(errs) > 0 && !querySucceeded {
+		return all, errors.Join(errs...)
+	}
+	return all, nil
+}
+
 func (c *Client) reminderCopyInFolder(ctx context.Context, source Email, id, folder string, hint uint32) (Email, bool, error) {
 	if hint != 0 {
 		if emails, err := c.FetchHeadersByUID(ctx, folder, []uint32{hint}); err == nil {
@@ -1209,6 +1302,22 @@ func (c *Client) reminderCopyInFolder(ctx context.Context, source Email, id, fol
 				}
 			}
 		}
+	}
+	if source.MessageID != "" {
+		uids, err := c.reminderCopyUIDs(ctx, folder, source.MessageID, id)
+		if err != nil {
+			return Email{}, false, err
+		}
+		emails, err := c.FetchHeadersByUID(ctx, folder, uids)
+		if err != nil {
+			return Email{}, false, err
+		}
+		for _, candidate := range emails {
+			if sameReminderEmail(source, candidate, id) {
+				return candidate, true, nil
+			}
+		}
+		return Email{}, false, nil
 	}
 	emails, err := c.FetchHeaders(ctx, folder, 0)
 	if err != nil {

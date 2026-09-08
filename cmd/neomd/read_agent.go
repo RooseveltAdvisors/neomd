@@ -122,7 +122,7 @@ func readFlagValue(args []string, index int, flagName string) (string, int, erro
 func configuredReadFolders(f config.FoldersConfig) []readFolder {
 	all := []readFolder{
 		{"Inbox", f.Inbox}, {"ToScreen", f.ToScreen}, {"Feed", f.Feed},
-		{"PaperTrail", f.PaperTrail}, {"Waiting", f.Waiting}, {"Someday", f.Someday},
+		{"PaperTrail", f.PaperTrail}, {"Reminders", f.Waiting}, {"Someday", f.Someday},
 		{"Scheduled", f.Scheduled}, {"Sent", f.Sent}, {"Archive", f.Archive},
 		{"ScreenedOut", f.ScreenedOut}, {"Drafts", f.Drafts}, {"Trash", f.Trash},
 		{"Spam", f.Spam}, {"Work", f.Work},
@@ -145,9 +145,13 @@ func orderedReadFolders(f config.FoldersConfig, hint string) []readFolder {
 		return all
 	}
 	hint = strings.TrimSpace(hint)
+	hintKey := strings.ToLower(strings.ReplaceAll(hint, "_", ""))
+	if hintKey == "waiting" || hintKey == "reminder" {
+		hintKey = "reminders"
+	}
 	for i, folder := range all {
 		if strings.EqualFold(hint, folder.label) || strings.EqualFold(hint, folder.name) ||
-			strings.EqualFold(strings.ReplaceAll(hint, "_", ""), strings.ReplaceAll(folder.label, "_", "")) {
+			strings.EqualFold(hintKey, strings.ReplaceAll(strings.ToLower(folder.label), "_", "")) {
 			return append([]readFolder{folder}, append(all[:i], all[i+1:]...)...)
 		}
 	}

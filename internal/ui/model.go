@@ -421,7 +421,7 @@ func (m Model) writeDebugReport() tea.Cmd {
 			{"PaperTrail", f.PaperTrail},
 			{"ScreenedOut", f.ScreenedOut},
 			{"Archive", f.Archive},
-			{"Waiting", f.Waiting},
+			{"Reminders", f.Waiting},
 			{"Scheduled", f.Scheduled},
 			{"Someday", f.Someday},
 			{"Spam", f.Spam},
@@ -815,7 +815,7 @@ type Model struct {
 	pendingDiscard bool
 
 	// folderCounts holds unseen message counts for watched folder tabs.
-	// Keys are tab labels: "Inbox", "PaperTrail", "Waiting", "Scheduled".
+	// Keys are tab labels: "Inbox", "PaperTrail", "Reminders", "Scheduled".
 	folderCounts map[string]int
 
 	// Sort state. sortField is one of "date", "from", "subject", "size".
@@ -1094,7 +1094,7 @@ func (m Model) activeFolder() string {
 		return m.cfg.Folders.Trash
 	case "Archive":
 		return m.cfg.Folders.Archive
-	case "Waiting":
+	case "Reminders", "Waiting":
 		return m.cfg.Folders.Waiting
 	case "Scheduled":
 		return m.cfg.Folders.Scheduled
@@ -1522,7 +1522,7 @@ func (m Model) folderChoices() []folderChoice {
 		{label: "Drafts", path: m.cfg.Folders.Drafts},
 		{label: "Trash", path: m.cfg.Folders.Trash},
 		{label: "ScreenedOut", path: m.cfg.Folders.ScreenedOut},
-		{label: "Waiting", path: m.cfg.Folders.Waiting},
+		{label: "Reminders", path: m.cfg.Folders.Waiting},
 		{label: "Scheduled", path: m.cfg.Folders.Scheduled},
 		{label: "Someday", path: m.cfg.Folders.Someday},
 		{label: "ToScreen", path: m.cfg.Folders.ToScreen},
@@ -2290,7 +2290,7 @@ func (m Model) fetchFolderCountsCmd() tea.Cmd {
 	folders := map[string]string{
 		"Inbox":      f.Inbox,
 		"PaperTrail": f.PaperTrail,
-		"Waiting":    f.Waiting,
+		"Reminders":  f.Waiting,
 		"Scheduled":  f.Scheduled,
 		"Feed":       f.Feed,
 		"ToScreen":   f.ToScreen,
@@ -2516,7 +2516,7 @@ func folderLabelToIMAP(label string, fc config.FoldersConfig) string {
 		return fc.ScreenedOut
 	case "archive":
 		return fc.Archive
-	case "waiting":
+	case "reminders", "reminder", "waiting":
 		return fc.Waiting
 	case "scheduled":
 		return fc.Scheduled
@@ -2649,7 +2649,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.inbox.Width() == 0 {
-			m.inbox = newInboxList(msg.Width, listH, m.cfg.Folders.Sent, m.cfg.Folders.Drafts)
+			m.inbox = newInboxList(msg.Width, listH, m.cfg.Folders.Sent, m.cfg.Folders.Drafts, m.cfg.Folders.Waiting)
 		} else {
 			m.inbox.SetSize(msg.Width, listH)
 		}
@@ -3774,7 +3774,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// ── Chord prefixes ──────────────────────────────────────────────
 	case "g":
 		m.pendingKey = "g"
-		m.status = "go to: gi inbox  gs starred  gd drafts  gt sent  ge archive  gh waiting  g; snippets  g! spam  g# trash  ga all mail  gl labels  go other  gm someday  gg top"
+		m.status = "go to: gi inbox  gs starred  gd drafts  gt sent  ge archive  gh reminders  g; snippets  g! spam  g# trash  ga all mail  gl labels  go other  gm someday  gg top"
 		return m, nil
 
 	case " ": // leader key — wait for digit or shortcut
@@ -3784,7 +3784,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "M":
 		m.pendingKey = "M"
-		m.status = "move to:  Mi inbox  Ma archive  Mf feed  Mp papertrail  Mt trash  Mo screened-out  Mw waiting  Mc scheduled  Mm someday"
+		m.status = "move to:  Mi inbox  Ma archive  Mf feed  Mp papertrail  Mt trash  Mo screened-out  Mw reminders  Mc scheduled  Mm someday"
 		return m, nil
 
 	case "D":
@@ -4578,7 +4578,7 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 			"t": "Sent",
 			"k": "ToScreen",
 			"e": "Archive",
-			"w": "Waiting",
+			"w": "Reminders",
 			"b": "Work",
 			"c": "Scheduled",
 			"m": "Someday",

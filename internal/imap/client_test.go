@@ -114,6 +114,31 @@ func TestParseSendAtSection(t *testing.T) {
 	}
 }
 
+func TestFetchHeadersFallsBackWithoutBodyStructure(t *testing.T) {
+	want := []*imapclient.FetchMessageBuffer{{}}
+	opts := &imap.FetchOptions{BodyStructure: &imap.FetchItemBodyStructure{Extended: true}}
+	calls := 0
+	got, err := collectHeaderFetch(func(gotOpts *imap.FetchOptions) ([]*imapclient.FetchMessageBuffer, error) {
+		calls++
+		if calls == 1 {
+			if gotOpts.BodyStructure == nil {
+				t.Fatal("first fetch unexpectedly omitted BODYSTRUCTURE")
+			}
+			return nil, errors.New("in body-type-mpart: expected body")
+		}
+		if gotOpts.BodyStructure != nil {
+			t.Fatal("fallback fetch still requested BODYSTRUCTURE")
+		}
+		return want, nil
+	}, opts)
+	if err != nil {
+		t.Fatalf("fallback fetch failed: %v", err)
+	}
+	if calls != 2 || len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("calls=%d messages=%v, want one retried message", calls, got)
+	}
+}
+
 func TestSearchMessageIDsAndReadRawMessage(t *testing.T) {
 	client, user := startMemoryIMAP(t, "INBOX")
 	raw := []byte("From: sender@example.com\r\nTo: user@example.com\r\nSubject: fixture\r\n" +
@@ -142,6 +167,25 @@ func TestSearchMessageIDsAndReadRawMessage(t *testing.T) {
 	email, body, attachments, err := ParseRawMessage(fetched)
 	if err != nil || email.MessageID != "<fixture-read@example.com>" || body != "fixture body" || len(attachments) != 0 {
 		t.Fatalf("email=%+v body=%q attachments=%d err=%v", email, body, len(attachments), err)
+	}
+}
+
+func TestReminderCopiesSearchesByMessageID(t *testing.T) {
+	client, user := startMemoryIMAP(t, "INBOX", "Archive")
+	raw := []byte("From: sender@example.com\r\nTo: me@example.com\r\nSubject: follow up\r\nMessage-ID: <reminder-search@example.com>\r\n\r\nbody\r\n")
+	data, err := user.Append("Archive", &testLiteralReader{Reader: bytes.NewReader(raw), size: int64(len(raw))}, &imap.AppendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copies, err := client.reminderCopies(context.Background(), Email{
+		Folder: "INBOX", From: "sender@example.com", Subject: "follow up",
+		MessageID: "reminder-search@example.com", Size: uint32(len(raw)),
+	}, "reminder-search@example.com", []string{"INBOX", "Archive"})
+	if err != nil {
+		t.Fatalf("reminderCopies: %v", err)
+	}
+	if len(copies) != 1 || copies[0].Folder != "Archive" || copies[0].UID != uint32(data.UID) {
+		t.Fatalf("copies=%+v, want Archive UID %d", copies, data.UID)
 	}
 }
 

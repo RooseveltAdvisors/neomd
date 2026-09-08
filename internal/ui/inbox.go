@@ -35,8 +35,9 @@ func (e emailItem) Description() string { return e.email.From }
 
 // emailDelegate is a custom list.ItemDelegate that renders one email per row.
 type emailDelegate struct {
-	sentFolder  string // when active folder matches, show To instead of From
-	draftFolder string // when active folder matches, show To instead of From
+	sentFolder     string // when active folder matches, show To instead of From
+	draftFolder    string // when active folder matches, show To instead of From
+	reminderFolder string // when active folder matches, show reminder fire time
 }
 
 func (d emailDelegate) Height() int                             { return 1 }
@@ -49,10 +50,10 @@ const (
 	colFlagWidth     = 2 // "N " or "  "
 	colReplyWidth    = 1 // "·" or " "
 	colThreadWidth   = 2 // "│ " or "╰ " or "  "
-	colDateWidth     = 7 // "Feb 03 "
+	colDateWidth     = 9 // "⏰ Jan 02"
 	colAttachWidth   = 2 // "@ " or "  "
 	colSpyWidth      = 2 // "°" or "  " — spy pixel indicator
-	colReminderWidth = 2 // "R " or "  " — scheduled/due reminder
+	colReminderWidth = 3 // "⏰ " or "   " — scheduled/due reminder
 	colSizeWidth     = 7 // "(38.2K)"
 )
 
@@ -94,7 +95,12 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	} else if e.threadPrefix != "" {
 		threadStr = e.threadPrefix + " "
 	}
-	dateStr := fmtDate(e.email.Date) + " "
+	inReminders := d.reminderFolder != "" && e.email.Folder == d.reminderFolder
+	dateStr := strings.TrimSpace(fmtDate(e.email.Date))
+	if inReminders && e.email.Reminder != nil {
+		dateStr = fmtReminderDate(e.email.Reminder.At)
+	}
+	dateStr = padRight(dateStr, colDateWidth)
 	attachStr := "  "
 	if e.email.HasAttachment {
 		attachStr = "@ "
@@ -105,7 +111,7 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	}
 	reminderStr := "  "
 	if e.email.Reminder != nil {
-		reminderStr = "R "
+		reminderStr = "⏰ "
 	}
 	sizeStr := fmtSize(e.email.Size)
 
@@ -130,11 +136,6 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	subjectText = sendLaterPrefix(e.email) + subjectText
 	if e.threadCount > 0 {
 		subjectText = fmt.Sprintf("×%d ", e.threadCount) + subjectText
-	}
-	if e.email.Reminder != nil {
-		// Follow-up reminders stay visible in the list with their due time
-		// (Waiting/Reminders view), not just via the R indicator.
-		subjectText += "  ⏰ " + e.email.Reminder.At.Local().Format("Jan 2 15:04")
 	}
 	subject := truncate(displaySafe(subjectText), subjectMax)
 
@@ -235,6 +236,20 @@ func fmtDate(t time.Time) string {
 		return t.Format("Jan 02")
 	}
 	return t.Format("Jan 06")
+}
+
+// fmtReminderDate keeps the reminder's fire time compact enough for the list
+// date column while making the clock meaning explicit.
+func fmtReminderDate(t time.Time) string {
+	if t.IsZero() {
+		return "⏰"
+	}
+	t = t.Local()
+	now := time.Now()
+	if t.Year() == now.Year() && t.YearDay() == now.YearDay() {
+		return "⏰ " + t.Format("15:04")
+	}
+	return "⏰ " + t.Format("Jan 02")
 }
 
 // sendLaterPrefix returns the display-only "[send-later …]" marker for
@@ -385,8 +400,12 @@ func padRight(s string, w int) string {
 
 // newInboxList creates a bubbles/list configured for the email inbox.
 // sentFolder/draftFolder are IMAP folder names — used to show To instead of From.
-func newInboxList(width, height int, sentFolder, draftFolder string) list.Model {
-	l := list.New(nil, emailDelegate{sentFolder: sentFolder, draftFolder: draftFolder}, width, height)
+func newInboxList(width, height int, sentFolder, draftFolder string, reminderFolder ...string) list.Model {
+	reminderPath := ""
+	if len(reminderFolder) > 0 {
+		reminderPath = reminderFolder[0]
+	}
+	l := list.New(nil, emailDelegate{sentFolder: sentFolder, draftFolder: draftFolder, reminderFolder: reminderPath}, width, height)
 	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
 	l.SetShowHelp(false)

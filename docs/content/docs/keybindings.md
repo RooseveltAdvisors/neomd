@@ -78,7 +78,7 @@ To update both the help overlay and this document at once, edit that file and ru
 | `gd` | Drafts |
 | `gt` | Sent |
 | `ge` | Done / Archive |
-| `gh` | Reminders / Waiting |
+| `gh` | Reminders |
 | `g;` | Snippets |
 | `g!` | Spam |
 | `g#` | Trash |
@@ -90,7 +90,7 @@ To update both the help overlay and this document at once, edit that file and ru
 | `gf` | Feed (neomd) |
 | `gp` | PaperTrail (neomd) |
 | `gk` | ToScreen (neomd) |
-| `gw` | Waiting alias (neomd) |
+| `gw` | Reminders alias (neomd) |
 | `gc` | Scheduled (neomd) |
 | `gb` | Work (neomd, if configured) |
 | `v / M*` | move to a folder with the picker / quick destination |

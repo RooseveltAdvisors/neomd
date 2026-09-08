@@ -168,10 +168,15 @@ type FoldersConfig struct {
 	ScreenedOut string `toml:"screened_out"`
 	Archive     string `toml:"archive"`
 	Waiting     string `toml:"waiting"`
-	Scheduled   string `toml:"scheduled"`
-	Someday     string `toml:"someday"`
-	Spam        string `toml:"spam"`
-	Work        string `toml:"work"`
+	// Reminders and Reminder are backwards-compatible aliases for Waiting.
+	// Load normalizes them into Waiting so the rest of the application has one
+	// canonical folder path.
+	Reminders string `toml:"reminders"`
+	Reminder  string `toml:"reminder"`
+	Scheduled string `toml:"scheduled"`
+	Someday   string `toml:"someday"`
+	Spam      string `toml:"spam"`
+	Work      string `toml:"work"`
 	// TabOrder lists folder keys (e.g. "inbox", "to_screen") in the desired
 	// tab display order. Spam is always excluded from tabs regardless of order.
 	// If empty, the built-in default order is used.
@@ -179,7 +184,7 @@ type FoldersConfig struct {
 }
 
 // defaultTabOrder is the built-in tab order when tab_order is not configured.
-var defaultTabOrder = []string{"inbox", "to_screen", "feed", "papertrail", "waiting", "someday", "scheduled", "sent", "archive", "screened_out", "drafts", "trash"}
+var defaultTabOrder = []string{"inbox", "to_screen", "feed", "papertrail", "reminders", "someday", "scheduled", "sent", "archive", "screened_out", "drafts", "trash"}
 
 // keyToLabel maps config key names to the internal label names used by the UI.
 // These labels are what m.folders stores and what activeFolder() matches against.
@@ -193,7 +198,9 @@ var keyToLabel = map[string]string{
 	"papertrail":   "PaperTrail",
 	"screened_out": "ScreenedOut",
 	"archive":      "Archive",
-	"waiting":      "Waiting",
+	"waiting":      "Reminders",
+	"reminder":     "Reminders",
+	"reminders":    "Reminders",
 	"scheduled":    "Scheduled",
 	"someday":      "Someday",
 	"work":         "Work",
@@ -225,8 +232,8 @@ func (f FoldersConfig) LabelFor(imapName string) string {
 		return "ScreenedOut"
 	case f.Archive:
 		return "Archive"
-	case f.Waiting:
-		return "Waiting"
+	case f.waitingFolder():
+		return "Reminders"
 	case f.Scheduled:
 		return "Scheduled"
 	case f.Someday:
@@ -237,6 +244,16 @@ func (f FoldersConfig) LabelFor(imapName string) string {
 		return "Work"
 	}
 	return imapName
+}
+
+func (f FoldersConfig) waitingFolder() string {
+	if f.Waiting != "" {
+		return f.Waiting
+	}
+	if f.Reminders != "" {
+		return f.Reminders
+	}
+	return f.Reminder
 }
 
 // TabLabels returns the UI label names in tab display order.
@@ -609,8 +626,17 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config not found at %s", path)
 	}
 
+	// Clear the canonical default before decoding so a configured alias can
+	// take precedence over the built-in "Waiting" value.
+	cfg.Folders.Waiting = ""
 	if _, err := toml.DecodeFile(path, cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if cfg.Folders.Waiting == "" {
+		cfg.Folders.Waiting = cfg.Folders.waitingFolder()
+	}
+	if cfg.Folders.Waiting == "" {
+		cfg.Folders.Waiting = "Waiting"
 	}
 
 	cfg.Screener.ScreenedIn = expandPath(cfg.Screener.ScreenedIn)
