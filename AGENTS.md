@@ -126,6 +126,14 @@ that conversation; "the test was too strict" is not a decision an agent makes al
 
 ## Reply & Threading
 
+- **Agent-readable Message-ID links** — `neomd read <neomd://mid/...|Message-ID>`
+  resolves the copied reader link across configured accounts/folders with
+  read-only IMAP `SEARCH`/`BODY.PEEK`; `--json`, `--raw`, `--folder`, `--account`,
+  and stdin batches are supported. Keep `cmd/neomd/read_agent.go`,
+  `internal/imap/read.go`, and `internal/link/message_id.go` aligned with the
+  read-only/no-flag-mutation contract. Tests: `TestSearchMessageIDsAndReadRawMessage`,
+  `TestRunAgentReadUsesURIHostFolderAndStdinBatch`.
+
 - **Message-ID share links** — in the reader, `y` opens the copy menu and `m` copies
   `neomd://mid/<url-encoded-message-id>`; the URI encodes the RFC Message-ID, never
   an IMAP UID or folder path. Tests: `internal/link/message_id_test.go`,

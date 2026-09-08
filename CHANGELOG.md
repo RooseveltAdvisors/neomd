@@ -2,6 +2,14 @@
 
 # 2026-09-07
 
+- **Read Message-ID links from scripts and agents** — `neomd read` resolves a
+  copied `neomd://mid/...` link, bracketed ID, or bare ID across configured
+  accounts and folders using read-only IMAP search/fetch. It renders decoded
+  headers, plain text (HTML fallback), and attachment metadata, with `--json`,
+  `--raw`, folder/account hints, and stdin batches; no mailbox flags or folders
+  are mutated. Where: `cmd/neomd`, `internal/link`, `internal/imap`. Tests:
+  `TestSearchMessageIDsAndReadRawMessage`, `TestRunAgentReadUsesURIHostFolderAndStdinBatch`.
+
 - **Yank menu actually reaches the clipboard (OSC 52)** — the reader's `y` → `m`
   copy landed nowhere whenever neomd ran over ssh: the shared helper only tried
   local tools, and on a headless host `xclip` is on `PATH` but `DISPLAY` is empty,

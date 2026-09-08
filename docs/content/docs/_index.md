@@ -282,6 +282,23 @@ Use an app-specific password (Gmail, Fastmail, Hostpoint, etc.) rather than your
 
 For the full configuration reference including multiple accounts, OAuth2 authentication, `[[senders]]` aliases, folder customization, signatures, and UI options, see [docs/content/docs/configuration](docs/content/docs/configuration/_index.md).
 
+### Reading a neomd:// link from a script or agent
+
+Message links copied from the reader can be resolved without opening the TUI.
+`read` searches the configured mailboxes with IMAP `EXAMINE` and `BODY.PEEK`, so
+it never marks, moves, or deletes mail. It accepts a link, a bracketed Message-ID,
+or a bare Message-ID:
+
+```sh
+neomd read 'neomd://mid/%3Cabc%40example.com%3E?folder=Inbox'
+neomd read '<abc@example.com>' --account Work --json
+```
+
+For batch use, pipe one link per line to `neomd read --json`. Use `--raw` for
+the RFC822 source. Exit status is 0 when found, 1 when not found, and 2 for
+configuration or authentication errors. OAuth2 `oauth2_token_command` helpers
+work unattended through this path.
+
 **Provider-specific guides:**
 
 - Gmail: [docs/content/docs/configuration/gmail.md](docs/content/docs/configuration/gmail.md) — folder name mapping and OAuth2 setup
