@@ -2,6 +2,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 	"github.com/sspaeti/neomd/internal/render"
 	"github.com/sspaeti/neomd/internal/schedule"
 	"github.com/sspaeti/neomd/internal/screener"
+	fulltext "github.com/sspaeti/neomd/internal/search"
 	"github.com/sspaeti/neomd/internal/smtp"
 	"github.com/sspaeti/neomd/internal/snippets"
 	"github.com/sspaeti/neomd/internal/when"
@@ -152,10 +154,11 @@ type (
 	}
 	undoDoneMsg       struct{ desc string }
 	toggleSeenDoneMsg struct {
-		uid    uint32
-		folder string
-		seen   bool
-		err    error
+		uid     uint32
+		folder  string
+		account string
+		seen    bool
+		err     error
 	}
 	errMsg struct{ err error }
 	// background sync (runs every bgSyncInterval while neomd is open)
@@ -172,8 +175,9 @@ type (
 	}
 	// mark-as-read timer (fires after N seconds in reader)
 	markAsReadTimerMsg struct {
-		uid    uint32
-		folder string
+		uid     uint32
+		folder  string
+		account string
 	}
 	// attachPickDoneMsg carries paths selected via the file picker (yazi etc.)
 	attachPickDoneMsg struct{ paths []string }
@@ -551,6 +555,7 @@ type undoMove struct {
 	uid        uint32
 	fromFolder string
 	toFolder   string
+	account    string
 }
 
 // seenFlag records one \Seen flag change; markSeen is the state to RESTORE
@@ -558,6 +563,7 @@ type undoMove struct {
 type seenFlag struct {
 	folder   string
 	uid      uint32
+	account  string
 	markSeen bool
 }
 
@@ -637,8 +643,9 @@ type Model struct {
 	copyTargetsList []copyTarget      // copy targets shown by the reader's y menu
 	copyMenuCursor  int
 	// Mark-as-read timer tracking
-	markAsReadUID    uint32 // UID of email with pending mark-as-read timer
-	markAsReadFolder string // folder of email with pending mark-as-read timer
+	markAsReadUID     uint32 // UID of email with pending mark-as-read timer
+	markAsReadFolder  string // folder of email with pending mark-as-read timer
+	markAsReadAccount string // account owning the pending timer email
 
 	// Compose / pre-send
 	compose        composeModel
@@ -718,7 +725,17 @@ type Model struct {
 	// contacts maps harvested email addresses to display names — used to match
 	// name searches (sent mail carries bare addresses) and to decorate
 	// outgoing To/Cc headers. Nil-safe: all Store methods accept a nil receiver.
-	contacts *contacts.Store
+	contacts    *contacts.Store
+	searchIndex *fulltext.Index
+
+	// Universal full-text search (/) refreshes every configured account and
+	// folder using BODY.PEEK. The index is private and disposable; IMAP stays
+	// the source of truth and incomplete scope is shown in the status bar.
+	universalSearchActive  bool
+	universalSearchRunning bool
+	universalSearchResults bool
+	universalSearchText    string
+	searchCancel           context.CancelFunc
 
 	// Undo journal: each entry is one mutating action (move batch and/or
 	// \Seen flag changes) that u can reverse. Most recent action is last.
@@ -883,6 +900,7 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener, mail
 		spyPixelKeys:   spyKeys,
 		spyScannedKeys: scannedKeys,
 		contacts:       cs,
+		searchIndex:    fulltext.New(),
 		startupNotice:  notice,
 		sortField:      "date",
 		sortReverse:    true, // newest first
@@ -1019,6 +1037,20 @@ func (m Model) imapCli() *imap.Client {
 	return m.primaryIMAPClient()
 }
 
+// imapCliForEmail keeps cross-account search results actionable. A message's
+// folder/UID is only unique within one account, so using the active client
+// here could open or move a different message with the same UID.
+func (m Model) imapCliForEmail(e *imap.Email) *imap.Client {
+	if e != nil && e.Account != "" {
+		for i, account := range m.accounts {
+			if strings.EqualFold(account.Name, e.Account) && i < len(m.clients) && m.clients[i] != nil {
+				return m.clients[i]
+			}
+		}
+	}
+	return m.imapCli()
+}
+
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		m.spinner.Tick,
@@ -1130,8 +1162,9 @@ func (m Model) fetchPeekCmd(e *imap.Email) tea.Cmd {
 		return nil
 	}
 	email := *e
+	cli := m.imapCliForEmail(&email)
 	return func() tea.Msg {
-		body, _, _, _, _, _, err := m.imapCli().FetchBody(nil, email.Folder, email.UID)
+		body, _, _, _, _, _, err := cli.FetchBody(nil, email.Folder, email.UID)
 		return peekLoadedMsg{email: &email, body: body, err: err}
 	}
 }
@@ -1197,8 +1230,9 @@ func (m *Model) resizeListForPeek() {
 }
 
 func (m Model) fetchBodyCmd(e *imap.Email) tea.Cmd {
+	cli := m.imapCliForEmail(e)
 	return func() tea.Msg {
-		body, rawHTML, webURL, attachments, references, spyPixels, err := m.imapCli().FetchBody(nil, e.Folder, e.UID)
+		body, rawHTML, webURL, attachments, references, spyPixels, err := cli.FetchBody(nil, e.Folder, e.UID)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -1482,14 +1516,15 @@ func (m Model) toggleSeenCmd(e *imap.Email) tea.Cmd {
 	uid := e.UID
 	folder := e.Folder
 	newSeen := !e.Seen
+	cli := m.imapCliForEmail(e)
 	return func() tea.Msg {
 		var err error
 		if newSeen {
-			err = m.imapCli().MarkSeen(nil, folder, uid)
+			err = cli.MarkSeen(nil, folder, uid)
 		} else {
-			err = m.imapCli().MarkUnseen(nil, folder, uid)
+			err = cli.MarkUnseen(nil, folder, uid)
 		}
-		return toggleSeenDoneMsg{uid: uid, folder: folder, seen: newSeen, err: err}
+		return toggleSeenDoneMsg{uid: uid, folder: folder, account: e.Account, seen: newSeen, err: err}
 	}
 }
 
@@ -1500,9 +1535,10 @@ func (m Model) moveEmailCmd(e *imap.Email, dst string) tea.Cmd {
 	}
 	src := e.Folder
 	uid := e.UID
+	cli := m.imapCliForEmail(e)
 	return func() tea.Msg {
-		destUID, err := m.imapCli().MoveMessage(nil, src, uid, dst)
-		return moveDoneMsg{err: err, undo: []undoMove{{uid: destUID, fromFolder: src, toFolder: dst}}}
+		destUID, err := cli.MoveMessage(nil, src, uid, dst)
+		return moveDoneMsg{err: err, undo: []undoMove{{uid: destUID, fromFolder: src, toFolder: dst, account: e.Account}}}
 	}
 }
 
@@ -1742,22 +1778,24 @@ func (m Model) batchMoveCmd(emails []imap.Email, dst string) tea.Cmd {
 		return readOnlyBatchCmd("IMAP move")
 	}
 	type mv struct {
-		folder string
-		uid    uint32
+		folder  string
+		uid     uint32
+		account string
 	}
 	moves := make([]mv, len(emails))
 	for i, e := range emails {
-		moves[i] = mv{e.Folder, e.UID}
+		moves[i] = mv{e.Folder, e.UID, e.Account}
 	}
 	bp := m.bulkProgress
 	return func() tea.Msg {
 		undos := make([]undoMove, 0, len(moves))
 		for i, mv := range moves {
-			destUID, err := m.imapCli().MoveMessage(nil, mv.folder, mv.uid, dst)
+			cli := m.imapCliForEmail(&imap.Email{Account: mv.account})
+			destUID, err := cli.MoveMessage(nil, mv.folder, mv.uid, dst)
 			if err != nil {
 				return batchDoneMsg{err: fmt.Errorf("stopped after %d/%d: %w", i, len(moves), err), undo: undos}
 			}
-			undos = append(undos, undoMove{uid: destUID, fromFolder: mv.folder, toFolder: dst})
+			undos = append(undos, undoMove{uid: destUID, fromFolder: mv.folder, toFolder: dst, account: mv.account})
 			if bp != nil {
 				bp.moved.Add(1)
 			}
@@ -1786,14 +1824,15 @@ func (m Model) undoActionCmd(action undoAction) tea.Cmd {
 	if m.cfg != nil && m.cfg.ReadOnly {
 		return readOnlyBatchCmd("undo")
 	}
-	cli := m.imapCli()
 	return func() tea.Msg {
 		for i, u := range action.moves {
+			cli := m.imapCliForEmail(&imap.Email{Account: u.account})
 			if _, err := cli.MoveMessage(nil, u.toFolder, u.uid, u.fromFolder); err != nil {
 				return batchDoneMsg{err: fmt.Errorf("undo stopped after %d/%d: %w", i, len(action.moves), err)}
 			}
 		}
 		for _, f := range action.seen {
+			cli := m.imapCliForEmail(&imap.Email{Account: f.account})
 			var err error
 			if f.markSeen {
 				err = cli.MarkSeen(nil, f.folder, f.uid)
@@ -1818,6 +1857,7 @@ func (m Model) batchScreenerCmd(emails []imap.Email, action string) tea.Cmd {
 	type op struct {
 		from, srcFolder string
 		uid             uint32
+		account         string
 		dst             string
 	}
 	ops := make([]op, 0, len(emails))
@@ -1835,7 +1875,7 @@ func (m Model) batchScreenerCmd(emails []imap.Email, action string) tea.Cmd {
 		case "$":
 			dst = cfg.Folders.Spam
 		}
-		ops = append(ops, op{e.From, e.Folder, e.UID, dst})
+		ops = append(ops, op{e.From, e.Folder, e.UID, e.Account, dst})
 	}
 	bp := m.bulkProgress
 	return func() tea.Msg {
@@ -1874,7 +1914,7 @@ func (m Model) batchScreenerCmd(emails []imap.Email, action string) tea.Cmd {
 						case "$":
 							dst = cfg.Folders.Spam
 						}
-						expandedOps = append(expandedOps, op{e.From, e.Folder, e.UID, dst})
+						expandedOps = append(expandedOps, op{e.From, e.Folder, e.UID, e.Account, dst})
 					}
 				}
 			}
@@ -1908,12 +1948,14 @@ func (m Model) batchScreenerCmd(emails []imap.Email, action string) tea.Cmd {
 		var undos []undoMove
 		for i, o := range expandedOps {
 			if o.dst != "" && o.dst != o.srcFolder {
-				destUID, err := m.imapCli().MoveMessage(nil, o.srcFolder, o.uid, o.dst)
+				cli := m.imapCliForEmail(&imap.Email{Account: o.account})
+				destUID, err := cli.MoveMessage(nil, o.srcFolder, o.uid, o.dst)
 				if err != nil {
 					var rollbackErrs []string
 					for j := len(undos) - 1; j >= 0; j-- {
 						u := undos[j]
-						if _, undoErr := m.imapCli().MoveMessage(nil, u.toFolder, u.uid, u.fromFolder); undoErr != nil {
+						cli := m.imapCliForEmail(&imap.Email{Account: u.account})
+						if _, undoErr := cli.MoveMessage(nil, u.toFolder, u.uid, u.fromFolder); undoErr != nil {
 							rollbackErrs = append(rollbackErrs, fmt.Sprintf("%s:%d→%s (%v)", u.toFolder, u.uid, u.fromFolder, undoErr))
 						}
 					}
@@ -1925,7 +1967,7 @@ func (m Model) batchScreenerCmd(emails []imap.Email, action string) tea.Cmd {
 					}
 					return batchDoneMsg{err: fmt.Errorf("stopped after %d/%d: %w", i, len(expandedOps), err)}
 				}
-				undos = append(undos, undoMove{uid: destUID, fromFolder: o.srcFolder, toFolder: o.dst})
+				undos = append(undos, undoMove{uid: destUID, fromFolder: o.srcFolder, toFolder: o.dst, account: o.account})
 			}
 			if bp != nil {
 				bp.moved.Add(1)
@@ -1944,13 +1986,14 @@ func (m Model) markAllSeenCmd() tea.Cmd {
 		return readOnlyBatchCmd("mark read")
 	}
 	type op struct {
-		folder string
-		uid    uint32
+		folder  string
+		uid     uint32
+		account string
 	}
 	var ops []op
 	for _, e := range m.emails {
 		if !e.Seen {
-			ops = append(ops, op{e.Folder, e.UID})
+			ops = append(ops, op{e.Folder, e.UID, e.Account})
 		}
 	}
 	if len(ops) == 0 {
@@ -1958,11 +2001,12 @@ func (m Model) markAllSeenCmd() tea.Cmd {
 	}
 	flags := make([]seenFlag, len(ops))
 	for i, o := range ops {
-		flags[i] = seenFlag{folder: o.folder, uid: o.uid, markSeen: false} // restore unread
+		flags[i] = seenFlag{folder: o.folder, uid: o.uid, account: o.account, markSeen: false} // restore unread
 	}
 	return func() tea.Msg {
 		for _, o := range ops {
-			if err := m.imapCli().MarkSeen(nil, o.folder, o.uid); err != nil {
+			cli := m.imapCliForEmail(&imap.Email{Account: o.account})
+			if err := cli.MarkSeen(nil, o.folder, o.uid); err != nil {
 				return batchDoneMsg{err: err, seen: flags}
 			}
 		}
@@ -1978,23 +2022,25 @@ func (m Model) batchToggleSeenCmd(emails []imap.Email) tea.Cmd {
 	type op struct {
 		folder   string
 		uid      uint32
+		account  string
 		markSeen bool
 	}
 	ops := make([]op, len(emails))
 	for i, e := range emails {
-		ops[i] = op{e.Folder, e.UID, !e.Seen}
+		ops[i] = op{e.Folder, e.UID, e.Account, !e.Seen}
 	}
 	flags := make([]seenFlag, len(emails))
 	for i, e := range emails {
-		flags[i] = seenFlag{folder: e.Folder, uid: e.UID, markSeen: e.Seen} // restore the old state
+		flags[i] = seenFlag{folder: e.Folder, uid: e.UID, account: e.Account, markSeen: e.Seen} // restore the old state
 	}
 	return func() tea.Msg {
 		for _, o := range ops {
 			var err error
+			cli := m.imapCliForEmail(&imap.Email{Account: o.account})
 			if o.markSeen {
-				err = m.imapCli().MarkSeen(nil, o.folder, o.uid)
+				err = cli.MarkSeen(nil, o.folder, o.uid)
 			} else {
-				err = m.imapCli().MarkUnseen(nil, o.folder, o.uid)
+				err = cli.MarkUnseen(nil, o.folder, o.uid)
 			}
 			if err != nil {
 				return batchDoneMsg{err: err, seen: flags}
@@ -2322,13 +2368,13 @@ func (m Model) scheduleBgSync() tea.Cmd {
 
 // scheduleMarkAsReadTimer returns a Cmd that fires markAsReadTimerMsg after the configured
 // delay. Returns nil (no-op) when mark_as_read_after_secs = 0 (immediate marking).
-func (m Model) scheduleMarkAsReadTimer(uid uint32, folder string) tea.Cmd {
+func (m Model) scheduleMarkAsReadTimer(uid uint32, folder, account string) tea.Cmd {
 	secs := m.cfg.UI.MarkAsReadAfterSecs
 	if secs <= 0 {
 		return nil // immediate marking handled elsewhere
 	}
 	return tea.Tick(time.Duration(secs)*time.Second, func(time.Time) tea.Msg {
-		return markAsReadTimerMsg{uid: uid, folder: folder}
+		return markAsReadTimerMsg{uid: uid, folder: folder, account: account}
 	})
 }
 
@@ -2807,7 +2853,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		uid := msg.email.UID
 		folder := msg.email.Folder
 		markImmediately := func() {
-			safeGo(func() { _ = m.imapCli().MarkSeen(nil, folder, uid) })
+			cli := m.imapCliForEmail(msg.email)
+			safeGo(func() { _ = cli.MarkSeen(nil, folder, uid) })
 			// Update local state immediately
 			for i := range m.emails {
 				if m.emails[i].UID == uid && m.emails[i].Folder == folder {
@@ -2823,6 +2870,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Schedule timer-based marking (for normal reading flow only)
 			m.markAsReadUID = uid
 			m.markAsReadFolder = folder
+			m.markAsReadAccount = msg.email.Account
 		}
 		// Handle pending actions - always mark immediately before launching
 		if m.pendingForward || m.pendingReply || m.pendingReplyAll || m.pendingReaction {
@@ -2854,7 +2902,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cfg.UI.MarkAsReadAfterSecs <= 0 {
 			return m, m.applyFilter()
 		} else {
-			return m, m.scheduleMarkAsReadTimer(uid, folder)
+			return m, m.scheduleMarkAsReadTimer(uid, folder, msg.email.Account)
 		}
 
 	case peekLoadedMsg:
@@ -3090,14 +3138,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		// Journal the read/unread change so u toggles it back.
-		m.pushUndo(undoAction{seen: []seenFlag{{folder: msg.folder, uid: msg.uid, markSeen: !msg.seen}}})
+		m.pushUndo(undoAction{seen: []seenFlag{{folder: msg.folder, uid: msg.uid, account: msg.account, markSeen: !msg.seen}}})
 		return m, m.applyFilter()
 
 	case markAsReadTimerMsg:
 		// Timer fired - mark email as read if user is still viewing it
 		if m.state == stateReading && m.markAsReadUID == msg.uid && m.markAsReadFolder == msg.folder {
 			// Still viewing the same email - mark it as read
-			safeGo(func() { _ = m.imapCli().MarkSeen(nil, msg.folder, msg.uid) })
+			cli := m.imapCliForEmail(&imap.Email{Account: msg.account})
+			safeGo(func() { _ = cli.MarkSeen(nil, msg.folder, msg.uid) })
 			// Update local state immediately
 			for i := range m.emails {
 				if m.emails[i].UID == msg.uid && m.emails[i].Folder == msg.folder {
@@ -3108,6 +3157,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Clear timer state
 			m.markAsReadUID = 0
 			m.markAsReadFolder = ""
+			m.markAsReadAccount = ""
 			return m, m.applyFilter()
 		}
 		// User navigated away - ignore timer
@@ -3115,6 +3165,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case imapSearchResultMsg:
 		return m.handleIMAPSearchResult(msg)
+
+	case universalSearchResultMsg:
+		return m.handleUniversalSearchResult(msg)
 
 	case everythingResultMsg:
 		return m.handleEverythingResult(msg)
@@ -3628,6 +3681,53 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// ── Our own filter mode ─────────────────────────────────────────
+	if m.universalSearchRunning {
+		if key == "esc" {
+			if m.searchCancel != nil {
+				m.searchCancel()
+			}
+			m.status = "Canceling universal search…"
+		}
+		return m, nil
+	}
+	if m.universalSearchActive {
+		switch key {
+		case "esc":
+			if m.searchCancel != nil {
+				m.searchCancel()
+			}
+			m.universalSearchActive = false
+			m.filterText = ""
+			m.status = "Universal search canceled."
+			return m, nil
+		case "enter":
+			query := strings.TrimSpace(m.filterText)
+			if query == "" {
+				m.universalSearchActive = false
+				return m, nil
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			m.searchCancel = cancel
+			m.universalSearchActive = false
+			m.universalSearchRunning = true
+			m.loading = true
+			m.status = "Indexing configured accounts and folders…"
+			return m, tea.Batch(m.spinner.Tick, m.universalSearchCmd(query, ctx))
+		case "backspace", "ctrl+h":
+			runes := []rune(m.filterText)
+			if len(runes) > 0 {
+				m.filterText = string(runes[:len(runes)-1])
+			}
+			return m, nil
+		default:
+			if len(key) == 1 {
+				m.filterText += key
+			}
+			return m, nil
+		}
+	}
+
+	// ── Legacy in-memory filter mode ─────────────────────────────────
 	// When active, consume all keys for text input; no inbox commands fire.
 	if m.filterActive {
 		switch key {
@@ -3756,6 +3856,14 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.imapSearchResults {
 			m.imapSearchResults = false
 			m.imapSearchText = ""
+			m.offTabFolder = ""
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
+		}
+		if m.universalSearchResults {
+			m.universalSearchResults = false
+			m.universalSearchText = ""
+			m.filterText = ""
 			m.offTabFolder = ""
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
@@ -4066,6 +4174,12 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/":
+		if m.canUniversalSearch() {
+			m.universalSearchActive = true
+			m.filterText = ""
+			m.status = "Universal search: all configured accounts/folders · enter search · esc cancel"
+			return m, nil
+		}
 		m.filterActive = true
 		m.filterText = ""
 		return m, m.applyFilter()
@@ -4374,6 +4488,10 @@ func addCmdHistory(history []string, input string) []string {
 // applyFilter filters m.emails by filterText and showUnreadOnly and refreshes the list.
 // Call this whenever filterText or showUnreadOnly changes.
 func (m *Model) applyFilter() tea.Cmd {
+	if m.universalSearchResults {
+		noThread := len(m.folders) > 0 && m.activeFolder() == m.cfg.Folders.Sent
+		return setEmails(&m.inbox, m.emails, m.markedUIDs, m.spyPixelKeys, true, m.sortField, m.sortReverse, noThread, m.collapsedThreads, m.expandedThreads)
+	}
 	// SetItems does not clamp bubbles/list's cursor when a filter shrinks the
 	// list. Capture the highlighted email and index first, then restore the
 	// closest visible position so actions after `/` always target a real row.
@@ -4875,6 +4993,7 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Clear mark-as-read timer state when exiting reader
 		m.markAsReadUID = 0
 		m.markAsReadFolder = ""
+		m.markAsReadAccount = ""
 		// Rebuild inbox list so ⊙ spy pixel indicator appears immediately
 		if m.openSpyPixels.Count > 0 {
 			return m, m.applyFilter()
@@ -4966,6 +5085,7 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Clear mark-as-read timer state when switching to conversation view
 			m.markAsReadUID = 0
 			m.markAsReadFolder = ""
+			m.markAsReadAccount = ""
 			return m, tea.Batch(m.spinner.Tick, m.fetchConversationCmd(m.openEmail))
 		}
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
@@ -7017,6 +7137,16 @@ func (m Model) viewInbox() string {
 		b.WriteString(viewCmdLinePreview(m.cmdText, m.cmdLinePreview(m.cmdText), m.width))
 	} else if m.imapSearchActive || m.imapSearchResults {
 		b.WriteString(m.viewIMAPSearchBar())
+	} else if m.universalSearchActive || m.universalSearchResults {
+		cursor := ""
+		if m.universalSearchActive {
+			cursor = "█"
+		}
+		hint := "enter search · esc cancel"
+		if m.universalSearchResults {
+			hint = "esc close · BODY.PEEK · attachments not searched"
+		}
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  / %s%s  · universal full-text · %s", m.filterText, cursor, hint)))
 	} else if m.filterActive || m.filterText != "" {
 		cursor := ""
 		hint := "esc clear"

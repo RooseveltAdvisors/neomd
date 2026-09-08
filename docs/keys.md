@@ -10,7 +10,7 @@ example, `in 3 days`, `friday 2pm`, or `next week`).
 |---|---|---|---|
 | ⌘K mark done | `e` | vim-adapted | Captain chose lowercase e for archive / done. |
 | E mark not done | `E` | vim-adapted | Shift remains the opposite action and returns mail to Inbox. |
-| / search | `/` | same | Vim filter is already the local-list search. Field tokens (from:, to:, subject:, has:attachment, before:/after:, in:) combine with free text. |
+| / search | `/` | same | Universal full-text search across configured accounts/folders; matches names, addresses, subject, decoded body, and composes with field/date/folder filters. Partial scope is shown; attachments/OCR are not searched. |
 | Z remind me | `h` | vim-adapted | Captain reserved h for remind; the picker accepts quick picks and natural language. |
 | ? shortcuts | `?` | same | Opens the searchable help overlay. |
 | S star | dropped | dropped | neomd has no star state. |

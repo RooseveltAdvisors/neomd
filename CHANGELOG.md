@@ -1,5 +1,12 @@
 # Changelog
 
+- **Universal full-text `/` search** — `/` now searches every configured account and
+  folder over sender/recipient names and addresses, subject, and decoded plain/HTML
+  body using Bleve v2.5.7's private disposable embedded index. Prefixes, small typos, relevance, and the
+  existing explicit filters compose; partial scope, cancellation, and fetch failures
+  remain visible, and search results preserve their owning account for opening/actions.
+  Attachments/OCR are not searched. Regression coverage: `internal/search/index_test.go`.
+
 # 2026-09-08
 
 - **CI integration tests use an ephemeral demo mailbox** — GitHub Actions now starts

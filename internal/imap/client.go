@@ -39,6 +39,11 @@ type Attachment struct {
 }
 
 type Email struct {
+	// Account is the configured account name that owns this message. It is
+	// populated by cross-account search; ordinary folder fetches may leave it
+	// empty. Keeping it on the envelope lets search results open and act on the
+	// correct IMAP client instead of whichever account is active in the TUI.
+	Account       string
 	UID           uint32
 	From          string
 	To            string

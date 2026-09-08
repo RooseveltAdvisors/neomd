@@ -177,7 +177,7 @@ Keep your inbox clean without effort.
 
 ### Search
 
-- **Search** — `/` filters loaded emails in-memory; `space /` or `:search` runs IMAP SEARCH across all folders (fetching headers, capped at 100 per folder) with results in a temporary "Search" tab; supports `from:`, `subject:`, `to:` prefixes [→](https://neomd.ssp.sh/docs/keybindings/#leader-key-mappings-space-prefix)
+- **Universal search** — `/` refreshes Bleve's private, memory-only embedded full-text index across every configured account and folder, matching sender/recipient names and addresses, subject, and decoded plain/HTML body with case-insensitive prefix and small-typo tolerance; explicit `from:`, `to:`, `subject:`, `has:attachment`, date, and folder filters compose with it. Scope, indexing progress, cancellations, and retrieval failures stay visible, so a partial index never looks like a definitive zero. Attachments are not retained or searched; OCR and arbitrary attachment extraction are intentionally unsupported. `space /` or `:search` remains the header-only IMAP search path.
 
 ### Standard Email Features
 
