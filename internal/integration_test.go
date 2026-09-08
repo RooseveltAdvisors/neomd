@@ -18,7 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sspaeti/neomd/internal/config"
+	"github.com/sspaeti/neomd/internal/daemon"
 	goIMAP "github.com/sspaeti/neomd/internal/imap"
+	"github.com/sspaeti/neomd/internal/reminder"
 	"github.com/sspaeti/neomd/internal/schedule"
 	"github.com/sspaeti/neomd/internal/smtp"
 )
@@ -71,6 +74,21 @@ func getEnvOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func loadGreenMailEnv(t *testing.T) testEnv {
+	t.Helper()
+	if os.Getenv("NEOMD_TEST_IMAP_HOST") != "127.0.0.1" ||
+		getEnvOr("NEOMD_TEST_IMAP_PORT", "993") != "3993" ||
+		getEnvOr("NEOMD_TEST_SMTP_HOST", os.Getenv("NEOMD_TEST_IMAP_HOST")) != "127.0.0.1" ||
+		getEnvOr("NEOMD_TEST_SMTP_PORT", "587") != "3465" {
+		t.Skip("requires the local GreenMail account on 127.0.0.1:3993/3465")
+	}
+	return testEnv{
+		imapHost: "127.0.0.1", imapPort: "3993",
+		smtpHost: "127.0.0.1", smtpPort: "3465",
+		user: "demo@neomd.local", password: "demo123", from: "NeoMD Demo <demo@neomd.local>",
+	}
 }
 
 func (e testEnv) imapClient() *goIMAP.Client {
@@ -181,6 +199,138 @@ func TestIntegration_IMAPFetchHeaders(t *testing.T) {
 		if e.Subject == "" && e.From == "" {
 			t.Error("email has no subject and no from")
 		}
+	}
+}
+
+// GreenMail 2.1.0 omits custom BODY.PEEK[HEADER.FIELDS] responses. This
+// lifecycle proves the daemon sees reminder metadata after SMTP delivery,
+// parks the message with a recoverable Trash copy, and resurfaces the same
+// body and metadata once due.
+func TestIntegration_Hardening_GreenMailReminderLifecycle(t *testing.T) {
+	env := loadGreenMailEnv(t)
+	cli := env.imapClient()
+	defer cli.Close()
+	ctx := context.Background()
+	folders := []string{"Waiting", "Trash"}
+	if _, err := cli.EnsureFolders(ctx, folders); err != nil {
+		t.Fatalf("EnsureFolders: %v", err)
+	}
+
+	subject := uniqueSubject("greenmail-reminder-lifecycle")
+	body := "Synthetic reminder body with umlaut ä.\n\nSecond line."
+	if err := smtp.Send(env.smtpConfig(), env.user, "", "", subject, body, nil); err != nil {
+		t.Fatalf("Send synthetic reminder: %v", err)
+	}
+
+	// Keep this test self-cleaning if a later assertion fails.
+	defer func() {
+		for _, folder := range []string{"INBOX", "Waiting", "Trash"} {
+			emails, err := cli.FetchHeaders(ctx, folder, 0)
+			if err != nil {
+				t.Logf("cleanup %s: FetchHeaders: %v", folder, err)
+				continue
+			}
+			for _, email := range emails {
+				if strings.Contains(email.Subject, subject) {
+					cleanupEmail(t, cli, folder, email.UID)
+				}
+			}
+		}
+	}()
+
+	inbox := waitForEmail(t, cli, "INBOX", subject, 30*time.Second)
+	rawInbox, err := cli.FetchRaw(ctx, "INBOX", inbox.UID)
+	if err != nil {
+		t.Fatalf("FetchRaw INBOX: %v", err)
+	}
+	parsedInbox, parsedBody, _, err := goIMAP.ParseRawMessage(rawInbox)
+	if err != nil {
+		t.Fatalf("ParseRawMessage INBOX: %v", err)
+	}
+	if parsedBody != body {
+		t.Fatalf("synthetic body = %q, want %q", parsedBody, body)
+	}
+	inbox.MessageID = parsedInbox.MessageID
+
+	dueAt := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	if err := cli.ParkReminder(ctx, *inbox, []string{"INBOX", "Waiting", "Trash"}, "Waiting", "Trash", dueAt); err != nil {
+		t.Fatalf("ParkReminder: %v", err)
+	}
+
+	waiting := waitForEmail(t, cli, "Waiting", subject, 30*time.Second)
+	if waiting.Reminder == nil || !waiting.Reminder.At.Equal(dueAt) || waiting.Reminder.State != "scheduled" {
+		t.Fatalf("Waiting reminder = %#v, want scheduled at %s", waiting.Reminder, dueAt.Format(time.RFC3339))
+	}
+	rawWaiting, err := cli.FetchRaw(ctx, "Waiting", waiting.UID)
+	if err != nil {
+		t.Fatalf("FetchRaw Waiting: %v", err)
+	}
+	waitingMetadata, err := reminder.ParseHeader(rawWaiting)
+	if err != nil || !waitingMetadata.At.Equal(dueAt) || waitingMetadata.ID != parsedInbox.MessageID {
+		t.Fatalf("Waiting raw metadata = %#v, err=%v", waitingMetadata, err)
+	}
+	_, waitingBody, _, err := goIMAP.ParseRawMessage(rawWaiting)
+	if err != nil || waitingBody != body {
+		t.Fatalf("Waiting body = %q, err=%v; want %q", waitingBody, err, body)
+	}
+
+	trash := waitForEmail(t, cli, "Trash", subject, 30*time.Second)
+	rawTrash, err := cli.FetchRaw(ctx, "Trash", trash.UID)
+	if err != nil {
+		t.Fatalf("FetchRaw Trash: %v", err)
+	}
+	trashMetadata, err := reminder.ParseHeader(rawTrash)
+	if err != nil || !trashMetadata.At.IsZero() || trashMetadata.ID != "" {
+		t.Fatalf("Trash copy metadata = %#v, err=%v; want original without reminder metadata", trashMetadata, err)
+	}
+	_, trashBody, _, err := goIMAP.ParseRawMessage(rawTrash)
+	if err != nil || trashBody != body {
+		t.Fatalf("Trash body = %q, err=%v; want %q", trashBody, err, body)
+	}
+
+	d := daemon.New(config.Config{Folders: config.FoldersConfig{Inbox: "INBOX", Waiting: "Waiting", Trash: "Trash"}}, cli, nil)
+	if err := d.ProcessReminders(ctx); err != nil {
+		t.Fatalf("ProcessReminders: %v", err)
+	}
+
+	resurfaced := waitForEmail(t, cli, "INBOX", subject, 30*time.Second)
+	if resurfaced.Reminder == nil || !resurfaced.Reminder.At.Equal(dueAt) || resurfaced.Reminder.ID != parsedInbox.MessageID {
+		t.Fatalf("resurfaced reminder = %#v, want original metadata", resurfaced.Reminder)
+	}
+	rawResurfaced, err := cli.FetchRaw(ctx, "INBOX", resurfaced.UID)
+	if err != nil {
+		t.Fatalf("FetchRaw resurfaced INBOX: %v", err)
+	}
+	resurfacedMetadata, err := reminder.ParseHeader(rawResurfaced)
+	if err != nil || !resurfacedMetadata.At.Equal(dueAt) || resurfacedMetadata.ID != parsedInbox.MessageID {
+		t.Fatalf("resurfaced raw metadata = %#v, err=%v", resurfacedMetadata, err)
+	}
+	_, resurfacedBody, _, err := goIMAP.ParseRawMessage(rawResurfaced)
+	if err != nil || resurfacedBody != body {
+		t.Fatalf("resurfaced body = %q, err=%v; want %q", resurfacedBody, err, body)
+	}
+
+	waitingEmails, err := cli.FetchHeaders(ctx, "Waiting", 0)
+	if err != nil {
+		t.Fatalf("FetchHeaders Waiting after resurface: %v", err)
+	}
+	for _, email := range waitingEmails {
+		if strings.Contains(email.Subject, subject) {
+			t.Fatalf("due reminder still present in Waiting: UID %d", email.UID)
+		}
+	}
+	trashEmails, err := cli.FetchHeaders(ctx, "Trash", 0)
+	if err != nil {
+		t.Fatalf("FetchHeaders Trash after resurface: %v", err)
+	}
+	trashMatches := 0
+	for _, email := range trashEmails {
+		if strings.Contains(email.Subject, subject) {
+			trashMatches++
+		}
+	}
+	if trashMatches != 1 {
+		t.Fatalf("Trash copies after resurface = %d, want 1", trashMatches)
 	}
 }
 

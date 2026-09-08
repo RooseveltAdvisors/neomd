@@ -333,6 +333,17 @@ func reminderHeaderSection() *imap.FetchItemBodySection {
 	}
 }
 
+// metadataHeaderSection fetches the complete RFC header, rather than relying
+// on HEADER.FIELDS. GreenMail 2.1.0 accepts the former but omits custom header
+// fields from the latter. Headers remain bounded, and PEEK keeps this a
+// read-only list operation.
+func metadataHeaderSection() *imap.FetchItemBodySection {
+	return &imap.FetchItemBodySection{
+		Specifier: imap.PartSpecifierHeader,
+		Peek:      true,
+	}
+}
+
 func parseReminder(raw []byte) *reminder.Metadata {
 	if len(raw) == 0 {
 		return nil
@@ -416,15 +427,14 @@ func (c *Client) FetchHeadersBefore(ctx context.Context, folder string, beforeUI
 			fetchSet.AddNum(uid)
 		}
 
-		sendAtSection := sendAtHeaderSection()
-		reminderSection := reminderHeaderSection()
+		metadataSection := metadataHeaderSection()
 		fetchOpts := &imap.FetchOptions{
 			UID:           true,
 			Flags:         true,
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
-			BodySection:   []*imap.FetchItemBodySection{sendAtSection, reminderSection},
+			BodySection:   []*imap.FetchItemBodySection{metadataSection},
 		}
 		msgs, err := collectHeaderFetch(func(opts *imap.FetchOptions) ([]*imapclient.FetchMessageBuffer, error) {
 			return conn.Fetch(fetchSet, opts).Collect()
@@ -443,7 +453,8 @@ func (c *Client) FetchHeadersBefore(ctx context.Context, folder string, beforeUI
 			if !ok {
 				continue
 			}
-			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.FindBodySection(sendAtSection)), Reminder: parseReminder(m.FindBodySection(reminderSection))}
+			metadata := m.FindBodySection(metadataSection)
+			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(metadata), Reminder: parseReminder(metadata)}
 			for _, f := range m.Flags {
 				if f == imap.FlagSeen {
 					e.Seen = true
@@ -873,15 +884,14 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 		for _, uid := range uids {
 			fetchSet.AddNum(imap.UID(uid))
 		}
-		sendAtSection := sendAtHeaderSection()
-		reminderSection := reminderHeaderSection()
+		metadataSection := metadataHeaderSection()
 		fetchOpts := &imap.FetchOptions{
 			UID:           true,
 			Flags:         true,
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
-			BodySection:   []*imap.FetchItemBodySection{sendAtSection, reminderSection},
+			BodySection:   []*imap.FetchItemBodySection{metadataSection},
 		}
 		msgs, err := collectHeaderFetch(func(opts *imap.FetchOptions) ([]*imapclient.FetchMessageBuffer, error) {
 			return conn.Fetch(fetchSet, opts).Collect()
@@ -890,7 +900,8 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 			return fmt.Errorf("FETCH headers: %w", err)
 		}
 		for _, m := range msgs {
-			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.FindBodySection(sendAtSection)), Reminder: parseReminder(m.FindBodySection(reminderSection))}
+			metadata := m.FindBodySection(metadataSection)
+			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(metadata), Reminder: parseReminder(metadata)}
 			for _, f := range m.Flags {
 				if f == imap.FlagSeen {
 					e.Seen = true
