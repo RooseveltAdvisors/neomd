@@ -57,6 +57,10 @@ func ShouldRetryInsecureLocalhost(host, certFile string, err error) bool {
 	if errors.As(err, &unknownAuthority) {
 		return true
 	}
+	var hostnameError x509.HostnameError
+	if errors.As(err, &hostnameError) {
+		return true
+	}
 
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "x509") && strings.Contains(msg, "certificate signed by")

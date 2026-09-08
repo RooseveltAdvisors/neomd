@@ -7,7 +7,7 @@ LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 #   make sync-headless TI_HOST=ti.sspaeti.duckdns.org
 TI_HOST ?= ti
 
-.PHONY: build run install daemon clean test test-integration send-test vet fmt fmt-check tidy release docs help check-go demo demo-reset demo-hp demo-hp-reset benchmark ooo
+.PHONY: build run install daemon clean test test-integration test-integration-ci run-test-mail-server send-test vet fmt fmt-check tidy release docs help check-go demo demo-reset demo-hp demo-hp-reset benchmark ooo
 
 
 .DEFAULT_GOAL := install
@@ -82,6 +82,24 @@ test-integration:
 	NEOMD_TEST_PASS=$$IMAP_PASS_NEOMD_DEMO \
 	NEOMD_TEST_FROM="Neomd Demo <neomd.demo@ssp.sh>" \
 	go test ./internal/ -run TestIntegration -v -count=1 -timeout 120s
+
+## test-integration-ci: run integration tests against a local GreenMail container
+test-integration-ci:
+	NEOMD_TEST_IMAP_HOST=127.0.0.1 \
+	NEOMD_TEST_IMAP_PORT=3993 \
+	NEOMD_TEST_SMTP_HOST=127.0.0.1 \
+	NEOMD_TEST_SMTP_PORT=3465 \
+	NEOMD_TEST_USER=demo@neomd.local \
+	NEOMD_TEST_PASS=demo123 \
+	NEOMD_TEST_FROM="NeoMD Demo <demo@neomd.local>" \
+	go test ./internal/ -run "TestIntegration|Integration_Hardening" -v -count=1 -timeout 180s
+
+## run-test-mail-server: run local GreenMail container for integration tests
+run-test-mail-server:
+	docker run --rm -d --name neomd-greenmail \
+		-p 3143:3143 -p 3993:3993 -p 3025:3025 -p 3465:3465 -p 3587:3587 \
+		-e GREENMAIL_OPTS="-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=demo:demo123@neomd.local -Dgreenmail.users.login=email -Dgreenmail.verbose" \
+		greenmail/standalone:2.1.0
 
 ## send-test: send a test email to sspaeti@hey.com (override: make send-test TO=other@example.com)
 send-test:

@@ -1473,7 +1473,8 @@ func (c *Client) EnsureFolders(ctx context.Context, folders []string) ([]string,
 			err := conn.Create(folder, nil).Wait()
 			if err != nil {
 				var imapErr *imap.Error
-				if errors.As(err, &imapErr) && imapErr.Code == imap.ResponseCodeAlreadyExists {
+				if (errors.As(err, &imapErr) && imapErr.Code == imap.ResponseCodeAlreadyExists) ||
+					strings.Contains(strings.ToLower(err.Error()), "already exists") {
 					// Folder exists — still ensure it's subscribed
 					_ = conn.Subscribe(folder).Wait()
 					continue

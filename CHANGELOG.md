@@ -2,6 +2,14 @@
 
 # 2026-09-08
 
+- **CI integration tests use an ephemeral demo mailbox** — GitHub Actions now starts
+  GreenMail with a hermetic `demo@neomd.local` account, waits for its TLS services,
+  and runs the full integration and hardening suites. Local `make` targets provide the
+  same container and port configuration without touching the live demo account. Where:
+  `.github/workflows/test.yml`, `Makefile`, `internal/integration_test.go`,
+  `internal/smtp/sender.go`, `internal/mailtls`. Tests: `TestInferSMTPUseTLS`,
+  `TestShouldRetryInsecureLocalhost`, `TestIntegration_*`.
+
 - **Reminders are resilient and show their fire time** — header fetches retry
   without BODYSTRUCTURE when a malformed nested MIME part breaks the beta IMAP
   parser; reminder reconciliation now searches by Message-ID/reminder ID instead

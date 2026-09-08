@@ -30,6 +30,9 @@ func TestShouldRetryInsecureLocalhost(t *testing.T) {
 	if !ShouldRetryInsecureLocalhost("127.0.0.1", "", x509.UnknownAuthorityError{}) {
 		t.Fatal("expected localhost unknown authority error to trigger fallback")
 	}
+	if !ShouldRetryInsecureLocalhost("127.0.0.1", "", x509.HostnameError{}) {
+		t.Fatal("expected localhost hostname error to trigger fallback")
+	}
 	if ShouldRetryInsecureLocalhost("imap.example.com", "", x509.UnknownAuthorityError{}) {
 		t.Fatal("did not expect remote host to trigger fallback")
 	}

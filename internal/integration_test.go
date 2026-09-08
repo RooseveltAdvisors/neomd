@@ -19,6 +19,7 @@ import (
 	"time"
 
 	goIMAP "github.com/sspaeti/neomd/internal/imap"
+	"github.com/sspaeti/neomd/internal/schedule"
 	"github.com/sspaeti/neomd/internal/smtp"
 )
 
@@ -54,6 +55,14 @@ func loadEnv(t *testing.T) testEnv {
 	if env.from == "" {
 		env.from = env.user
 	}
+
+	// GreenMail starts with only INBOX. Keep the demo account compatible with
+	// the folders used by the integration suite and by a normal neomd setup.
+	cli := env.imapClient()
+	defer cli.Close()
+	if _, err := cli.EnsureFolders(context.Background(), []string{"Drafts", "Sent", "Scheduled"}); err != nil {
+		t.Fatalf("ensure integration folders: %v", err)
+	}
 	return env
 }
 
@@ -70,8 +79,8 @@ func (e testEnv) imapClient() *goIMAP.Client {
 		Port:     e.imapPort,
 		User:     e.user,
 		Password: e.password,
-		TLS:      e.imapPort == "993",
-		STARTTLS: e.imapPort == "143",
+		TLS:      e.imapPort == "993" || e.imapPort == "3993",
+		STARTTLS: e.imapPort == "143" || e.imapPort == "3143",
 	})
 }
 
@@ -91,6 +100,7 @@ func (e testEnv) smtpConfig() smtp.Config {
 		User:     e.user,
 		Password: e.password,
 		From:     e.from,
+		STARTTLS: e.smtpPort == "587" || e.smtpPort == "3587",
 	}
 }
 
@@ -110,6 +120,19 @@ func waitForEmail(t *testing.T, cli *goIMAP.Client, folder, subject string, time
 		if err == nil {
 			for i := range emails {
 				if strings.Contains(emails[i].Subject, subject) {
+					// Some IMAP servers (including GreenMail 2.1.0) omit
+					// custom headers and threading fields from ENVELOPE or
+					// HEADER.FIELDS responses. The raw message is the wire
+					// fidelity source for these integration assertions.
+					if raw, rawErr := cli.FetchRaw(ctx, folder, emails[i].UID); rawErr == nil {
+						parsed, _, _, err := goIMAP.ParseRawMessage(raw)
+						if err == nil {
+							emails[i].InReplyTo = parsed.InReplyTo
+						}
+						if job, _, found, extractErr := schedule.Extract(raw); extractErr == nil && found {
+							emails[i].SendAt = job.SendAt
+						}
+					}
 					return &emails[i]
 				}
 			}
