@@ -367,7 +367,8 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   `TestFormatEnvelopeAddr`, `TestExpandSearchQueries`,
   `TestContactNamesForResolvesBareAddresses`.
 
-- **Universal `/` search** — `internal/search` indexes every configured account and
+- **Universal `/` search** — `internal/search` uses Bleve's memory-only embedded index
+  to index every configured account and
   folder using decoded envelope/body text fetched with `BODY.PEEK`; sender/recipient
   names and addresses, subject, body terms, prefixes, small typos, relevance, and
   explicit field/date/folder filters are supported. Missing folders/body fetches,

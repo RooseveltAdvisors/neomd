@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -65,5 +66,39 @@ func TestIndexRefreshRetainsAndDeletesBySuccessfulScope(t *testing.T) {
 	}
 	if got := i.Search("keep"); len(got) != 1 {
 		t.Fatalf("kept document missing: %#v", got)
+	}
+}
+
+func TestSearchMatchesAddressesAndIncrementalChanges(t *testing.T) {
+	i := New()
+	e := doc(7, "Sender Person <sender@example.test>", "Initial subject")
+	e.To = "Recipient Person <recipient@example.test>"
+	i.UpsertBody(e, "Sender Person Recipient Person", "stable body token", "")
+
+	for _, query := range []string{"from:sender@example.test", "to:recipient@example.test", "recipient", "stable"} {
+		if got := i.Search(query); len(got) != 1 || got[0].UID != e.UID {
+			t.Fatalf("Search(%q) = %#v, want fixture uid %d", query, got, e.UID)
+		}
+	}
+
+	changed := e
+	changed.Subject = "Updated subject"
+	i.UpsertHeader(changed, "Sender Person Recipient Person")
+	if got := i.Search("stable"); len(got) != 0 {
+		t.Fatalf("stale body remained after header refresh: %#v", got)
+	}
+	i.UpsertBody(changed, "Sender Person Recipient Person", "fresh body token", "")
+	if got := i.Search("fresh"); len(got) != 1 || got[0].Subject != changed.Subject {
+		t.Fatalf("fresh body search = %#v, want updated fixture", got)
+	}
+}
+
+func TestSearchContextHonorsCancellation(t *testing.T) {
+	i := New()
+	i.UpsertBody(doc(1, "sender@example.test", "subject"), "", "body", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := i.SearchContext(ctx, "body"); len(got) != 0 {
+		t.Fatalf("canceled search returned %#v", got)
 	}
 }

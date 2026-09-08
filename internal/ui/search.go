@@ -100,7 +100,7 @@ func (m Model) universalSearchCmd(query string, ctx context.Context) tea.Cmd {
 		}
 		index.RemoveMissing(present, successfulScopes)
 		bodies = index.Stats().Bodies
-		matches := index.Search(query)
+		matches := index.SearchContext(ctx, query)
 		fq := parseFilterQuery(query, time.Now(), aliases)
 		filtered := matches[:0]
 		for _, e := range matches {

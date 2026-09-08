@@ -1,12 +1,13 @@
-// Package search contains the small, private full-text index used by the TUI.
+// Package search contains NeoMD's private, memory-only full-text index.
 //
-// The index deliberately keeps only decoded searchable text and message
-// identity metadata. Attachments are never retained or searched. IMAP remains
-// the source of truth; callers refresh headers and only fetch bodies whose
-// fingerprint is new or changed.
+// IMAP remains the source of truth. The index stores only decoded searchable
+// text and message identity metadata for the current process; it is rebuilt
+// from authorized folders and never persisted to disk.
 package search
 
 import (
+	"context"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,7 +15,18 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/blevesearch/bleve/v2"
+	_ "github.com/blevesearch/bleve/v2/analysis/analyzer/web"
+	"github.com/blevesearch/bleve/v2/mapping"
+	"github.com/blevesearch/bleve/v2/search/query"
 	"github.com/sspaeti/neomd/internal/imap"
+)
+
+const (
+	fieldFrom    = "from"
+	fieldTo      = "to"
+	fieldSubject = "subject"
+	fieldBody    = "body"
 )
 
 type document struct {
@@ -26,14 +38,41 @@ type document struct {
 	scope       string
 }
 
-// Index is safe to refresh and query from separate Bubble Tea commands.
+// Index is safe to refresh and query from separate Bubble Tea commands. The
+// inverted index is provided by Bleve; docs only retains identity and refresh
+// metadata needed to reconcile IMAP scopes and route selected messages.
 type Index struct {
-	mu   sync.RWMutex
-	docs map[string]document
+	mu    sync.RWMutex
+	docs  map[string]document
+	bleve bleve.Index
 }
 
-// New returns an empty full-text index.
-func New() *Index { return &Index{docs: make(map[string]document)} }
+// New returns an empty memory-only Bleve full-text index. The mapping is
+// intentionally explicit: attachment bytes and arbitrary IMAP fields are not
+// indexed or retained.
+func New() *Index {
+	field := mapping.NewTextFieldMapping()
+	field.Analyzer = "web"
+	field.Store = false
+	field.IncludeTermVectors = false
+
+	docMapping := mapping.NewDocumentMapping()
+	docMapping.Dynamic = false
+	for _, name := range []string{fieldFrom, fieldTo, fieldSubject, fieldBody} {
+		docMapping.AddFieldMappingsAt(name, field)
+	}
+	indexMapping := mapping.NewIndexMapping()
+	indexMapping.DefaultMapping = docMapping
+	indexMapping.DefaultAnalyzer = "web"
+
+	idx, err := bleve.NewMemOnly(indexMapping)
+	if err != nil {
+		// The mapping uses only Bleve's built-in analyzer. Failure here means the
+		// binary cannot provide its required local search primitive.
+		panic("search: initialize Bleve index: " + err.Error())
+	}
+	return &Index{docs: make(map[string]document), bleve: idx}
+}
 
 // Key identifies a message without exposing mailbox contents.
 func Key(e imap.Email) string {
@@ -60,20 +99,53 @@ func (i *Index) UpsertHeader(e imap.Email, contactText string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	k := Key(e)
-	d := i.docs[k]
-	if d.bodyReady && d.fingerprint == fingerprint(e) {
-		d.email, d.contactText, d.scope = e, contactText, scope(e)
+	d, ok := i.docs[k]
+	if ok && d.bodyReady && d.fingerprint == fingerprint(e) && d.contactText == contactText {
+		d.email, d.scope = e, scope(e)
 		i.docs[k] = d
 		return
 	}
-	i.docs[k] = document{email: e, contactText: contactText, fingerprint: fingerprint(e), scope: scope(e), bodyReady: false}
+	if ok && d.bodyReady && d.fingerprint == fingerprint(e) {
+		d.email, d.contactText, d.scope = e, contactText, scope(e)
+		i.docs[k] = d
+		i.putLocked(k, d)
+		return
+	}
+	d = document{email: e, contactText: contactText, fingerprint: fingerprint(e), scope: scope(e)}
+	i.docs[k] = d
+	i.putLocked(k, d)
 }
 
 // UpsertBody stores decoded plain/HTML text for a message.
 func (i *Index) UpsertBody(e imap.Email, contactText, plain, html string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	i.docs[Key(e)] = document{email: e, contactText: contactText, body: plain + "\n" + stripHTML(html), bodyReady: true, fingerprint: fingerprint(e), scope: scope(e)}
+	k := Key(e)
+	d := document{
+		email:       e,
+		contactText: contactText,
+		body:        plain + "\n" + stripHTML(html),
+		bodyReady:   true,
+		fingerprint: fingerprint(e),
+		scope:       scope(e),
+	}
+	i.docs[k] = d
+	i.putLocked(k, d)
+}
+
+func (i *Index) putLocked(k string, d document) {
+	if err := i.bleve.Index(k, bleveDocument(d)); err != nil {
+		log.Printf("search index update failed: %v", err)
+	}
+}
+
+func bleveDocument(d document) map[string]string {
+	return map[string]string{
+		fieldFrom:    d.email.From + " " + d.contactText,
+		fieldTo:      d.email.To + " " + d.email.CC + " " + d.email.BCC + " " + d.contactText,
+		fieldSubject: d.email.Subject,
+		fieldBody:    d.body,
+	}
 }
 
 // RemoveMissing removes messages from successful scopes that disappeared
@@ -85,6 +157,9 @@ func (i *Index) RemoveMissing(present map[string]struct{}, successfulScopes map[
 		if _, ok := successfulScopes[d.scope]; ok {
 			if _, present := present[k]; !present {
 				delete(i.docs, k)
+				if err := i.bleve.Delete(k); err != nil {
+					log.Printf("search index delete failed: %v", err)
+				}
 			}
 		}
 	}
@@ -108,13 +183,13 @@ func (i *Index) Stats() Stats {
 	return s
 }
 
-type query struct {
+type parsedQuery struct {
 	from, to, subject []string
 	free              []string
 }
 
-func parseQuery(text string) query {
-	var q query
+func parseQuery(text string) parsedQuery {
+	var q parsedQuery
 	for _, token := range queryTokens(text) {
 		lower := strings.ToLower(token)
 		switch {
@@ -133,27 +208,41 @@ func parseQuery(text string) query {
 	return q
 }
 
-// Search returns matching emails in relevance/date order. Text matching is
-// case-insensitive, accepts prefixes, and tolerates one edit for terms of
-// four or more letters. All terms in a query must match.
-func (i *Index) Search(text string) []imap.Email {
+// Search returns matching emails in relevance/date order.
+func (i *Index) Search(text string) []imap.Email { return i.SearchContext(context.Background(), text) }
+
+// SearchContext is Search with cancellation propagated into Bleve's searcher.
+func (i *Index) SearchContext(ctx context.Context, text string) []imap.Email {
 	q := parseQuery(text)
 	i.mu.RLock()
 	defer i.mu.RUnlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	searchQuery := buildQuery(q)
+	size := len(i.docs)
+	if size == 0 {
+		return nil
+	}
+	result, err := i.bleve.SearchInContext(ctx, bleve.NewSearchRequestOptions(searchQuery, size, 0, false))
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("search query failed: %v", err)
+		}
+		return nil
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
 	type scored struct {
 		e     imap.Email
-		score int
+		score float64
 	}
-	var hits []scored
-	for _, d := range i.docs {
-		score := 0
-		if !matchTerms(q.from, tokenize(d.email.From+" "+d.contactText), &score, 8) ||
-			!matchTerms(q.to, tokenize(d.email.To+" "+d.email.CC+" "+d.email.BCC+" "+d.contactText), &score, 7) ||
-			!matchTerms(q.subject, tokenize(d.email.Subject), &score, 10) ||
-			!matchTerms(q.free, tokenize(d.email.From+" "+d.email.To+" "+d.email.CC+" "+d.email.BCC+" "+d.email.Subject+" "+d.contactText+" "+d.body), &score, 3) {
-			continue
+	hits := make([]scored, 0, len(result.Hits))
+	for _, hit := range result.Hits {
+		if d, ok := i.docs[hit.ID]; ok {
+			hits = append(hits, scored{e: d.email, score: hit.Score})
 		}
-		hits = append(hits, scored{e: d.email, score: score})
 	}
 	sort.SliceStable(hits, func(a, b int) bool {
 		if hits[a].score != hits[b].score {
@@ -168,31 +257,49 @@ func (i *Index) Search(text string) []imap.Email {
 	return out
 }
 
-func matchTerms(terms, field []string, score *int, weight int) bool {
-	for _, term := range terms {
-		matched := false
-		for _, candidate := range field {
-			if candidate == term {
-				*score += weight + 3
-				matched = true
-				break
-			}
-			if strings.HasPrefix(candidate, term) {
-				*score += weight + 1
-				matched = true
-				break
-			}
-			if len([]rune(term)) >= 4 && levenshteinAtMostOne(term, candidate) {
-				*score += weight
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
+func buildQuery(q parsedQuery) query.Query {
+	var must []query.Query
+	if len(q.from) > 0 {
+		must = append(must, termsQuery(q.from, []string{fieldFrom}))
 	}
-	return true
+	if len(q.to) > 0 {
+		must = append(must, termsQuery(q.to, []string{fieldTo}))
+	}
+	if len(q.subject) > 0 {
+		must = append(must, termsQuery(q.subject, []string{fieldSubject}))
+	}
+	if len(q.free) > 0 {
+		must = append(must, termsQuery(q.free, []string{fieldFrom, fieldTo, fieldSubject, fieldBody}))
+	}
+	if len(must) == 0 {
+		return bleve.NewMatchAllQuery()
+	}
+	return bleve.NewConjunctionQuery(must...)
+}
+
+func termsQuery(terms, fields []string) query.Query {
+	var must []query.Query
+	for _, term := range terms {
+		var should []query.Query
+		for _, field := range fields {
+			exact := bleve.NewTermQuery(term)
+			exact.SetField(field)
+			exact.SetBoost(3)
+			prefix := bleve.NewPrefixQuery(term)
+			prefix.SetField(field)
+			prefix.SetBoost(2)
+			fieldTerm := bleve.NewDisjunctionQuery(exact, prefix)
+			if len([]rune(term)) >= 4 {
+				fuzzy := bleve.NewFuzzyQuery(term)
+				fuzzy.SetField(field)
+				fuzzy.SetBoost(1)
+				fieldTerm.AddQuery(fuzzy)
+			}
+			should = append(should, fieldTerm)
+		}
+		must = append(must, bleve.NewDisjunctionQuery(should...))
+	}
+	return bleve.NewConjunctionQuery(must...)
 }
 
 func tokenize(s string) []string {
@@ -237,31 +344,6 @@ func queryTokens(s string) []string {
 	}
 	flush()
 	return out
-}
-
-func levenshteinAtMostOne(a, b string) bool {
-	ar, br := []rune(a), []rune(b)
-	if len(ar)-len(br) > 1 || len(br)-len(ar) > 1 {
-		return false
-	}
-	if len(ar) < len(br) {
-		ar, br = br, ar
-	}
-	diff, j := 0, 0
-	for i := 0; i < len(ar); i++ {
-		if j < len(br) && ar[i] == br[j] {
-			j++
-			continue
-		}
-		diff++
-		if diff > 1 {
-			return false
-		}
-		if len(ar) == len(br) {
-			j++
-		}
-	}
-	return true
 }
 
 func stripHTML(s string) string {

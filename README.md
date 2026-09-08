@@ -177,7 +177,7 @@ Keep your inbox clean without effort.
 
 ### Search
 
-- **Universal search** — `/` refreshes a private full-text index across every configured account and folder, matching sender/recipient names and addresses, subject, and decoded plain/HTML body with case-insensitive prefix and small-typo tolerance; explicit `from:`, `to:`, `subject:`, `has:attachment`, date, and folder filters compose with it. Scope, indexing progress, cancellations, and retrieval failures stay visible, so a partial index never looks like a definitive zero. Attachments are not retained or searched; OCR and arbitrary attachment extraction are intentionally unsupported. `space /` or `:search` remains the header-only IMAP search path.
+- **Universal search** — `/` refreshes Bleve's private, memory-only embedded full-text index across every configured account and folder, matching sender/recipient names and addresses, subject, and decoded plain/HTML body with case-insensitive prefix and small-typo tolerance; explicit `from:`, `to:`, `subject:`, `has:attachment`, date, and folder filters compose with it. Scope, indexing progress, cancellations, and retrieval failures stay visible, so a partial index never looks like a definitive zero. Attachments are not retained or searched; OCR and arbitrary attachment extraction are intentionally unsupported. `space /` or `:search` remains the header-only IMAP search path.
 
 ### Standard Email Features
 
