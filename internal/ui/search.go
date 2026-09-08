@@ -264,7 +264,17 @@ func (m *Model) handleConversationResult(msg conversationResultMsg) (tea.Model, 
 	m.filterActive = false
 	m.filterText = ""
 	m.status = fmt.Sprintf("Thread — %d email(s) in conversation. esc to close.", len(msg.emails))
-	return m, m.sortEmails()
+	cmd := m.sortEmails()
+	// Open the conversation on its first unread message (Superhuman-style:
+	// the thread view lands you where attention is needed).
+	items := m.inbox.Items()
+	for i, it := range items {
+		if item, ok := it.(emailItem); ok && !item.email.Seen {
+			m.inbox.Select(i)
+			break
+		}
+	}
+	return m, cmd
 }
 
 // senderAddr returns the first bare address from an email's From header,

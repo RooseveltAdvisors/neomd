@@ -10,13 +10,14 @@ example, `in 3 days`, `friday 2pm`, or `next week`).
 |---|---|---|---|
 | ⌘K mark done | `e` | vim-adapted | Captain chose lowercase e for archive / done. |
 | E mark not done | `E` | vim-adapted | Shift remains the opposite action and returns mail to Inbox. |
-| / search | `/` | same | Vim filter is already the local-list search. |
+| / search | `/` | same | Vim filter is already the local-list search. Field tokens (from:, to:, subject:, has:attachment, before:/after:, in:) combine with free text. |
 | Z remind me | `h` | vim-adapted | Captain reserved h for remind; the picker accepts quick picks and natural language. |
 | ? shortcuts | `?` | same | Opens the searchable help overlay. |
 | S star | dropped | dropped | neomd has no star state. |
 | X select conversation | `x` | vim-adapted | x toggles the current selection; V extends it visually. |
 | neomd sender view | `@` | same | Preserves cross-folder sender search while V is visual-select. |
 | neomd quick peek | `<space><space>` | neomd-native | Leader+space toggles a preview pane (subject, headers, body) without leaving the inbox list; esc closes it and the cursor stays put. |
+| neomd thread collapse | `<space>t` | neomd-native | Collapses threaded conversations to a single row (×N badge); enter/o opens the full conversation; `<space>t` again expands. |
 | neomd screen-out action | `O` in the inbox | vim-adapted | O expands conversations in reader context; inbox keeps its screener action. |
 | U read or unread | `n` | vim-adapted | n is the established read/unread action. |
 | # trash | `dd` / `#` | vim-adapted | Vim delete operator plus the Superhuman alias. |
@@ -38,7 +39,7 @@ example, `in 3 days`, `friday 2pm`, or `next week`).
 | V move | `v` | vim-adapted | v opens the same folder/label picker. |
 | shift-U unread filter | `U` / `z` | same | Both the requested filter and the existing zoom alias work. |
 | shift-S starred filter | dropped | dropped | No star state exists. |
-| shift-I important filter | `I` | vim-adapted | Screened-in is the closest available priority filter; mailbox action keys are uppercase. |
+| shift-I important filter | `I` / `<space>i` | vim-adapted | `I` approves the sender; `<space>i` toggles the focus view showing only screened-in (important) senders. |
 | shift-R no-reply filter | dropped | dropped | No reliable no-reply classification exists. |
 | G then I Inbox | `gi` | same | Required folder goto. |
 | G then O Other | `go` | same | Maps Other to ScreenedOut. |
@@ -64,7 +65,7 @@ example, `in 3 days`, `friday 2pm`, or `next week`).
 | shift-tab previous split | shift+tab | vim-adapted | Folder/tab cycling is the useful terminal equivalent. |
 | enter open conversation | `enter` | same | Opens the selected message. |
 | J/K next conversation | `j` / `k` | vim-adapted | Vim movement owns vertical navigation. |
-| N/P next/previous message | `n` / `p` in thread | vim-adapted | Thread navigation uses the existing message actions. |
+| N/P next/previous message | `N` / `<space>p` | vim-adapted | In list view N jumps to the next thread containing unread mail and `<space>p` to the previous one (lowercase n stays mark-read; lowercase p stays dead). |
 | space scroll down | `ctrl+d` | vim-adapted | Vim half-page movement is more consistent. |
 | shift-space scroll up | `ctrl+u` | vim-adapted | Vim half-page movement is more consistent. |
 | ⌘↑ / ⌘↓ top/bottom | `gg` / `G` | vim-adapted | Standard vim jumps. |
@@ -104,8 +105,9 @@ example, `in 3 days`, `friday 2pm`, or `next week`).
 | ⌘shift-P pop draft | dropped | dropped | Terminal client has no pop-out window. |
 | ⌘shift-H remind | `<space>h` | vim-adapted | Leader sequence avoids a compose-field collision. |
 | ⌘shift-L send later | `<space>l` / `l` | vim-adapted | Pre-send already has a direct l action. |
-| `;` inline snippet | `<space>;` | vim-adapted | Leader form is explicit in compose. |
-| ⌘; snippet picker | `;` / `g;` | vim-adapted | Captain's semicolon binding is global. |
+| `;` inline snippet | `<space>;` | vim-adapted | Leader form is explicit in compose; inserts at the field cursor, or into the message body. |
+| ⌘; snippet picker | `;` / `g;` | vim-adapted | Captain's semicolon binding is global; m inside the picker opens the manager (create/edit/delete). |
+| neomd command palette | `:` | neomd-native | Fuzzy-matched commands with a live preview line (`:done`, `:remind <time>`, `:move <folder>`, `:snip [name]`). |
 | :smile emoji | `ctrl+e` reaction picker | vim-adapted | Structured emoji picker avoids editor syntax assumptions. |
 | ⌘enter send | `ctrl+enter` / `enter` | vim-adapted | Terminals vary; enter remains the reliable fallback. |
 | ⌘shift-enter send and done | `ctrl+enter` then `e` | dropped | Send-and-archive is explicit and safer as two actions. |

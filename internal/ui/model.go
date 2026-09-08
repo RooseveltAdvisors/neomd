@@ -150,7 +150,7 @@ type (
 		// handler retires or rolls back that batch instead of re-fetching.
 		optID int
 	}
-	undoDoneMsg       struct{}
+	undoDoneMsg       struct{ desc string }
 	toggleSeenDoneMsg struct {
 		uid    uint32
 		folder string
@@ -569,6 +569,20 @@ type undoAction struct {
 	seen  []seenFlag
 }
 
+// describe names what the action did, for the undo confirmation toast
+// ("Undone: move 3 email(s) back to Archive").
+func (a undoAction) describe() string {
+	parts := []string{}
+	if len(a.moves) > 0 {
+		dst := a.moves[0].fromFolder
+		parts = append(parts, fmt.Sprintf("move %d email(s) back to %s", len(a.moves), dst))
+	}
+	if len(a.seen) > 0 {
+		parts = append(parts, fmt.Sprintf("restore read state on %d email(s)", len(a.seen)))
+	}
+	return strings.Join(parts, " and ")
+}
+
 // autoScreenMove is a planned (not yet executed) IMAP move.
 type autoScreenMove struct {
 	email *imap.Email
@@ -667,9 +681,15 @@ type Model struct {
 	loadingMore   bool
 	moreExhausted bool
 
-	// Snippet picker (`;`).
+	// Snippet picker (`;`) and manager.
 	snippets       []snippets.Snippet
 	snippetsCursor int
+	snippetInsert  bool // picker opened to insert into compose/pre-send
+	snippetsManage bool // manager screen (create/edit/delete) instead of picker
+	snippetNew     bool // manager: entering a name for a new snippet
+	snippetNewName string
+	snippetDelete  bool   // manager: y/n delete confirmation on the cursor snippet
+	snippetDir     string // override for the snippet directory (tests); "" = config default
 
 	// Reaction
 	reactionEmail    *imap.Email // email being reacted to
@@ -767,6 +787,16 @@ type Model struct {
 	// showUnreadOnly filters the inbox to show only unread emails when true.
 	// Toggled with 'v' key.
 	showUnreadOnly bool
+
+	// focusMode shows only emails from screened-in (important) senders.
+	// Superhuman's Important view — toggled with <space>i.
+	focusMode bool
+
+	// collapsedThreads collapses threaded conversations to a single row
+	// (the newest message) with a count badge. <space>t toggles; opening
+	// a collapsed row expands the full conversation.
+	collapsedThreads bool
+	expandedThreads  map[string]bool // thread keys kept visible while collapsed
 
 	// pendingResetUIDs holds ToScreen UIDs awaiting y/n confirmation before
 	// being bulk-moved back to Inbox.
@@ -1774,7 +1804,7 @@ func (m Model) undoActionCmd(action undoAction) tea.Cmd {
 				return batchDoneMsg{err: fmt.Errorf("undo failed to restore read state: %w", err)}
 			}
 		}
-		return undoDoneMsg{}
+		return undoDoneMsg{desc: action.describe()}
 	}
 }
 
@@ -2253,14 +2283,26 @@ func (m Model) deleteAllExecCmd(folder string, uids []uint32) tea.Cmd {
 	}
 }
 
-// fetchFolderCountsCmd fetches unseen counts for the four watched tabs in the
-// background using IMAP STATUS (no SELECT, very fast).
+// fetchFolderCountsCmd fetches unseen counts for the watched folder tabs in
+// the background using IMAP STATUS (no SELECT, very fast).
 func (m Model) fetchFolderCountsCmd() tea.Cmd {
+	f := m.cfg.Folders
 	folders := map[string]string{
-		"Inbox":      m.cfg.Folders.Inbox,
-		"PaperTrail": m.cfg.Folders.PaperTrail,
-		"Waiting":    m.cfg.Folders.Waiting,
-		"Scheduled":  m.cfg.Folders.Scheduled,
+		"Inbox":      f.Inbox,
+		"PaperTrail": f.PaperTrail,
+		"Waiting":    f.Waiting,
+		"Scheduled":  f.Scheduled,
+		"Feed":       f.Feed,
+		"ToScreen":   f.ToScreen,
+	}
+	if f.Work != "" {
+		folders["Work"] = f.Work
+	}
+	if f.ScreenedOut != "" {
+		folders["ScreenedOut"] = f.ScreenedOut
+	}
+	if f.Someday != "" {
+		folders["Someday"] = f.Someday
 	}
 	return func() tea.Msg {
 		counts, _ := m.imapCli().FetchUnseenCounts(nil, folders)
@@ -3154,10 +3196,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case undoDoneMsg:
 		m.loading = false
-		m.status = "Undone."
+		m.status = "Undone: " + msg.desc
 		m.isError = false
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
+
+	case snippetEditDoneMsg:
+		m.reloadSnippets()
+		if m.snippetsCursor >= len(m.snippets) {
+			m.snippetsCursor = len(m.snippets) - 1
+		}
+		if m.snippetsCursor < 0 {
+			m.snippetsCursor = 0
+		}
+		if msg.err != nil {
+			m.status = "Snippet: " + msg.err.Error()
+			m.isError = true
+		} else {
+			m.status = "Snippets updated."
+			m.isError = false
+		}
+		return m, nil
 
 	case spyScanProgressMsg:
 		// Merge results into maps on the main goroutine (no concurrency).
@@ -3493,8 +3552,8 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				path := config.HistoryPath()
 				safeGo(func() { saveCmdHistory(path, hist) })
 			}
-			if cmd := matchCmd(input); cmd != nil {
-				result, c := cmd.run(&m)
+			if cmd, arg := matchCmdLine(input); cmd != nil {
+				result, c := cmd.run(&m, arg)
 				return result, c
 			}
 			if input != "" {
@@ -3687,10 +3746,11 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.closePeek()
 			return m, nil
 		}
-		if m.filterText != "" || m.showUnreadOnly {
+		if m.filterText != "" || m.showUnreadOnly || m.focusMode {
 			m.filterActive = false
 			m.filterText = ""
 			m.showUnreadOnly = false
+			m.focusMode = false
 			return m, m.applyFilter()
 		}
 		if m.imapSearchResults {
@@ -3953,30 +4013,6 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.batchToggleSeenCmd(targets))
 
-	case "N":
-		// Jump to next unread email
-		current := m.inbox.Index()
-		items := m.inbox.Items()
-		for i := current + 1; i < len(items); i++ {
-			if item, ok := items[i].(emailItem); ok {
-				if !item.email.Seen {
-					m.inbox.Select(i)
-					return m, nil
-				}
-			}
-		}
-		// Wrap around to beginning
-		for i := 0; i <= current; i++ {
-			if item, ok := items[i].(emailItem); ok {
-				if !item.email.Seen {
-					m.inbox.Select(i)
-					return m, nil
-				}
-			}
-		}
-		m.status = "No unread emails found."
-		return m, nil
-
 	// ── Navigation ──────────────────────────────────────────────────
 	case "tab", "L", "]":
 		m.activeFolderI = (m.activeFolderI + 1) % len(m.folders)
@@ -4043,6 +4079,19 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "Showing all emails"
 		}
 		return m, m.applyFilter()
+
+	case "N":
+		// Jump to the next thread containing an unread email (things
+		// needing attention). Threads are read off the displayed rows:
+		// a run of thread-prefixed rows is one thread, a plain row is its
+		// own. Wraps around.
+		if next := jumpUnreadThread(m.inbox.Items(), m.inbox.Index(), 1); next >= 0 {
+			m.inbox.Select(next)
+			m.status = ""
+			return m, nil
+		}
+		m.status = "No unread emails found."
+		return m, nil
 
 	case "ctrl+n": // mark all loaded emails in this folder as read
 		cmd := m.markAllSeenCmd()
@@ -4332,16 +4381,32 @@ func (m *Model) applyFilter() tea.Cmd {
 	previousIndex := m.inbox.Index()
 	var filtered []imap.Email
 
-	// Apply both text filter and unread filter
+	// Parse field tokens (from:, subject:, has:attachment, before:/after:,
+	// in:) once; the remainder is matched as free text.
+	fq := parseFilterQuery(m.filterText, time.Now(), m.folderAliases())
+
+	// Apply text filter, unread filter, focus mode and field constraints.
 	for _, e := range m.emails {
 		// Skip if unread-only mode is on and email is read
 		if m.showUnreadOnly && e.Seen {
 			continue
 		}
 
-		// Skip if text filter is active and doesn't match
-		if m.filterText != "" {
-			query := strings.ToLower(m.filterText)
+		// Focus mode: only important (screened-in) senders.
+		if m.focusMode {
+			if m.screener == nil || m.screener.Classify(e.From) != screener.CategoryInbox {
+				continue
+			}
+		}
+
+		// Field-token constraints (AND).
+		if fq.hasFieldConstraints() && !fq.matchesEmail(e) {
+			continue
+		}
+
+		// Free-text filter
+		if fq.freeText != "" {
+			query := strings.ToLower(fq.freeText)
 			// In Sent folder, search To/CC/BCC instead of From — From is always us.
 			// Known contact names are appended so searching a person's name
 			// matches even when the header only carries the bare address.
@@ -4360,12 +4425,12 @@ func (m *Model) applyFilter() tea.Cmd {
 	}
 
 	// If no filters are active, use all emails
-	if m.filterText == "" && !m.showUnreadOnly {
+	if m.filterText == "" && !m.showUnreadOnly && !m.focusMode {
 		filtered = m.emails
 	}
 
 	noThread := len(m.folders) > 0 && m.activeFolder() == m.cfg.Folders.Sent
-	cmd := setEmails(&m.inbox, filtered, m.markedUIDs, m.spyPixelKeys, m.shouldPrefixFolderInSubject(), m.sortField, m.sortReverse, noThread)
+	cmd := setEmails(&m.inbox, filtered, m.markedUIDs, m.spyPixelKeys, m.shouldPrefixFolderInSubject(), m.sortField, m.sortReverse, noThread, m.collapsedThreads, m.expandedThreads)
 	if len(filtered) == 0 {
 		return cmd
 	}
@@ -4396,6 +4461,32 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 			m.imapSearchActive = true
 			m.imapSearchText = ""
 			m.imapSearchResults = false
+			return m, nil
+		}
+		if key == "i" { // focus view — only important (screened-in) senders
+			m.focusMode = !m.focusMode
+			if m.focusMode {
+				m.status = "Focus: important senders only · <space>i to show all"
+			} else {
+				m.status = "Focus off — showing all emails"
+			}
+			return m, m.applyFilter()
+		}
+		if key == "t" { // toggle thread collapsing in the list view
+			m.collapsedThreads = !m.collapsedThreads
+			if m.collapsedThreads {
+				m.status = "Threads collapsed · enter opens the conversation · <space>t to expand all"
+			} else {
+				m.status = "Threads expanded"
+			}
+			return m, m.applyFilter()
+		}
+		if key == "p" { // jump to the previous thread with unread mail
+			if prev := jumpUnreadThread(m.inbox.Items(), m.inbox.Index(), -1); prev >= 0 {
+				m.inbox.Select(prev)
+				return m, nil
+			}
+			m.status = "No unread emails found."
 			return m, nil
 		}
 		if key == "w" {
@@ -5612,7 +5703,8 @@ func (m Model) updateCompose(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "a":
 			return m.launchAttachPickerCmd()
 		case ";":
-			return m.openSnippets()
+			// Insert a snippet at the cursor / into the message body.
+			return m.openSnippetInsert()
 		case "h":
 			m.status = "Reminder will be available after this message is sent."
 			return m, nil
@@ -5776,7 +5868,8 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "Reminder in compose: send later or use h after delivery."
 			return m, nil
 		case ";":
-			return m.openSnippets()
+			// Insert a snippet into the message body under review.
+			return m.openSnippetInsert()
 		case "o":
 			return m.previewInBrowser()
 		default:
@@ -6921,7 +7014,7 @@ func (m Model) viewInbox() string {
 		b.WriteString("\n")
 	}
 	if m.cmdMode {
-		b.WriteString(viewCmdLine(m.cmdText, m.width))
+		b.WriteString(viewCmdLinePreview(m.cmdText, m.cmdLinePreview(m.cmdText), m.width))
 	} else if m.imapSearchActive || m.imapSearchResults {
 		b.WriteString(m.viewIMAPSearchBar())
 	} else if m.filterActive || m.filterText != "" {
@@ -6929,7 +7022,7 @@ func (m Model) viewInbox() string {
 		hint := "esc clear"
 		if m.filterActive {
 			cursor = "█"
-			hint = "enter confirm · esc clear"
+			hint = "from: to: subject: has:attachment before:/after: in: · enter confirm · esc clear"
 		} else {
 			hint = "esc clear · actions act on visible rows"
 		}

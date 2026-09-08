@@ -2,6 +2,37 @@
 
 # 2026-09-08
 
+- **Superhuman UX pack: fuzzy `:` palette, `/` field filters, focus view, unread-thread
+  jumps, thread collapse, snippet manager/insert, undo toast, richer tab counts** —
+  the `:` command line is now a fuzzy palette: prefix matches win, subsequence matches
+  (fzf-style) fill in, and a live preview line shows exactly what enter will do
+  ("move 1 email (Alice) → Work"). New argument commands `:done`, `:remind <time>`
+  (same natural-language parser as `h`), `:move <folder>`, and `:snip [name]` join the
+  registry. The `/` filter accepts field tokens that combine with free text:
+  `from: to: subject: has:attachment before:/after: in:` (quoted values may contain
+  spaces; past dates resolve via a filter-specific parser that unlike `when` accepts
+  ISO dates in the past, plus yesterday/today/tomorrow/last-week/N-days-ago).
+  `<space>i` toggles the Superhuman-style focus view showing only screened-in
+  (important) senders; `<space>t` collapses threaded conversations to one row with a
+  ×N badge and enter/o opens the full conversation; `N` jumps to the next thread with
+  unread mail (wrapping) and `<space>p` to the previous one, while lowercase `n`
+  (mark read) and `p` stay untouched. Snippets gain an insert mode (`<space>;` from
+  compose/pre-send inserts at the field cursor or into the message body) and a manager
+  screen (`:snip` or `m` in the picker) with create (name prompt → $EDITOR), edit, and
+  y/n-confirmed delete. `u` now toasts what was undone ("Undone: move 3 email(s) back
+  to Archive"), tab-bar unread counts cover all watched folders, the Waiting/Reminders
+  list shows each row's due time next to the R indicator, thread views open on their
+  first unread message, and compose autocomplete also matches subsequence queries
+  ("mm" → Max Muster). Where: `internal/ui/cmdline.go`, `internal/ui/palette.go`,
+  `internal/ui/filter_parser.go`, `internal/ui/model.go`, `internal/ui/inbox.go`,
+  `internal/ui/thread.go`, `internal/ui/snippets.go`, `internal/ui/compose.go`,
+  `internal/ui/keys.go`, docs. Tests: `TestFuzzy*`, `TestMatchCmdLine*`,
+  `TestCmdDone*`, `TestParseFilterQuery*`, `TestFilterQueryMatchesEmail`,
+  `TestApplyFilterWithFieldTokens`, `TestFolderAliases*`, `TestFocusView*`,
+  `TestJumpUnreadThread*`, `TestNKeyJumps*`, `TestCollapse*`, `TestSnippet*`,
+  `TestUndoActionDescribe`, `TestComposeSuggestionsFuzzySubsequence`,
+  `TestReminderDueTimeShownInListRow`.
+
 - **Uppercase mailbox actions, universal undo, and a quick peek** — the inbox mailbox
   action keys are now uppercase (`I` approve, `O` screen-out, `P` papertrail, `B` work,
   `F` feed, `$` spam); the lowercase `i`/`p`/`b` forms no longer fire and the core
