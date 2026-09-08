@@ -1,5 +1,22 @@
 # Changelog
 
+# 2026-09-08
+
+- **Uppercase mailbox actions, universal undo, and a quick peek** — the inbox mailbox
+  action keys are now uppercase (`I` approve, `O` screen-out, `P` papertrail, `B` work,
+  `F` feed, `$` spam); the lowercase `i`/`p`/`b` forms no longer fire and the core
+  `e`/`h`/`s`/`;` keys are untouched. `u` is now a universal undo backed by an action
+  journal: it reverses the most recent action — screener moves (previously the undo
+  data was silently dropped by `batchScreenerCmd`), archive/delete/M-chord moves, and
+  read/unread changes from `n` or ctrl+n — and server-side failures show in the status
+  line instead of silently doing nothing. Leader+space (`<space><space>`) toggles a
+  quick-peek pane showing From/To/Subject and the body of the highlighted email without
+  leaving the list: `esc` or the chord closes it, the cursor stays put, j/k re-targets
+  the preview, and fetching uses BODY.PEEK so peeking never marks mail read.
+  Where: `internal/ui/model.go`, `internal/ui/keys.go`, `internal/ui/reader.go`, docs.
+  Tests: `TestLowercaseMailboxActionsAreDead`, `TestUndoJournal*`,
+  `TestUndoNothingToDo`, `TestUndoRefusesInReadOnly`, `TestPeek*`.
+
 # 2026-09-07
 
 - **Reminders accept natural language and filtered rows remain actionable** — `h` now

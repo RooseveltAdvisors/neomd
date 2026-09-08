@@ -78,9 +78,9 @@ func press(m Model, key string) Model {
 
 // ── 1. Binding map ───────────────────────────────────────────────────────
 
-// TestEmailBindingMap pins the keyboard contract: the four keys the client is
-// driven by, plus the lowercase migrations and the uppercase keys that had to
-// stay because their lowercase letter is taken.
+// TestEmailBindingMap pins the keyboard contract: the four core keys the
+// client is driven by (lowercase by contract), plus the uppercase mailbox
+// action keys (I/O/P/B/F) and the aliases that had to stay.
 func TestEmailBindingMap(t *testing.T) {
 	tests := []struct {
 		key   string
@@ -126,24 +126,24 @@ func TestEmailBindingMap(t *testing.T) {
 				t.Fatalf("#: %d emails left, want %d", len(after.emails), len(before.emails)-1)
 			}
 		}},
-		{"i", func(t *testing.T, before, after Model) { // screen in (was I)
+		{"I", func(t *testing.T, before, after Model) { // screen in (mailbox actions are uppercase)
 			if len(after.emails) != len(before.emails)-1 {
-				t.Fatalf("i: %d emails left, want %d", len(after.emails), len(before.emails)-1)
+				t.Fatalf("I: %d emails left, want %d", len(after.emails), len(before.emails)-1)
 			}
 		}},
-		{"O", func(t *testing.T, before, after Model) { // screen out (legacy action)
+		{"O", func(t *testing.T, before, after Model) { // screen out
 			if len(after.emails) != len(before.emails)-1 {
 				t.Fatalf("O: %d emails left, want %d", len(after.emails), len(before.emails)-1)
 			}
 		}},
-		{"p", func(t *testing.T, before, after Model) { // papertrail (was P)
+		{"P", func(t *testing.T, before, after Model) { // papertrail
 			if len(after.emails) != len(before.emails)-1 {
-				t.Fatalf("p: %d emails left, want %d", len(after.emails), len(before.emails)-1)
+				t.Fatalf("P: %d emails left, want %d", len(after.emails), len(before.emails)-1)
 			}
 		}},
-		{"b", func(t *testing.T, before, after Model) { // work (was B)
+		{"B", func(t *testing.T, before, after Model) { // work
 			if len(after.emails) != len(before.emails)-1 {
-				t.Fatalf("b: %d emails left, want %d", len(after.emails), len(before.emails)-1)
+				t.Fatalf("B: %d emails left, want %d", len(after.emails), len(before.emails)-1)
 			}
 		}},
 		{"F", func(t *testing.T, before, after Model) { // feed stays uppercase: f is forward
@@ -156,6 +156,21 @@ func TestEmailBindingMap(t *testing.T) {
 		t.Run(tt.key, func(t *testing.T) {
 			before := keysTestModel(t, 4)
 			tt.check(t, before, press(before, tt.key))
+		})
+	}
+}
+
+// TestLowercaseMailboxActionsAreDead pins that the former lowercase action
+// keys (i, p, b) no longer fire anything in the inbox - mailbox actions are
+// uppercase now, and the letters stay free for future use.
+func TestLowercaseMailboxActionsAreDead(t *testing.T) {
+	for _, key := range []string{"i", "p", "b"} {
+		t.Run(key, func(t *testing.T) {
+			before := keysTestModel(t, 4)
+			after := press(before, key)
+			if len(after.emails) != 4 || len(after.optimistic) != 0 || after.reminderActive || after.state != stateInbox {
+				t.Fatalf("lowercase %q still fires an action: emails=%d opt=%d state=%v", key, len(after.emails), len(after.optimistic), after.state)
+			}
 		})
 	}
 }

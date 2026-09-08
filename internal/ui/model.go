@@ -79,6 +79,13 @@ type (
 		references  string // References header for email threading
 		spyPixels   imap.SpyPixelInfo
 	}
+	// peekLoadedMsg carries the body for the inbox quick-peek pane. It uses
+	// BODY.PEEK and never changes flags or view state.
+	peekLoadedMsg struct {
+		email *imap.Email
+		body  string
+		err   error
+	}
 	sendDoneMsg struct {
 		err           error
 		warning       string
@@ -137,15 +144,18 @@ type (
 	batchDoneMsg struct {
 		err  error
 		undo []undoMove
+		// seen records \Seen flag changes so u can reverse them.
+		seen []seenFlag
 		// optID > 0 when the list was already updated optimistically; the
 		// handler retires or rolls back that batch instead of re-fetching.
 		optID int
 	}
 	undoDoneMsg       struct{}
 	toggleSeenDoneMsg struct {
-		uid  uint32
-		seen bool
-		err  error
+		uid    uint32
+		folder string
+		seen   bool
+		err    error
 	}
 	errMsg struct{ err error }
 	// background sync (runs every bgSyncInterval while neomd is open)
@@ -543,6 +553,22 @@ type undoMove struct {
 	toFolder   string
 }
 
+// seenFlag records one \Seen flag change; markSeen is the state to RESTORE
+// when the action is undone (the opposite of what the action set).
+type seenFlag struct {
+	folder   string
+	uid      uint32
+	markSeen bool
+}
+
+// undoAction is one entry in the universal undo journal: every reversible
+// effect of a single mutating inbox action (moves, \Seen changes), so u
+// reverses the exact action type - un-move, un-archive, un-delete, un-read.
+type undoAction struct {
+	moves []undoMove
+	seen  []seenFlag
+}
+
 // autoScreenMove is a planned (not yet executed) IMAP move.
 type autoScreenMove struct {
 	email *imap.Email
@@ -674,9 +700,15 @@ type Model struct {
 	// outgoing To/Cc headers. Nil-safe: all Store methods accept a nil receiver.
 	contacts *contacts.Store
 
-	// Undo stack: each entry is a batch of moves that can be reversed with u.
-	// Screener operations (I/O/F/P/$) are not undoable — they also modify .txt files.
-	undoStack [][]undoMove
+	// Undo journal: each entry is one mutating action (move batch and/or
+	// \Seen flag changes) that u can reverse. Most recent action is last.
+	undoStack []undoAction
+
+	// Quick peek: preview pane for the highlighted email, opened with the
+	// leader+space chord without leaving the inbox list.
+	peekActive bool
+	peekEmail  *imap.Email
+	peekBody   string
 
 	// Forward/Reply: when true, bodyLoadedMsg launches the action instead of reader
 	pendingForward  bool
@@ -1061,6 +1093,79 @@ func (m Model) fetchFolderCmd(folder string) tea.Cmd {
 	}
 }
 
+// fetchPeekCmd fetches the body for the quick-peek pane. FetchBody uses
+// BODY.PEEK, so peeking never sets \Seen — a glance stays a glance.
+func (m Model) fetchPeekCmd(e *imap.Email) tea.Cmd {
+	if e == nil {
+		return nil
+	}
+	email := *e
+	return func() tea.Msg {
+		body, _, _, _, _, _, err := m.imapCli().FetchBody(nil, email.Folder, email.UID)
+		return peekLoadedMsg{email: &email, body: body, err: err}
+	}
+}
+
+// peekPaneHeight returns the total terminal lines the peek pane occupies.
+func (m Model) peekPaneHeight() int {
+	h := m.height / 3
+	if h > 14 {
+		h = 14
+	}
+	if h < 4 {
+		h = 4
+	}
+	return h
+}
+
+// togglePeek opens the quick-peek pane for the highlighted email, or closes
+// it. The list keeps the cursor: peeking never moves the selection, and
+// closing restores the full-height list.
+func (m Model) togglePeek() (tea.Model, tea.Cmd) {
+	if m.peekActive {
+		m.closePeek()
+		return m, nil
+	}
+	e := selectedEmail(m.inbox)
+	if e == nil {
+		m.status = "No email to peek."
+		return m, nil
+	}
+	m.peekActive = true
+	m.peekEmail = e
+	m.peekBody = ""
+	m.resizeListForPeek()
+	return m, m.fetchPeekCmd(e)
+}
+
+// closePeek hides the peek pane and restores the full-height list. The
+// cursor is untouched, so the highlighted row is exactly where it was.
+func (m *Model) closePeek() {
+	m.peekActive = false
+	m.peekEmail = nil
+	m.peekBody = ""
+	m.resizeListForPeek()
+}
+
+// resizeListForPeek shrinks (peek open) or restores (peek closed) the inbox
+// list height so the peek pane never pushes the status bar off-screen.
+func (m *Model) resizeListForPeek() {
+	if m.inbox.Width() == 0 {
+		return // not laid out yet; WindowSizeMsg will size it
+	}
+	listH := m.height - 4
+	if listH < 5 {
+		listH = 5
+	}
+	if m.peekActive {
+		listH -= m.peekPaneHeight()
+		if listH < 5 {
+			listH = 5
+		}
+	}
+	m.inbox.SetHeight(listH)
+}
+
 func (m Model) fetchBodyCmd(e *imap.Email) tea.Cmd {
 	return func() tea.Msg {
 		body, rawHTML, webURL, attachments, references, spyPixels, err := m.imapCli().FetchBody(nil, e.Folder, e.UID)
@@ -1354,7 +1459,7 @@ func (m Model) toggleSeenCmd(e *imap.Email) tea.Cmd {
 		} else {
 			err = m.imapCli().MarkUnseen(nil, folder, uid)
 		}
-		return toggleSeenDoneMsg{uid: uid, seen: newSeen, err: err}
+		return toggleSeenDoneMsg{uid: uid, folder: folder, seen: newSeen, err: err}
 	}
 }
 
@@ -1631,17 +1736,42 @@ func (m Model) batchMoveCmd(emails []imap.Email, dst string) tea.Cmd {
 	}
 }
 
-// undoMovesCmd reverses a batch of moves by moving each email back to its
-// original folder. Non-fatal per-email errors are reported as a batchDoneMsg.
-func (m Model) undoMovesCmd(moves []undoMove) tea.Cmd {
+// pushUndo appends one reversible action to the undo journal, capped at
+// maxUndoStack entries. No-op for actions with nothing reversible.
+func (m *Model) pushUndo(a undoAction) {
+	if len(a.moves) == 0 && len(a.seen) == 0 {
+		return
+	}
+	m.undoStack = append(m.undoStack, a)
+	if len(m.undoStack) > maxUndoStack {
+		m.undoStack = m.undoStack[len(m.undoStack)-maxUndoStack:]
+	}
+}
+
+// undoActionCmd reverses one journaled action: moves go back to their source
+// folder and \Seen flags are restored. The first server-side failure is
+// reported loudly (batchDoneMsg.err) so a half-applied undo is visible —
+// it is never silently dropped. Non-fatal per-email errors are included.
+func (m Model) undoActionCmd(action undoAction) tea.Cmd {
 	if m.cfg != nil && m.cfg.ReadOnly {
-		return readOnlyBatchCmd("IMAP move")
+		return readOnlyBatchCmd("undo")
 	}
 	cli := m.imapCli()
 	return func() tea.Msg {
-		for i, u := range moves {
+		for i, u := range action.moves {
 			if _, err := cli.MoveMessage(nil, u.toFolder, u.uid, u.fromFolder); err != nil {
-				return batchDoneMsg{err: fmt.Errorf("undo stopped after %d/%d: %w", i, len(moves), err)}
+				return batchDoneMsg{err: fmt.Errorf("undo stopped after %d/%d: %w", i, len(action.moves), err)}
+			}
+		}
+		for _, f := range action.seen {
+			var err error
+			if f.markSeen {
+				err = cli.MarkSeen(nil, f.folder, f.uid)
+			} else {
+				err = cli.MarkUnseen(nil, f.folder, f.uid)
+			}
+			if err != nil {
+				return batchDoneMsg{err: fmt.Errorf("undo failed to restore read state: %w", err)}
 			}
 		}
 		return undoDoneMsg{}
@@ -1771,7 +1901,10 @@ func (m Model) batchScreenerCmd(emails []imap.Email, action string) tea.Cmd {
 				bp.moved.Add(1)
 			}
 		}
-		return batchDoneMsg{}
+		// The moves land in the undo journal so u reverses them. The screener
+		// classification itself is intentionally kept: undo restores the mail,
+		// not the sender lists.
+		return batchDoneMsg{undo: undos}
 	}
 }
 
@@ -1793,13 +1926,17 @@ func (m Model) markAllSeenCmd() tea.Cmd {
 	if len(ops) == 0 {
 		return nil
 	}
+	flags := make([]seenFlag, len(ops))
+	for i, o := range ops {
+		flags[i] = seenFlag{folder: o.folder, uid: o.uid, markSeen: false} // restore unread
+	}
 	return func() tea.Msg {
 		for _, o := range ops {
 			if err := m.imapCli().MarkSeen(nil, o.folder, o.uid); err != nil {
-				return batchDoneMsg{err: err}
+				return batchDoneMsg{err: err, seen: flags}
 			}
 		}
-		return batchDoneMsg{}
+		return batchDoneMsg{seen: flags}
 	}
 }
 
@@ -1817,6 +1954,10 @@ func (m Model) batchToggleSeenCmd(emails []imap.Email) tea.Cmd {
 	for i, e := range emails {
 		ops[i] = op{e.Folder, e.UID, !e.Seen}
 	}
+	flags := make([]seenFlag, len(emails))
+	for i, e := range emails {
+		flags[i] = seenFlag{folder: e.Folder, uid: e.UID, markSeen: e.Seen} // restore the old state
+	}
 	return func() tea.Msg {
 		for _, o := range ops {
 			var err error
@@ -1826,10 +1967,10 @@ func (m Model) batchToggleSeenCmd(emails []imap.Email) tea.Cmd {
 				err = m.imapCli().MarkUnseen(nil, o.folder, o.uid)
 			}
 			if err != nil {
-				return batchDoneMsg{err: err}
+				return batchDoneMsg{err: err, seen: flags}
 			}
 		}
-		return batchDoneMsg{}
+		return batchDoneMsg{seen: flags}
 	}
 }
 
@@ -2459,6 +2600,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if listH < 5 {
 			listH = 5
 		}
+		if m.peekActive {
+			listH -= m.peekPaneHeight()
+			if listH < 5 {
+				listH = 5
+			}
+		}
 		if m.inbox.Width() == 0 {
 			m.inbox = newInboxList(msg.Width, listH, m.cfg.Folders.Sent, m.cfg.Folders.Drafts)
 		} else {
@@ -2667,6 +2814,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			return m, m.scheduleMarkAsReadTimer(uid, folder)
 		}
+
+	case peekLoadedMsg:
+		// Drop stale results: the user closed the pane or moved to another row.
+		if !m.peekActive || msg.email == nil || m.peekEmail == nil ||
+			emailKey(msg.email.Folder, msg.email.UID) != emailKey(m.peekEmail.Folder, m.peekEmail.UID) {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.peekBody = ""
+			m.status = "Peek failed: " + msg.err.Error()
+			m.isError = true
+			return m, nil
+		}
+		m.peekBody = msg.body
+		m.isError = false
+		return m, nil
 
 	case sendDoneMsg:
 		m.loading = false
@@ -2884,6 +3047,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
+		// Journal the read/unread change so u toggles it back.
+		m.pushUndo(undoAction{seen: []seenFlag{{folder: msg.folder, uid: msg.uid, markSeen: !msg.seen}}})
 		return m, m.applyFilter()
 
 	case markAsReadTimerMsg:
@@ -2950,12 +3115,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Optimistic batches already removed their rows. Confirm in place —
 		// no folder re-fetch — or put the rows back so the failure is visible.
 		if msg.optID > 0 {
-			if len(msg.undo) > 0 {
-				m.undoStack = append(m.undoStack, msg.undo)
-				if len(m.undoStack) > maxUndoStack {
-					m.undoStack = m.undoStack[len(m.undoStack)-maxUndoStack:]
-				}
-			}
+			m.pushUndo(undoAction{moves: msg.undo, seen: msg.seen})
 			if msg.err != nil {
 				cmd := m.rollbackOptimistic(msg.optID)
 				m.status = msg.err.Error()
@@ -2969,22 +3129,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			// Include partial undo info so user can reverse already-moved emails.
-			if len(msg.undo) > 0 {
-				m.undoStack = append(m.undoStack, msg.undo)
-				if len(m.undoStack) > maxUndoStack {
-					m.undoStack = m.undoStack[len(m.undoStack)-maxUndoStack:]
-				}
-			}
+			m.pushUndo(undoAction{moves: msg.undo, seen: msg.seen})
 			m.status = msg.err.Error()
 			m.isError = true
 			return m, nil
 		}
-		if len(msg.undo) > 0 {
-			m.undoStack = append(m.undoStack, msg.undo)
-			if len(m.undoStack) > maxUndoStack {
-				m.undoStack = m.undoStack[len(m.undoStack)-maxUndoStack:]
-			}
-		}
+		m.pushUndo(undoAction{moves: msg.undo, seen: msg.seen})
 		m.status = "Done."
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
@@ -2996,12 +3146,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.isError = true
 			return m, nil
 		}
-		if len(msg.undo) > 0 {
-			m.undoStack = append(m.undoStack, msg.undo)
-			if len(m.undoStack) > maxUndoStack {
-				m.undoStack = m.undoStack[len(m.undoStack)-maxUndoStack:]
-			}
-		}
+		m.pushUndo(undoAction{moves: msg.undo})
 		m.status = "Moved."
 		m.isError = false
 		m.loading = true
@@ -3538,6 +3683,10 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
+		if m.peekActive {
+			m.closePeek()
+			return m, nil
+		}
 		if m.filterText != "" || m.showUnreadOnly {
 			m.filterActive = false
 			m.filterText = ""
@@ -3570,7 +3719,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case " ": // leader key — wait for digit or shortcut
 		m.pendingKey = " "
-		m.status = "leader:  1-9 tabs  / search  c contacts  S scan  w welcome  (esc to cancel)"
+		m.status = "leader:  1-9 tabs  / search  c contacts  S scan  w welcome  space peek  (esc to cancel)"
 		return m, nil
 
 	case "M":
@@ -3630,7 +3779,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.deleteAllExecCmd(m.cfg.Folders.Trash, uids))
 
-	case "u": // undo last move/delete
+	case "u": // undo the most recent action (move, delete, read state)
 		if len(m.undoStack) == 0 {
 			m.status = "Nothing to undo."
 			return m, nil
@@ -3638,17 +3787,18 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		last := m.undoStack[len(m.undoStack)-1]
 		m.undoStack = m.undoStack[:len(m.undoStack)-1]
 		m.loading = true
-		return m, tea.Batch(m.spinner.Tick, m.undoMovesCmd(last))
+		return m, tea.Batch(m.spinner.Tick, m.undoActionCmd(last))
 
 	case "U": // Superhuman shift-U: unread-only filter
 		m.showUnreadOnly = !m.showUnreadOnly
 		return m, m.applyFilter()
 
 	// ── Screener actions — operate on marked emails or cursor email ──
-	// Screener actions. Lowercase is the documented binding; the historical
-	// uppercase keys stay as aliases. `F` has no lowercase form — `f` is
-	// forward — so feed keeps its uppercase key (see keys.go mapping table).
-	case "i", "I", "O", "F", "p", "P", "$":
+	// Mailbox action keys are uppercase (I approve, O block, F feed,
+	// P papertrail, $ spam); the former lowercase forms no longer fire.
+	// `F` has no lowercase form — `f` is forward — so feed keeps its
+	// uppercase key (see keys.go mapping table).
+	case "I", "O", "F", "P", "$":
 		targets := m.targetEmails()
 		action := strings.ToUpper(key)
 		return m, m.optimisticAct(targets, "Screening", func() tea.Cmd {
@@ -3696,8 +3846,8 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ";":
 		return m.openSnippets()
 
-	// b = move to Work/Business (pure move, no screener update)
-	case "b", "B":
+	// B = move to Work/Business (pure move, no screener update)
+	case "B":
 		work := m.cfg.Folders.Work
 		if work == "" {
 			m.status = "Work folder not configured"
@@ -4018,6 +4168,16 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// maybeLoadMoreCmd latches m.loadingMore, so run it before m is returned:
 	// Go does not order a plain operand against a call in the same statement.
 	more := m.maybeLoadMoreCmd()
+	// With the peek pane open, moving the cursor re-targets the preview so it
+	// always shows the highlighted row.
+	if m.peekActive {
+		if e := selectedEmail(m.inbox); e != nil &&
+			(m.peekEmail == nil || emailKey(e.Folder, e.UID) != emailKey(m.peekEmail.Folder, m.peekEmail.UID)) {
+			m.peekEmail = e
+			m.peekBody = ""
+			return m, tea.Batch(cmd, more, m.fetchPeekCmd(e))
+		}
+	}
 	return m, tea.Batch(cmd, more)
 }
 
@@ -4253,6 +4413,9 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 		if key == "S" {
 			m.status = "Scanning for spy pixels…"
 			return m, m.spyScanCmd()
+		}
+		if key == " " { // leader+space — quick peek at the highlighted email
+			return m.togglePeek()
 		}
 		if len(key) == 1 && key >= "1" && key <= "9" {
 			idx := int(key[0] - '1') // 0-based
@@ -6752,7 +6915,11 @@ func (m Model) viewInbox() string {
 		b.WriteString(m.inbox.View())
 	}
 
-	b.WriteString("\n")
+	if m.peekActive {
+		b.WriteString(m.viewPeek())
+	} else {
+		b.WriteString("\n")
+	}
 	if m.cmdMode {
 		b.WriteString(viewCmdLine(m.cmdText, m.width))
 	} else if m.imapSearchActive || m.imapSearchResults {
@@ -6775,6 +6942,52 @@ func (m Model) viewInbox() string {
 			help += styleDate.Render(fmt.Sprintf("  │  %d loaded", len(m.emails)))
 		}
 		b.WriteString(help)
+	}
+	return b.String()
+}
+
+// viewPeek renders the quick-peek preview pane: exactly peekPaneHeight lines
+// (padded when the body is shorter), so inbox list + peek + status bar always
+// fit the terminal without pushing anything off-screen.
+func (m Model) viewPeek() string {
+	var b strings.Builder
+	b.WriteString(styleSeparator.Render(strings.Repeat("─", m.width)) + "\n")
+	e := m.peekEmail
+	if e == nil {
+		return b.String()
+	}
+	width := m.width - 4
+	b.WriteString("  " + truncate(displaySafe("From: "+cleanFrom(e.From)), width) + "\n")
+	showTo := m.peekPaneHeight() >= 7
+	if showTo {
+		to := e.To
+		if to == "" {
+			to = "(none)"
+		}
+		b.WriteString("  " + truncate(displaySafe("To: "+to), width) + "\n")
+	}
+	b.WriteString("  " + truncate(displaySafe("Subject: "+e.Subject), width) + "\n")
+	bodyLines := m.peekPaneHeight() - 4
+	if showTo {
+		bodyLines--
+	}
+	if m.peekBody == "" {
+		if bodyLines > 0 {
+			b.WriteString(styleHelp.Render("  loading preview…") + "\n")
+			bodyLines--
+		}
+	} else {
+		for _, line := range strings.Split(strings.TrimRight(m.peekBody, "\n"), "\n") {
+			if bodyLines <= 0 {
+				break
+			}
+			b.WriteString("  " + truncate(displaySafe(strings.TrimRight(line, "\r")), width) + "\n")
+			bodyLines--
+		}
+	}
+	for bodyLines > 0 {
+		b.WriteString("\n")
+		bodyLines--
 	}
 	return b.String()
 }
