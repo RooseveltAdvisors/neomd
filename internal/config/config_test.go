@@ -90,6 +90,11 @@ func TestTabLabels(t *testing.T) {
 			[]string{"inbox", "nonexistent", "feed"},
 			[]string{"Inbox", "Feed"},
 		},
+		{
+			"reminder aliases share one label",
+			[]string{"waiting", "reminder", "reminders"},
+			[]string{"Reminders", "Reminders", "Reminders"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -114,6 +119,42 @@ func TestTabLabels(t *testing.T) {
 				if len(got) != wantLen {
 					t.Errorf("TabLabels() returned %d labels, want %d", len(got), wantLen)
 				}
+			}
+		})
+	}
+}
+
+func TestLoadReminderFolderAliases(t *testing.T) {
+	dir := t.TempDir()
+	base := `[[accounts]]
+name = "test"
+imap = "imap.example.com:993"
+smtp = "smtp.example.com:587"
+user = "user@example.com"
+password = "password"
+imap_disabled = true
+
+[folders]
+reminder = "Follow Up"
+tab_order = ["reminder"]
+`
+	for _, key := range []string{"waiting", "reminder", "reminders"} {
+		t.Run(key, func(t *testing.T) {
+			path := filepath.Join(dir, key+".toml")
+			contents := strings.Replace(base, "reminder =", key+" =", 1)
+			contents = strings.Replace(contents, "tab_order = [\"reminder\"]", "tab_order = [\""+key+"\"]", 1)
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Folders.Waiting != "Follow Up" {
+				t.Fatalf("canonical reminder folder = %q, want Follow Up", cfg.Folders.Waiting)
+			}
+			if got := cfg.Folders.TabLabels(); len(got) != 1 || got[0] != "Reminders" {
+				t.Fatalf("TabLabels = %v, want [Reminders]", got)
 			}
 		})
 	}

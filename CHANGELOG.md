@@ -2,6 +2,16 @@
 
 # 2026-09-08
 
+- **Reminders are resilient and show their fire time** — header fetches retry
+  without BODYSTRUCTURE when a malformed nested MIME part breaks the beta IMAP
+  parser; reminder reconciliation now searches by Message-ID/reminder ID instead
+  of scanning every folder. The Waiting tab is now Reminders, with `waiting`,
+  `reminder`, and `reminders` config/filter aliases retained; reminder rows use
+  `⏰` and show the fire time in the Reminders date column. Where:
+  `internal/imap/client.go`, `internal/config`, `internal/ui`, docs. Tests:
+  `TestParkReminderReconcilesMovedSourceAndIsIdempotent`,
+  `TestLoadReminderFolderAliases`, `TestReminderDueTimeShownInListRow`.
+
 - **Superhuman UX pack: fuzzy `:` palette, `/` field filters, focus view, unread-thread
   jumps, thread collapse, snippet manager/insert, undo toast, richer tab counts** —
   the `:` command line is now a fuzzy palette: prefix matches win, subsequence matches

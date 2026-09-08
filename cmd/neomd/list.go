@@ -87,8 +87,8 @@ func resolveListFolder(f config.FoldersConfig, name string) (imapName, label str
 		return f.ScreenedOut, "ScreenedOut", true
 	case "archive":
 		return f.Archive, "Archive", true
-	case "waiting":
-		return f.Waiting, "Waiting", true
+	case "waiting", "reminder", "reminders":
+		return f.Waiting, "Reminders", true
 	case "someday":
 		return f.Someday, "Someday", true
 	case "scheduled":

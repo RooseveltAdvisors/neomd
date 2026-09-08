@@ -47,7 +47,7 @@ example, `in 3 days`, `friday 2pm`, or `next week`).
 | G then D Drafts | `gd` | same | Required folder goto. |
 | G then T Sent | `gt` | vim-adapted | neomd's Sent folder takes the Superhuman goto. |
 | G then E Done | `ge` | vim-adapted | Done maps to Archive. |
-| G then H Reminders | `gh` | vim-adapted | Reminders map to Waiting. |
+| G then H Reminders | `gh` | vim-adapted | Reminders map to the configured reminder folder. |
 | G then M Muted | `gm` | vim-adapted | Someday is the closest configured destination. |
 | G then ; Snippets | `g;` | same | Opens the live snippet picker. |
 | G then ! Spam | `g!` | same | Required folder goto. |

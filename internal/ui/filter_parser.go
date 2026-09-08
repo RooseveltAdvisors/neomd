@@ -209,6 +209,8 @@ func (m *Model) folderAliases() map[string]string {
 	entries["done"] = f.Archive
 	entries["other"] = f.ScreenedOut
 	entries["reminders"] = f.Waiting
+	entries["reminder"] = f.Waiting
+	entries["waiting"] = f.Waiting
 	out := make(map[string]string, len(entries))
 	for path, target := range entries {
 		if path == "" {

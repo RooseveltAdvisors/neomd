@@ -8,6 +8,21 @@ import (
 	"github.com/sspaeti/neomd/internal/imap"
 )
 
+func TestReminderFolderNavigationUsesRemindersLabel(t *testing.T) {
+	m := keysTestModel(t, 0)
+	m.folders = []string{"Inbox", "Reminders"}
+	m.cfg.Folders.Waiting = "Waiting"
+	for _, key := range []string{"h", "w"} {
+		m.activeFolderI = 0
+		m.offTabFolder = ""
+		updated, _ := m.handleChord("g", key)
+		got := updated.(Model)
+		if got.folders[got.activeFolderI] != "Reminders" || got.activeFolder() != "Waiting" {
+			t.Fatalf("g%s selected %q at %q, want Reminders/Waiting", key, got.folders[got.activeFolderI], got.activeFolder())
+		}
+	}
+}
+
 func TestReminderPopupQuickPicksAndNaturalLanguage(t *testing.T) {
 	m := keysTestModel(t, 2)
 	m.width, m.height = 100, 30

@@ -706,15 +706,19 @@ func TestComposeSuggestionsFuzzySubsequence(t *testing.T) {
 
 func TestReminderDueTimeShownInListRow(t *testing.T) {
 	m := keysTestModel(t, 1)
+	m.emails[0].Folder = "Waiting"
 	m.emails[0].Reminder = &reminder.Metadata{
 		At: time.Date(2026, time.March, 15, 14, 30, 0, 0, time.UTC), State: "waiting",
 	}
 	m.applyFilter()
 	var out strings.Builder
-	delegate := emailDelegate{}
+	delegate := emailDelegate{reminderFolder: "Waiting"}
 	delegate.Render(&out, m.inbox, m.inbox.Index(), m.inbox.Items()[m.inbox.Index()])
-	want := time.Date(2026, time.March, 15, 14, 30, 0, 0, time.UTC).Local().Format("Jan 2 15:04")
+	want := fmtReminderDate(time.Date(2026, time.March, 15, 14, 30, 0, 0, time.UTC))
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("row render missing reminder time %q: %q", want, out.String())
+	}
+	if strings.Contains(out.String(), "R ") {
+		t.Fatalf("row still uses the old reminder indicator: %q", out.String())
 	}
 }
