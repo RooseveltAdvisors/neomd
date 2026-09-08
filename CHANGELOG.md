@@ -2,6 +2,18 @@
 
 # 2026-09-07
 
+- **Reminders accept natural language and filtered rows remain actionable** — `h` now
+  opens a centered Remind Me picker with quick picks, live local-time resolution,
+  clear validation, and phrases such as `in 3 days`, `friday 2pm`, `tonight`,
+  `this weekend`, and `next week`; send-later (`l`) uses the same pure parser.
+  The local `/` filter now restores/clamps the list cursor after narrowing, so
+  archive, remind, selection, screening, open, compose, reply, forward, move,
+  visual-select, and `dd` act on the highlighted filtered email and `esc` clears
+  the committed filter. Where: `internal/when`, `internal/ui/reminder.go`,
+  `internal/ui/model.go`, docs. Tests: `TestParseNaturalLanguageTimes`,
+  `TestCommittedFilterActionsUseVisibleTarget`, `TestReminderPopupQuickPicksAndNaturalLanguage`,
+  `go test ./... -run Hardening`.
+
 - **Yank menu actually reaches the clipboard (OSC 52)** — the reader's `y` → `m`
   copy landed nowhere whenever neomd ran over ssh: the shared helper only tried
   local tools, and on a headless host `xclip` is on `PATH` but `DISPLAY` is empty,

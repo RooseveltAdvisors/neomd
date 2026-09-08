@@ -2,14 +2,16 @@
 
 This is the product map for neomd's vim-shaped keyboard. `internal/ui/keys.go`
 drives the in-app `?` overlay and `docs/content/docs/keybindings.md`; this table
-records the decision made for every shortcut on Superhuman v7's sheet.
+records the decision made for every shortcut on Superhuman v7's sheet. `h` opens
+a centered Remind Me picker with quick picks and a natural-language field (for
+example, `in 3 days`, `friday 2pm`, or `next week`).
 
 | Superhuman key | neomd key | Status | Reason |
 |---|---|---|---|
 | ⌘K mark done | `e` | vim-adapted | Captain chose lowercase e for archive / done. |
 | E mark not done | `E` | vim-adapted | Shift remains the opposite action and returns mail to Inbox. |
 | / search | `/` | same | Vim filter is already the local-list search. |
-| Z remind me | `h` | vim-adapted | Captain reserved h for remind. |
+| Z remind me | `h` | vim-adapted | Captain reserved h for remind; the picker accepts quick picks and natural language. |
 | ? shortcuts | `?` | same | Opens the searchable help overlay. |
 | S star | dropped | dropped | neomd has no star state. |
 | X select conversation | `x` | vim-adapted | x toggles the current selection; V extends it visually. |

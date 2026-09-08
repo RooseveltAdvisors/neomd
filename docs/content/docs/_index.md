@@ -3,6 +3,10 @@ title: Overview & Philosophy
 weight: 0
 ---
 
+## Deployment
+
+Merging to `main` deploys neomd to the GPU host through [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). Never rebuild the binary by hand on GPU; merge to `main` instead. The workflow keeps the previous binary at `~/.local/bin/neomd.prev` for rollback.
+
 A keyboard-first TUI email: write in Neovim, render as Markdown, screen senders first, organize emails once.
 
 _Neomd is my way of implementing an email TUI based on my experience with Neomutt, focusing on [Neovim](https://www.ssp.sh/brain/neovim) (input) and reading/writing in [Markdown](https://www.ssp.sh/brain/markdown) and navigating with [Vim Motions](https://www.ssp.sh/brain/vim-language-and-motions) with the GTD workflow and [HEY-Screener](https://www.hey.com/features/the-screener/)._
@@ -182,11 +186,11 @@ Keep your inbox clean without effort.
 
 - **CC, BCC, Reply-all** — optional Cc/Bcc fields (toggle with `ctrl+b`); `R` in the reader replies to sender + all CC recipients [→](https://neomd.ssp.sh/docs/sending/#cc-bcc-reply-all-and-forward)
 - **Drafts** — `d` in pre-send saves to Drafts (IMAP APPEND); `E` in the reader re-opens a draft as an editable compose; compose sessions are auto-backed up to `~/.cache/neomd/drafts/` so you never lose an unsent email (`:recover` to reopen) [→](https://neomd.ssp.sh/docs/sending/#drafts)
-- **Send later** — `l` in pre-send schedules delivery (`+2h`, `17:30`, `tomorrow 09:00`); the message queues in your Scheduled folder and the headless daemon delivers it on time — delete from Scheduled to cancel [→](https://neomd.ssp.sh/docs/sending/#send-later)
+- **Send later** — `l` in pre-send schedules delivery using natural language (`in 3 days`, `friday 2pm`, `tomorrow morning`, or `17:30`); the message queues in your Scheduled folder and the headless daemon delivers it on time — delete from Scheduled to cancel [→](https://neomd.ssp.sh/docs/sending/#send-later)
 - **Keyboard-driven, instantly** — `e` archive, `h` remind, `s` start an email, `;` snippets. Every action applies to the list the moment you press the key; the IMAP round-trip happens behind it and only a server failure puts the row back [→](https://neomd.ssp.sh/docs/keybindings/)
 - **Infinite scroll** — reaching the bottom of the list appends the next page automatically; no pager, and the cursor stays where you left it
 - **Snippets** — `;` opens a template picker reading `~/.config/neomd/snippets/*.md`; an optional first `Subject: ...` line sets the subject, the rest becomes the body
-- **Per-email reminders** — press `h` on a message (from the inbox or the reader), enter `+2h`, `tomorrow 09:00`, or a date/time; it moves to Waiting and returns to Inbox when due. No mail is sent; the original stays recoverable in Trash [→](https://neomd.ssp.sh/docs/sending/#reminders)
+- **Per-email reminders** — press `h` on a message (from the inbox, a filtered `/` result, or the reader) to open quick picks plus a natural-language field (`in 3 days`, `friday 2pm`, `this weekend`, `next week`, or a date/time); it moves to Waiting and returns to Inbox when due. No mail is sent; the original stays recoverable in Trash [→](https://neomd.ssp.sh/docs/sending/#reminders)
 - **Recipient names & contacts** — names are harvested from email headers (plus an optional contacts file / Google Contacts CSV export), used to find people by name in search and to send `Louise Nachname <l@domain.io>` instead of a bare address [→](https://neomd.ssp.sh/docs/sending/#recipient-names)
 - **Multiple From addresses** — define SMTP-only `[[senders]]` aliases (e.g. `s@ssp.sh` through an existing account); cycle with `ctrl+f` in compose and pre-send; sent copies always land in the Sent folder [→](https://neomd.ssp.sh/docs/sending/#multiple-from-addresses)
 - **OS keyring credentials** — set `password = "keyring"` to fetch the IMAP/SMTP password from your OS keyring (macOS Keychain, Linux Secret Service, Windows Credential Manager); OAuth2 tokens also stored in keyring with file fallback for headless/SSH; resolution happens at config load so `[[senders]]` aliases inherit the resolved password automatically [→](https://neomd.ssp.sh/docs/configuration/#storing-passwords-in-the-os-keyring)
@@ -279,6 +283,15 @@ spam         = "~/.config/neomd/lists/spam.txt"
 ```
 
 Use an app-specific password (Gmail, Fastmail, Hostpoint, etc.) rather than your main account password. The `password` and `user` fields support environment variable expansion (`$VAR` or `${VAR}`) so you can avoid storing secrets in the config file.
+
+For an existing external XOAUTH2 helper, set `auth_type = "oauth2"` and provide
+`oauth2_token_command = ["~/bin/oauth-token.sh"]` in the account. The fixed argv
+command's trimmed stdout is used as the in-memory access token; only a leading
+`~/` in its executable is expanded, stderr is discarded, and native OAuth client,
+issuer/URL, keyring, and token-file settings are not used. Set root-level
+`read_only = true` to browse with IMAP `EXAMINE` while refusing every IMAP
+mutation and outbound delivery; first-run folder creation and `--headless` are
+also disabled.
 
 For the full configuration reference including multiple accounts, OAuth2 authentication, `[[senders]]` aliases, folder customization, signatures, and UI options, see [docs/content/docs/configuration](docs/content/docs/configuration/_index.md).
 

@@ -18,7 +18,7 @@ To update both the help overlay and this document at once, edit that file and ru
 |-----|--------|
 | `e` | mark done / archive (alias A) |
 | `E` | mark not done / move back to Inbox |
-| `h` | remind me |
+| `h` | remind me (quick picks / natural language) |
 | `u` | undo the last move or delete |
 | `U / z` | toggle unread-only view |
 | `n` | mark read / unread |
