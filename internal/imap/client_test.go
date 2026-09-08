@@ -114,6 +114,37 @@ func TestParseSendAtSection(t *testing.T) {
 	}
 }
 
+func TestSearchMessageIDsAndReadRawMessage(t *testing.T) {
+	client, user := startMemoryIMAP(t, "INBOX")
+	raw := []byte("From: sender@example.com\r\nTo: user@example.com\r\nSubject: fixture\r\n" +
+		"Message-ID: <fixture-read@example.com>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nfixture body\r\n")
+	data, err := user.Append("INBOX", &testLiteralReader{Reader: bytes.NewReader(raw), size: int64(len(raw))}, &imap.AppendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, port, err := net.SplitHostPort(client.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	readOnly := New(Config{Host: host, Port: port, User: "user", Password: "password", TLS: true, ReadOnly: true})
+	t.Cleanup(readOnly.Close)
+	uids, err := readOnly.SearchMessageIDs(context.Background(), "INBOX", "fixture-read@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(uids) != 1 || uids[0] != uint32(data.UID) {
+		t.Fatalf("uids=%v, want [%d]", uids, data.UID)
+	}
+	fetched, err := readOnly.FetchRaw(context.Background(), "INBOX", uids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	email, body, attachments, err := ParseRawMessage(fetched)
+	if err != nil || email.MessageID != "<fixture-read@example.com>" || body != "fixture body" || len(attachments) != 0 {
+		t.Fatalf("email=%+v body=%q attachments=%d err=%v", email, body, len(attachments), err)
+	}
+}
+
 func TestParseReminderSection(t *testing.T) {
 	got := parseReminder([]byte("X-Neomd-Reminder-At: 2030-01-02T03:04:05Z\r\nX-Neomd-Reminder-State: due\r\nX-Neomd-Reminder-ID: id-1\r\n"))
 	if got == nil || got.State != "due" || !got.At.Equal(time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)) {

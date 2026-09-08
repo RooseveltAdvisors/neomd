@@ -77,7 +77,7 @@ example, `in 3 days`, `friday 2pm`, or `next week`).
 | ⌘- decrease font | dropped | dropped | Terminal theme/font is controlled by the terminal. |
 | ⌘0 reset font | dropped | dropped | Terminal theme/font is controlled by the terminal. |
 | ctrl-/ copy page link | dropped | dropped | No browser page-link concept in the TUI. |
-| copy message link | `y` | neomd-native | In the reader, opens a copy menu: `m` copies `neomd://mid/<url-encoded-message-id>` and `w` copies an available web-version link. |
+| copy message link | `y` | neomd-native | In the reader, opens a copy menu: `m` copies `neomd://mid/<url-encoded-message-id>` and `w` copies an available web-version link. Resolve the Message-ID link from a script with `neomd read <link>`. |
 | ⌘B bold | dropped | dropped | Formatting belongs to the external editor. |
 | ⌘I italic | dropped | dropped | Formatting belongs to the external editor. |
 | ⌘U underline | dropped | dropped | Formatting belongs to the external editor. |

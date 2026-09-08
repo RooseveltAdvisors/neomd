@@ -527,6 +527,38 @@ func (c *Client) SearchUIDs(ctx context.Context, folder string) ([]uint32, error
 	return uids, err
 }
 
+// SearchMessageIDs returns UIDs whose Message-ID header matches id. The
+// mailbox is selected read-only when the client was configured with ReadOnly;
+// SEARCH itself never changes message flags.
+func (c *Client) SearchMessageIDs(ctx context.Context, folder, id string) ([]uint32, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var uids []uint32
+	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
+		uids = nil
+		if err := c.selectMailbox(folder); err != nil {
+			return err
+		}
+		searchData, err := conn.UIDSearch(&imap.SearchCriteria{
+			Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: id}},
+		}, nil).Wait()
+		if err != nil {
+			return fmt.Errorf("UID SEARCH Message-ID: %w", err)
+		}
+		uidSet, ok := searchData.All.(imap.UIDSet)
+		if !ok {
+			return nil
+		}
+		nums, _ := uidSet.Nums()
+		for _, uid := range nums {
+			uids = append(uids, uint32(uid))
+		}
+		return nil
+	})
+	return uids, err
+}
+
 // FetchUnseenCounts returns the number of unseen messages for each folder using
 // IMAP STATUS — fast and does not SELECT/open the mailbox.
 // folders maps a display label (e.g. "Inbox") to an IMAP mailbox name.

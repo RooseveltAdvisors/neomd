@@ -23,6 +23,10 @@ import (
 var version = "dev"
 
 func main() {
+	// Go's standard flag parser stops at the first positional argument. Pull
+	// -config out first so the documented `neomd read <link> --config ...`
+	// spelling works as well as the traditional global-flag spelling.
+	os.Args = append([]string{os.Args[0]}, moveConfigArgsToFront(os.Args[1:])...)
 	cfgPath := flag.String("config", "", "path to config.toml (default: ~/.config/neomd/config.toml)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	headless := flag.Bool("headless", false, "run in headless daemon mode (no TUI)")
@@ -39,6 +43,17 @@ func main() {
 		fmt.Println("neomd", version)
 		return
 	}
+	readCommand := flag.NArg() > 0 && flag.Arg(0) == "read"
+	legacyRead := readCommand && hasArg(flag.Args()[1:], "--uid")
+	var readOptions agentReadOpts
+	var readOptionsErr error
+	if readCommand && !legacyRead {
+		readOptions, readOptionsErr = parseAgentReadArgs(flag.Args()[1:])
+		if readOptionsErr != nil {
+			fmt.Fprintf(os.Stderr, "neomd read: %v\n", readOptionsErr)
+			os.Exit(2)
+		}
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -47,9 +62,15 @@ func main() {
 	if err != nil {
 		if strings.Contains(err.Error(), "please fill in") {
 			fmt.Fprintln(os.Stderr, "neomd:", err)
+			if readCommand {
+				os.Exit(2)
+			}
 			os.Exit(0)
 		}
 		fmt.Fprintf(os.Stderr, "neomd: config error: %v\n", err)
+		if readCommand {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 	if *headless && cfg.ReadOnly {
@@ -58,8 +79,24 @@ func main() {
 	}
 
 	accounts := cfg.ActiveAccounts()
+	if readCommand && readOptions.account != "" {
+		var selected []config.AccountConfig
+		for _, account := range accounts {
+			if strings.EqualFold(account.Name, readOptions.account) {
+				selected = append(selected, account)
+			}
+		}
+		if len(selected) == 0 {
+			fmt.Fprintf(os.Stderr, "neomd read: unknown account %q\n", readOptions.account)
+			os.Exit(2)
+		}
+		accounts = selected
+	}
 	if len(accounts) == 0 {
 		fmt.Fprintln(os.Stderr, "neomd: no accounts configured in config.toml")
+		if readCommand {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 
@@ -85,9 +122,14 @@ func main() {
 		}
 		if err := configureIMAPAuth(ctx, acc, &imapCfg); err != nil {
 			fmt.Fprintf(os.Stderr, "neomd: account %q: %v\n", acc.Name, err)
+			if readCommand {
+				os.Exit(2)
+			}
 			os.Exit(1)
 		}
-		imapCfg.ReadOnly = cfg.ReadOnly
+		// The script-facing read command is always EXAMINE/BODY.PEEK, even
+		// when the user's normal TUI profile is writable.
+		imapCfg.ReadOnly = cfg.ReadOnly || readCommand
 		imapClients = append(imapClients, goIMAP.New(imapCfg))
 	}
 	defer func() {
@@ -120,22 +162,36 @@ func main() {
 		os.Exit(code)
 	}
 
-	// `neomd read --folder <label> --uid <n>` — one message body as JSON for
-	// the widget's in-panel reader. BODY.PEEK: never marks the mail as read.
+	// `neomd read <link>` — resolve a Message-ID across the selected account(s)
+	// without mutating mailboxes. Legacy --folder/--uid remains for the widget.
 	if flag.NArg() > 0 && flag.Arg(0) == "read" {
-		var readCli *goIMAP.Client
-		for _, c := range imapClients {
-			if c != nil {
-				readCli = c
-				break
+		if legacyRead {
+			var readCli *goIMAP.Client
+			for _, c := range imapClients {
+				if c != nil {
+					readCli = c
+					break
+				}
+			}
+			if readCli == nil {
+				writeReadJSON(os.Stdout, readOutput{Error: "no IMAP-enabled account configured"})
+				os.Exit(0)
+			}
+			code := runRead(ctx, cfg.Folders, readCli, flag.Args()[1:], os.Stdout)
+			readCli.Close()
+			os.Exit(code)
+		}
+		readClients := make([]readClient, 0, len(accounts))
+		for i, client := range imapClients {
+			if client != nil {
+				readClients = append(readClients, readClient{account: accounts[i].Name, client: client})
 			}
 		}
-		if readCli == nil {
-			writeReadJSON(os.Stdout, readOutput{Error: "no IMAP-enabled account configured"})
-			os.Exit(0)
+		if len(readClients) == 0 {
+			fmt.Fprintln(os.Stderr, "neomd read: no IMAP-enabled account configured")
+			os.Exit(2)
 		}
-		code := runRead(ctx, cfg.Folders, readCli, flag.Args()[1:], os.Stdout)
-		readCli.Close()
+		code := runAgentRead(ctx, cfg.Folders, readClients, readOptions, os.Stdin, os.Stdout, os.Stderr)
 		os.Exit(code)
 	}
 
@@ -217,6 +273,35 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+func hasArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want || strings.HasPrefix(arg, want+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func moveConfigArgsToFront(args []string) []string {
+	result := make([]string, 0, len(args)+2)
+	var configArgs []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--config" || args[i] == "-config" {
+			if i+1 < len(args) {
+				configArgs = []string{"--config", args[i+1]}
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(args[i], "--config=") || strings.HasPrefix(args[i], "-config=") {
+			configArgs = []string{"--config", strings.SplitN(args[i], "=", 2)[1]}
+			continue
+		}
+		result = append(result, args[i])
+	}
+	return append(configArgs, result...)
 }
 
 func configureIMAPAuth(ctx context.Context, acc config.AccountConfig, imapCfg *goIMAP.Config) error {
