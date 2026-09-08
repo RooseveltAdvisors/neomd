@@ -97,6 +97,21 @@ func (c *composeModel) activeField() *textinput.Model {
 	}
 }
 
+// suggestMatches reports whether a candidate matches the typed query:
+// substring hits always match, and a fuzzy subsequence of the name counts
+// too ("mm" → "Max Muster"). Single-character queries stay substring-only.
+func suggestMatches(text, query string) bool {
+	lt := strings.ToLower(text)
+	if strings.Contains(lt, query) {
+		return true
+	}
+	if len(query) < 2 {
+		return false
+	}
+	_, ok := fuzzyScore(lt, query)
+	return ok
+}
+
 // isAddrField returns true if the current step is an address field (To/Cc/Bcc).
 func (c *composeModel) isAddrField() bool {
 	return c.step == stepTo || c.step == stepCC || c.step == stepBCC
@@ -125,7 +140,7 @@ func (c *composeModel) updateSuggestions() {
 	query := strings.ToLower(lastPart)
 	seen := map[string]bool{}
 	for _, e := range c.contacts.All() {
-		if strings.Contains(strings.ToLower(e.Name), query) || strings.Contains(strings.ToLower(e.Addr), query) {
+		if suggestMatches(e.Name, query) || suggestMatches(e.Addr, query) {
 			c.suggestions = append(c.suggestions, e.Name+" <"+e.Addr+">")
 			seen[strings.ToLower(e.Addr)] = true
 		}
@@ -136,13 +151,13 @@ func (c *composeModel) updateSuggestions() {
 		}
 		if name := c.contacts.Name(addr); name != "" {
 			// Screener address with a known name: match on either, suggest decorated.
-			if strings.Contains(strings.ToLower(name), query) || strings.Contains(strings.ToLower(addr), query) {
+			if suggestMatches(name, query) || suggestMatches(addr, query) {
 				c.suggestions = append(c.suggestions, name+" <"+addr+">")
 				seen[strings.ToLower(addr)] = true
 			}
 			continue
 		}
-		if strings.Contains(strings.ToLower(addr), query) {
+		if suggestMatches(addr, query) {
 			c.suggestions = append(c.suggestions, addr)
 			seen[strings.ToLower(addr)] = true
 		}

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/sspaeti/neomd/internal/imap"
 )
 
@@ -92,6 +93,13 @@ func normalizeSubject(subject string) string {
 type threadedEmail struct {
 	email        imap.Email
 	threadPrefix string // "│" = continuation, "╰" = root, "" = not threaded
+	threadCount  int    // >0 when collapsed to one row (count of messages in thread)
+}
+
+// threadKey identifies a collapsed thread by its newest message's
+// normalized subject — the same normalization used for grouping.
+func threadKey(e imap.Email) string {
+	return normalizeSubject(e.Subject)
 }
 
 // flatEmails returns emails sorted without any threading/grouping.
@@ -253,4 +261,79 @@ func threadEmails(emails []imap.Email, sortField string, sortReverse bool) []thr
 	}
 
 	return result
+}
+
+// threadBlock is a maximal run of rows belonging to one conversation as
+// displayed: rows with a thread prefix form a block, a plain row is its
+// own singleton block.
+type threadBlock struct {
+	start, end int // inclusive row indices
+}
+
+// threadBlocks groups displayed list items into thread blocks.
+func threadBlocks(items []list.Item) []threadBlock {
+	var blocks []threadBlock
+	start := -1
+	for i, it := range items {
+		item, ok := it.(emailItem)
+		prefixed := ok && item.threadPrefix != ""
+		if prefixed {
+			if start == -1 {
+				start = i
+			}
+			continue
+		}
+		if start != -1 {
+			blocks = append(blocks, threadBlock{start: start, end: i - 1})
+			start = -1
+		}
+		blocks = append(blocks, threadBlock{start: i, end: i})
+	}
+	if start != -1 {
+		blocks = append(blocks, threadBlock{start: start, end: len(items) - 1})
+	}
+	return blocks
+}
+
+// blockHasUnread reports whether any row in the block is unread.
+func blockHasUnread(items []list.Item, b threadBlock) bool {
+	for i := b.start; i <= b.end; i++ {
+		if item, ok := items[i].(emailItem); ok && !item.email.Seen {
+			return true
+		}
+	}
+	return false
+}
+
+// jumpUnreadThread returns the first row index of the nearest thread with
+// an unread email in direction dir (+1 next, -1 previous), relative to the
+// row at `from`. The cursor's own block is skipped in the search (a jump
+// should move you somewhere new), wrapping around the list. Returns -1
+// when no other thread has unread mail.
+func jumpUnreadThread(items []list.Item, from, dir int) int {
+	if len(items) == 0 {
+		return -1
+	}
+	blocks := threadBlocks(items)
+	cur := 0
+	for i, b := range blocks {
+		if from >= b.start && from <= b.end {
+			cur = i
+			break
+		}
+	}
+	n := len(blocks)
+	for step := 1; step <= n; step++ {
+		i := ((cur+dir*step)%n + n) % n
+		if step == n && i == cur {
+			break // wrapped all the way back to the starting block
+		}
+		if i == cur {
+			continue
+		}
+		if blockHasUnread(items, blocks[i]) {
+			return blocks[i].start
+		}
+	}
+	return -1
 }

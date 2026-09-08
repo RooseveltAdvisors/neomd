@@ -23,6 +23,7 @@ type emailItem struct {
 	displaySubj  string // rendered subject (may include folder prefix in temporary views)
 	threadPrefix string // tree chars e.g. "┌─>" for threaded display
 	hasSpyPixel  bool   // tracking pixels were detected when body was loaded
+	threadCount  int    // >0 when this row represents a collapsed thread (count of messages)
 }
 
 func (e emailItem) FilterValue() string {
@@ -86,9 +87,11 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	if e.email.Answered {
 		replyStr = "·"
 	}
-	// Thread connector column
+	// Thread connector column; a collapsed thread shows ▸ with count badge.
 	threadStr := "  "
-	if e.threadPrefix != "" {
+	if e.threadCount > 0 {
+		threadStr = "▸ "
+	} else if e.threadPrefix != "" {
 		threadStr = e.threadPrefix + " "
 	}
 	dateStr := fmtDate(e.email.Date) + " "
@@ -125,6 +128,14 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 		subjectText = e.displaySubj
 	}
 	subjectText = sendLaterPrefix(e.email) + subjectText
+	if e.threadCount > 0 {
+		subjectText = fmt.Sprintf("×%d ", e.threadCount) + subjectText
+	}
+	if e.email.Reminder != nil {
+		// Follow-up reminders stay visible in the list with their due time
+		// (Waiting/Reminders view), not just via the R indicator.
+		subjectText += "  ⏰ " + e.email.Reminder.At.Local().Format("Jan 2 15:04")
+	}
 	subject := truncate(displaySafe(subjectText), subjectMax)
 
 	if isSelected {
@@ -394,12 +405,15 @@ func spyPixelKey(folder string, uid uint32) string {
 	return folder + "\x00" + fmt.Sprintf("%d", uid)
 }
 
-func setEmails(l *list.Model, emails []imap.Email, marked map[uint32]bool, spyPixels map[string]bool, prefixFolders bool, sortField string, sortReverse bool, disableThreading bool) tea.Cmd {
+func setEmails(l *list.Model, emails []imap.Email, marked map[uint32]bool, spyPixels map[string]bool, prefixFolders bool, sortField string, sortReverse bool, disableThreading bool, collapseThreads bool, expandedThreads map[string]bool) tea.Cmd {
 	var threaded []threadedEmail
 	if disableThreading {
 		threaded = flatEmails(emails, sortField, sortReverse)
 	} else {
 		threaded = threadEmails(emails, sortField, sortReverse)
+	}
+	if collapseThreads {
+		threaded = collapseThreadRows(threaded, expandedThreads)
 	}
 	items := make([]list.Item, len(threaded))
 	for i, te := range threaded {
@@ -414,9 +428,49 @@ func setEmails(l *list.Model, emails []imap.Email, marked map[uint32]bool, spyPi
 			displaySubj:  displaySubj,
 			threadPrefix: te.threadPrefix,
 			hasSpyPixel:  spyPixels[spyPixelKey(te.email.Folder, te.email.UID)],
+			threadCount:  te.threadCount,
 		}
 	}
 	return l.SetItems(items)
+}
+
+// collapseThreadRows reduces each multi-message thread to its newest row,
+// carrying the message count in threadCount. Threads whose key is in the
+// expanded set keep all rows. Single-message rows pass through untouched.
+func collapseThreadRows(threaded []threadedEmail, expanded map[string]bool) []threadedEmail {
+	if len(threaded) == 0 {
+		return threaded
+	}
+	out := make([]threadedEmail, 0, len(threaded))
+	for start := 0; start < len(threaded); {
+		end := start
+		for end+1 < len(threaded) && threaded[end+1].threadPrefix != "" && threaded[start].threadPrefix != "" {
+			end++
+		}
+		block := threaded[start : end+1]
+		if len(block) == 1 {
+			out = append(out, block[0])
+		} else {
+			key := threadKey(block[0].email)
+			if expanded[key] {
+				out = append(out, block...)
+			} else {
+				top := block[0]
+				top.threadCount = len(block)
+				top.threadPrefix = ""
+				out = append(out, top)
+			}
+		}
+		start = end + 1
+	}
+	return out
+}
+
+// selectedEmailItem returns the currently highlighted email item, or the
+// zero value with ok=false (used when collapsed-thread state matters).
+func selectedEmailItem(l list.Model) (emailItem, bool) {
+	item, ok := l.SelectedItem().(emailItem)
+	return item, ok
 }
 
 // selectedEmail returns the currently highlighted email, or nil.

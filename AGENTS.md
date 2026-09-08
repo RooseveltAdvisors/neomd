@@ -502,6 +502,38 @@ layer — do not rebind them, and do not let a new binding shadow one.
   the final vim map. Prefer plain letters, especially on pre-send.
 - **README.md syncs to the docs site** (`scripts/sync-readme-to-docs.sh` via `make docs`).
 
+## Superhuman UX Pack
+
+- **Fuzzy `:` palette with live preview** — prefix matches win exclusively; fuzzy
+  subsequence matches only fill in when nothing matches by prefix (`matchCmdsFuzzy`,
+  `internal/ui/palette.go`). `matchCmdLine` splits the first word (command) from the
+  rest (argument); the cmdline shows a concrete preview via `neomdCmd.preview` before
+  enter. New commands: `:done`, `:remind <time>`, `:move <folder>`, `:snip [name]`.
+  Tests: `TestMatchCmdsFuzzyFallback`, `TestMatchCmdLineSplitsArgument`,
+  `TestCmdLinePreviewDescribesEffect`, `TestCmdDoneArchivesViaOptimisticPath`.
+- **`/` filter field tokens** — `parseFilterQuery` (`internal/ui/filter_parser.go`):
+  `from: to: subject: has:attachment before:/after: in:` AND-combine with free text;
+  quoted values may contain spaces. `parseFilterDate` accepts past ISO dates and
+  yesterday/today/tomorrow/last-week/N-days-ago (when.Parse is future-only and must
+  not be used for filter dates). Tests: `TestParseFilterQuery*`,
+  `TestFilterQueryMatchesEmail`, `TestApplyFilterWithFieldTokens`,
+  `TestFolderAliasesResolveLabelsAndAliases`.
+- **Focus view `<space>i`, thread collapse `<space>t`, unread-thread jumps `N`/`<space>p`**
+  — lowercase `i`/`p` stay dead (the inbox handler must not grow cases for them;
+  `TestLowercaseMailboxActionsAreDead` still passes). Collapse folds only multi-row
+  thread blocks (threadCount > 0) and enter/o on such a row opens the conversation;
+  `expandedThreads` keys on `normalizeSubject`. `jumpUnreadThread` works on the
+  displayed rows, skips the cursor's own block, and wraps.
+  Tests: `TestFocusView*`, `TestCollapse*`, `TestJumpUnreadThread*`, `TestNKeyJumps*`.
+- **Snippet insert mode + manager** — `<space>;` from compose/pre-send opens the picker
+  in insert mode: single-line body → insert at the focused field's cursor; multi-line →
+  `mailtoBody` (editor buffer); pre-send → appended to `pendingSend.body`. `:snip` (or
+  `m` in the picker) opens the manager: n (name prompt → $EDITOR), e/enter edit,
+  d + y/n delete. `Model.snippetDir` overrides the snippet directory for tests.
+  Tests: `TestSnippetInsert*`, `TestSnippetManagerCreateEditDelete`.
+- **Undo names what it reversed** — `undoAction.describe()` feeds `undoDoneMsg.desc`
+  ("Undone: move 3 email(s) back to Archive"). Test: `TestUndoActionDescribe`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

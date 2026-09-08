@@ -16,8 +16,13 @@ type neomdCmd struct {
 	name    string   // full name, e.g. "screen-all"
 	aliases []string // short forms accepted, e.g. ["sa", "screen-a"]
 	desc    string
+	// argHint documents the argument form, e.g. "<time>" (shown in previews).
+	argHint string
+	// preview renders a live, concrete description of what the command will
+	// do with the given argument ("move 3 emails → Work"). May be nil.
+	preview func(m *Model, arg string) string
 	// run is called when the command is executed; m is the current model.
-	run func(m *Model) (tea.Model, tea.Cmd)
+	run func(m *Model, arg string) (tea.Model, tea.Cmd)
 }
 
 // cmdRegistry is the list of all available colon-commands.
@@ -31,7 +36,7 @@ func init() {
 			name:    "screen",
 			aliases: []string{"s"},
 			desc:    "screen currently loaded emails only (up to inbox_count)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				if err := m.validateScreenerSafety(); err != nil {
 					m.status = err.Error()
 					m.isError = true
@@ -48,10 +53,43 @@ func init() {
 			},
 		},
 		{
+			name:    "done",
+			aliases: []string{"dn"},
+			desc:    "archive (mark done) the selected or marked emails",
+			preview: previewDone,
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
+				return runDoneCmd(m)
+			},
+		},
+		{
+			name:    "remind",
+			aliases: []string{"rm"},
+			argHint: "<time>",
+			desc:    "remind me about the selected emails at a natural-language time",
+			preview: previewRemind,
+			run:     runRemindCmd,
+		},
+		{
+			name:    "move",
+			aliases: []string{"mv"},
+			argHint: "<folder>",
+			desc:    "move the selected emails to a folder (label, path or alias)",
+			preview: previewMove,
+			run:     runMoveCmdArg,
+		},
+		{
+			name:    "snip",
+			aliases: []string{"sn"},
+			argHint: "[name]",
+			desc:    "open the snippet manager, or compose from a named snippet",
+			preview: previewSnip,
+			run:     runSnipCmd,
+		},
+		{
 			name:    "screen-all",
 			aliases: []string{"sa", "screen-a"},
 			desc:    "fetch and screen EVERY inbox email, no limit (use after updating screener lists)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				if err := m.validateScreenerSafety(); err != nil {
 					m.status = err.Error()
 					m.isError = true
@@ -65,7 +103,7 @@ func init() {
 			name:    "scan-spy-pixels",
 			aliases: []string{"ssp"},
 			desc:    "scan current folder for tracking pixels (background, skips already scanned)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				m.status = "Scanning for spy pixels…"
 				return m, m.spyScanCmd()
 			},
@@ -74,7 +112,7 @@ func init() {
 			name:    "reload",
 			aliases: []string{"r", "re"},
 			desc:    "reload / refresh the current folder",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				m.loading = true
 				return m, m.fetchFolderCmd(m.activeFolder())
 			},
@@ -83,7 +121,7 @@ func init() {
 			name:    "mark-read",
 			aliases: []string{"mr"},
 			desc:    "mark all emails in current folder as read",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				cmd := m.markAllSeenCmd()
 				if cmd == nil {
 					m.status = "All already read."
@@ -97,7 +135,7 @@ func init() {
 			name:    "check",
 			aliases: []string{"ch"},
 			desc:    "show screener classification for the selected email (diagnostic)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				e := selectedEmail(m.inbox)
 				if e == nil {
 					m.status = "No email selected."
@@ -112,7 +150,7 @@ func init() {
 			name:    "reset-toscreen",
 			aliases: []string{"rts"},
 			desc:    "move all ToScreen emails back to Inbox (then run screen-all to reclassify)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				m.loading = true
 				return m, tea.Batch(m.spinner.Tick, m.resetToScreenSearchCmd())
 			},
@@ -121,7 +159,7 @@ func init() {
 			name:    "delete-all",
 			aliases: []string{"da"},
 			desc:    "permanently delete ALL emails in the current folder (y/n confirmation)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				m.loading = true
 				return m, tea.Batch(m.spinner.Tick, m.deleteAllSearchCmd())
 			},
@@ -130,7 +168,7 @@ func init() {
 			name:    "empty-trash",
 			aliases: []string{"et"},
 			desc:    "permanently delete ALL emails in Trash (y/n confirmation)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				m.loading = true
 				return m, tea.Batch(m.spinner.Tick, m.emptyTrashSearchCmd())
 			},
@@ -139,7 +177,7 @@ func init() {
 			name:    "create-folders",
 			aliases: []string{"cf"},
 			desc:    "create any missing IMAP folders defined in config (safe to run multiple times)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				m.loading = true
 				return m, tea.Batch(m.spinner.Tick, m.ensureFoldersCmd())
 			},
@@ -148,7 +186,7 @@ func init() {
 			name:    "everything",
 			aliases: []string{"ev"},
 			desc:    "show latest 50 emails across all folders (newest first)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				m.loading = true
 				return m, tea.Batch(m.spinner.Tick, m.fetchEverythingCmd())
 			},
@@ -157,7 +195,7 @@ func init() {
 			name:    "search",
 			aliases: []string{"se"},
 			desc:    "IMAP search all emails across all configured folders (From + Subject + To)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				m.imapSearchActive = true
 				m.imapSearchText = ""
 				m.imapSearchResults = false
@@ -168,7 +206,7 @@ func init() {
 			name:    "go-spam",
 			aliases: []string{"spam"},
 			desc:    "open Spam folder (not in tab rotation — use :go-spam to visit)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				m.loading = true
 				m.status = "Spam folder — press R to reload, tab to leave"
 				return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.cfg.Folders.Spam))
@@ -178,7 +216,7 @@ func init() {
 			name:    "debug",
 			aliases: []string{"dbg"},
 			desc:    "write diagnostic report to /tmp/neomd/debug.log and open it",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				return m, m.writeDebugReport()
 			},
 		},
@@ -186,7 +224,7 @@ func init() {
 			name:    "recover",
 			aliases: []string{"rec"},
 			desc:    "reopen the most recent compose backup from ~/.cache/neomd/drafts/",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				dir := config.DraftsBackupDir()
 				files := listBackupsByAge(dir)
 				if len(files) == 0 {
@@ -225,7 +263,7 @@ func init() {
 			name:    "thread",
 			aliases: []string{"t"},
 			desc:    "show full conversation for the selected email (across folders)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				e := selectedEmail(m.inbox)
 				if e == nil {
 					m.status = "No email selected."
@@ -239,7 +277,7 @@ func init() {
 			name:    "notify-test",
 			aliases: []string{"nt"},
 			desc:    "fire a single test desktop notification using the current [notifications] config (diagnostic)",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				if !m.notifier.Enabled() {
 					m.status = "Notifications disabled. Set [notifications].enabled = true in config.toml."
 					m.isError = true
@@ -259,7 +297,7 @@ func init() {
 			name:    "quit",
 			aliases: []string{"q"},
 			desc:    "quit neomd",
-			run: func(m *Model) (tea.Model, tea.Cmd) {
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			},
 		},
@@ -281,25 +319,11 @@ func screenSummary(moves []autoScreenMove) string {
 
 func formatInt(n int) string { return fmt.Sprintf("%d", n) }
 
-// matchCmds returns all commands whose name or any alias has text as a prefix.
-// When text is empty, all commands are returned (for tab-cycling).
+// matchCmds returns all commands whose name or any alias has text as a
+// prefix; when nothing matches by prefix, fuzzy subsequence matches are
+// returned (fzf-style, ranked). Empty text returns all commands.
 func matchCmds(text string) []*neomdCmd {
-	lower := strings.ToLower(text)
-	var out []*neomdCmd
-	for i := range cmdRegistry {
-		c := &cmdRegistry[i]
-		if lower == "" || strings.HasPrefix(c.name, lower) {
-			out = append(out, c)
-			continue
-		}
-		for _, a := range c.aliases {
-			if strings.HasPrefix(a, lower) {
-				out = append(out, c)
-				break
-			}
-		}
-	}
-	return out
+	return matchCmdsFuzzy(text)
 }
 
 // matchCmd returns the first matching command (for enter / ghost completion).
@@ -316,6 +340,12 @@ func matchCmd(text string) *neomdCmd {
 // viewCmdLine renders the command-line bar shown at the bottom of the inbox.
 // When input is empty or has multiple matches it shows a tab-cycle menu above.
 func viewCmdLine(text string, width int) string {
+	return viewCmdLinePreview(text, "", width)
+}
+
+// viewCmdLinePreview renders the command line with an additional live
+// preview line describing what the resolved command will do.
+func viewCmdLinePreview(text, preview string, width int) string {
 	matches := matchCmds(text)
 	first := matchCmd(text) // nil when empty
 
@@ -341,7 +371,12 @@ func viewCmdLine(text string, width int) string {
 		desc = lipgloss.NewStyle().Foreground(colorError).Render("   unknown command")
 	}
 
+	// Live preview line: what will happen when enter is pressed.
 	cmdLine := "  " + prefix + inputS + ghost + cursor + desc
+	if preview != "" && width > 12 {
+		cmdLine += "\n  " + lipgloss.NewStyle().Foreground(colorPrimary).Render("▸ ") +
+			lipgloss.NewStyle().Foreground(colorText).Render(truncate(preview, width-4))
+	}
 
 	// When empty or multiple matches: show a compact menu above the command line
 	// so the user can see what's available and tab-cycle through them.

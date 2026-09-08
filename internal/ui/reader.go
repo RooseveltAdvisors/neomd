@@ -204,7 +204,7 @@ func readerHelp(isDraft bool, hasLinks bool) string {
 
 // inboxHelp returns the one-line help string for the inbox view.
 func inboxHelp(folder string) string {
-	base := []string{"j/k move", "enter/o open", "space space peek", "e done", "h remind", "s compose", "r reply", "f forward", "x select", "dd/# trash", "g goto", "v move", "/ filter", "? help"}
+	base := []string{"j/k move", "enter/o open", "space space peek", "e done", "h remind", "s compose", "r reply", "f forward", "x select", "dd/# trash", "u undo", "N next unread", "space i focus", "space t collapse", "/ filter", "g goto", "v move", "? help"}
 	_ = folder
 	if folder == "ToScreen" {
 		base = []string{"j/k move", "I approve", "O block", "F feed", "P papertrail", "x select", "? help"}

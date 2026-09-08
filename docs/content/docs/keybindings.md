@@ -22,7 +22,10 @@ To update both the help overlay and this document at once, edit that file and ru
 | `u` | undo the last action (move, delete, read state) |
 | `U / z` | toggle unread-only view |
 | `n` | mark read / unread |
-| `N` | jump to next unread |
+| `N` | jump to the next thread with unread |
+| `<space>p` | jump to the previous thread with unread |
+| `<space>i` | toggle the focus view (important / screened-in senders) |
+| `<space>t` | collapse threads to one row; enter opens the conversation |
 | `I` | approve sender / screened-in |
 | `o` | open the selected email |
 | `O` | screen out in the inbox; expand all in a conversation |
@@ -57,7 +60,7 @@ To update both the help overlay and this document at once, edit that file and ru
 | Key | Action |
 |-----|--------|
 | `s / c` | start a new email |
-| `;` | open the snippets picker |
+| `;` | open the snippets picker (m opens the snippet manager) |
 | `o` | open the selected email (enter is the full-word alias) |
 | `<space>o` | open links and attachments in the browser |
 | `1-9` | open attachment 1-9 |
@@ -111,8 +114,8 @@ To update both the help overlay and this document at once, edit that file and ru
 |-----|--------|
 | `j / k` | move down / up |
 | `gg / G` | jump to top / bottom |
-| `/` | filter the loaded email list |
-| `n / N` | next unread/read action (context dependent) |
+| `/` | filter the loaded email list (from: to: subject: has:attachment before:/after: in:) |
+| `N / <space>p` | next / previous thread with unread |
 | `tab / shift+tab` | next / previous folder tab |
 | `<space>1 … <space>9` | jump to a folder tab |
 | `<space>/` | search all mail on the server |
@@ -127,7 +130,7 @@ To update both the help overlay and this document at once, edit that file and ru
 | `<space>a` | attach in compose / pre-send |
 | `<space>l / l` | send later |
 | `<space>h` | remind while composing |
-| `<space>;` | insert a snippet |
+| `<space>;` | insert a snippet at the cursor / into the body |
 | `<space>o` | open links / attachments |
 | `ctrl+enter / enter` | send from pre-send |
 | `d` | save a draft from pre-send |
@@ -141,7 +144,11 @@ To update both the help overlay and this document at once, edit that file and ru
 
 | Key | Action |
 |-----|--------|
-| `:` | open the vim-style command line |
+| `:` | open the fuzzy command palette (type to match, live preview) |
+| `:done` | archive (mark done) the selected emails |
+| `:remind <time>` | remind the selected emails at a natural-language time |
+| `:move <folder>` | move the selected emails to a folder |
+| `:snip [name]` | open the snippet manager, or compose from a named snippet |
 | `:screen / :s` | dry-run screening |
 | `:screen-all / :sa` | screen all Inbox mail |
 | `:reload / :r` | reload the current folder |
