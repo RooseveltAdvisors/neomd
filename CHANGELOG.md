@@ -2,6 +2,14 @@
 
 # 2026-09-08
 
+- **GreenMail reminders now resurface when due** — header list fetches use one
+  bounded `BODY.PEEK[HEADER]` section so GreenMail's omitted custom
+  `HEADER.FIELDS` response cannot hide reminder metadata; the daemon lifecycle
+  now has a permanent synthetic park/Trash/due/Inbox regression. Where:
+  `internal/imap/client.go`, `internal/daemon/daemon.go`,
+  `internal/integration_test.go`. Test:
+  `TestIntegration_Hardening_GreenMailReminderLifecycle`.
+
 - **CI integration tests use an ephemeral demo mailbox** — GitHub Actions now starts
   GreenMail with a hermetic `demo@neomd.local` account, waits for its TLS services,
   and runs the full integration and hardening suites. Local `make` targets provide the

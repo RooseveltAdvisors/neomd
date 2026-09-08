@@ -208,6 +208,13 @@ func (d *Daemon) processReminders(ctx context.Context) error {
 	return nil
 }
 
+// ProcessReminders runs one due-reminder pass. Run invokes the same path on
+// startup and during background sync; this entry point also lets integrations
+// drive a bounded pass without starting the long-lived daemon loop.
+func (d *Daemon) ProcessReminders(ctx context.Context) error {
+	return d.processReminders(ctx)
+}
+
 // processScheduled delivers due send-later messages queued in the Scheduled
 // folder (see internal/schedule). Claim protocol: a message is marked
 // \Flagged right before SMTP delivery so a crash mid-send can never deliver

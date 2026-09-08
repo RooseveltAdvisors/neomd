@@ -272,6 +272,9 @@ func TestParkReminderReconcilesMovedSourceAndIsIdempotent(t *testing.T) {
 	if len(waiting) != 1 || len(trash) != 1 {
 		t.Fatalf("after first park: Waiting=%d Trash=%d, want one in each", len(waiting), len(trash))
 	}
+	if waiting[0].Reminder == nil || !waiting[0].Reminder.At.Equal(at) || waiting[0].Reminder.ID != source.MessageID {
+		t.Fatalf("memory IMAP reminder = %#v, want metadata at %s with ID %q", waiting[0].Reminder, at.Format(time.RFC3339), source.MessageID)
+	}
 	waitingRaw, err := client.FetchRaw(context.Background(), "Waiting", waiting[0].UID)
 	if err != nil {
 		t.Fatal(err)
