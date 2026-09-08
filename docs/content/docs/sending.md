@@ -305,13 +305,21 @@ The original queued copy is **replaced automatically**: once the new version is 
 
 ## Reminders
 
-Open an email and press `H` to set a reminder, then enter a time such as
-`+2h`, `tomorrow 09:00`, or `2026-09-02 09:00`. The message is copied to the
-configured **Waiting** folder with `X-Neomd-Reminder-*` metadata and the
-original is moved to Trash (recoverable). No email is sent. The headless daemon
-returns due reminders to Inbox and leaves them there even when automatic
-screening is enabled; the reminder marker stays on the message so it is clear
-why it resurfaced. The TUI also checks Waiting during background sync.
+Open an email and press `h` (or `H` in the reader) to open the centered
+**Remind me in ...** picker. It offers Later today, Tomorrow morning/afternoon,
+This weekend, Next week, and In 1 week; use `j`/`k` or `1`–`6` to choose one, or
+leave the field focused and type a time in natural language: `in 20 minutes`,
+`in 3 days`, `in a week`, `friday 2pm`, `tonight`, `tomorrow morning`, `17:30`,
+`sep 12`, or `2026-09-12 09:00`. The resolved local time appears live below the
+field; invalid input stays in the picker with an explanation, and `esc` cancels.
+
+The same parser is used by send-later, so `l` accepts the same expressions. The
+message is copied to the configured **Waiting** folder with
+`X-Neomd-Reminder-*` metadata and the original is moved to Trash (recoverable).
+No email is sent. The headless daemon returns due reminders to Inbox and leaves
+them there even when automatic screening is enabled; the reminder marker stays
+on the message so it is clear why it resurfaced. The TUI also checks Waiting
+during background sync.
 
 ## Recipient Names
 

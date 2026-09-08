@@ -13,10 +13,10 @@ package schedule
 import (
 	"bytes"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sspaeti/neomd/internal/when"
 )
 
 // Header names injected into queued messages.
@@ -141,86 +141,9 @@ func RewriteDate(raw []byte, t time.Time) []byte {
 	return b.Bytes()
 }
 
-var (
-	durationRe = regexp.MustCompile(`^\+?(?:(\d+)d)?(\d+[hm].*)?$`)
-	clockRe    = regexp.MustCompile(`^(\d{1,2}):(\d{2})$`)
-)
-
 // ParseSendAt turns a user-typed schedule expression into an absolute time.
-// Supported forms (always interpreted in now's location):
-//
-//	+2h  +30m  +1d  +1d2h   relative offset from now
-//	17:30                   next occurrence of that clock time (today or tomorrow)
-//	tomorrow                tomorrow 09:00
-//	tomorrow 17:30
-//	2026-08-25 17:30        absolute date and time
+// Deprecated: use when.Parse. Kept as a compatibility wrapper for existing
+// callers of the scheduling package.
 func ParseSendAt(input string, now time.Time) (time.Time, error) {
-	s := strings.TrimSpace(strings.ToLower(input))
-	if s == "" {
-		return time.Time{}, fmt.Errorf("empty schedule time")
-	}
-
-	var at time.Time
-	switch {
-	case s == "tomorrow":
-		y, mo, d := now.AddDate(0, 0, 1).Date()
-		at = time.Date(y, mo, d, 9, 0, 0, 0, now.Location())
-
-	case strings.HasPrefix(s, "tomorrow "):
-		m := clockRe.FindStringSubmatch(strings.TrimSpace(strings.TrimPrefix(s, "tomorrow ")))
-		if m == nil {
-			return time.Time{}, fmt.Errorf("expected: tomorrow HH:MM")
-		}
-		h, _ := strconv.Atoi(m[1])
-		mi, _ := strconv.Atoi(m[2])
-		if h > 23 || mi > 59 {
-			return time.Time{}, fmt.Errorf("invalid clock time %q", s)
-		}
-		y, mo, d := now.AddDate(0, 0, 1).Date()
-		at = time.Date(y, mo, d, h, mi, 0, 0, now.Location())
-
-	case clockRe.MatchString(s):
-		m := clockRe.FindStringSubmatch(s)
-		h, _ := strconv.Atoi(m[1])
-		mi, _ := strconv.Atoi(m[2])
-		if h > 23 || mi > 59 {
-			return time.Time{}, fmt.Errorf("invalid clock time %q", s)
-		}
-		y, mo, d := now.Date()
-		at = time.Date(y, mo, d, h, mi, 0, 0, now.Location())
-		if !at.After(now) {
-			at = at.AddDate(0, 0, 1) // already passed today → tomorrow
-		}
-
-	case durationRe.MatchString(s) && strings.Trim(s, "+") != "":
-		m := durationRe.FindStringSubmatch(s)
-		var total time.Duration
-		if m[1] != "" {
-			days, _ := strconv.Atoi(m[1])
-			total += time.Duration(days) * 24 * time.Hour
-		}
-		if m[2] != "" {
-			d, err := time.ParseDuration(m[2])
-			if err != nil {
-				return time.Time{}, fmt.Errorf("invalid duration %q", input)
-			}
-			total += d
-		}
-		if total <= 0 {
-			return time.Time{}, fmt.Errorf("invalid duration %q", input)
-		}
-		at = now.Add(total)
-
-	default:
-		var err error
-		at, err = time.ParseInLocation("2006-01-02 15:04", s, now.Location())
-		if err != nil {
-			return time.Time{}, fmt.Errorf("unrecognized time %q — use +2h, 17:30, tomorrow 09:00, or 2026-08-25 17:30", input)
-		}
-	}
-
-	if !at.After(now) {
-		return time.Time{}, fmt.Errorf("%s is in the past", at.Format("2006-01-02 15:04"))
-	}
-	return at, nil
+	return when.Parse(input, now)
 }

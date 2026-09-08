@@ -34,6 +34,7 @@ import (
 	"github.com/sspaeti/neomd/internal/screener"
 	"github.com/sspaeti/neomd/internal/smtp"
 	"github.com/sspaeti/neomd/internal/snippets"
+	"github.com/sspaeti/neomd/internal/when"
 )
 
 // viewState is the current screen.
@@ -623,8 +624,11 @@ type Model struct {
 	sendLaterActive bool
 	sendLaterInput  textinput.Model
 	// Reminder time prompt (`h`), available from the inbox and the reader.
-	reminderActive bool
-	reminderInput  textinput.Model
+	reminderActive    bool
+	reminderInput     textinput.Model
+	reminderQuickPick int // -1 = free text; otherwise index in reminderChoices
+	reminderShortcut  string
+	reminderError     string
 	// reminderTargets is the email set the pending prompt will act on.
 	reminderTargets []imap.Email
 
@@ -2165,7 +2169,7 @@ func (m Model) bgFetchInboxCmd() tea.Cmd {
 // and the reader (`h` / `H`).
 func newReminderInput() textinput.Model {
 	ti := textinput.New()
-	ti.Placeholder = "+2h · tomorrow 09:00 · 2026-09-02 09:00"
+	ti.Placeholder = "in 3 days · friday 2pm · tomorrow morning · 17:30"
 	ti.CharLimit = 40
 	ti.Focus()
 	return ti
@@ -3416,28 +3420,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// ── Reminder time prompt (h) ────────────────────────────────────
 	// When active, consume all keys for text input; no inbox commands fire.
 	if m.reminderActive {
-		switch key {
-		case "esc":
-			m.reminderActive = false
-			m.reminderTargets = nil
-			return m, nil
-		case "enter":
-			at, err := schedule.ParseSendAt(m.reminderInput.Value(), time.Now())
-			if err != nil {
-				m.reminderInput.SetValue("")
-				m.reminderInput.Placeholder = err.Error()
-				return m, nil
-			}
-			m.reminderActive = false
-			targets := m.reminderTargets
-			m.reminderTargets = nil
-			return m, m.optimisticAct(targets, "Reminding", func() tea.Cmd {
-				return m.setRemindersCmd(targets, at)
-			})
-		}
-		var cmd tea.Cmd
-		m.reminderInput, cmd = m.reminderInput.Update(msg)
-		return m, cmd
+		return m.updateReminder(msg)
 	}
 
 	// ── Our own filter mode ─────────────────────────────────────────
@@ -3703,6 +3686,9 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.reminderTargets = targets
 		m.reminderInput = newReminderInput()
+		m.reminderQuickPick = -1
+		m.reminderShortcut = ""
+		m.reminderError = ""
 		m.reminderActive = true
 		return m, nil
 
@@ -4179,6 +4165,11 @@ func addCmdHistory(history []string, input string) []string {
 // applyFilter filters m.emails by filterText and showUnreadOnly and refreshes the list.
 // Call this whenever filterText or showUnreadOnly changes.
 func (m *Model) applyFilter() tea.Cmd {
+	// SetItems does not clamp bubbles/list's cursor when a filter shrinks the
+	// list. Capture the highlighted email and index first, then restore the
+	// closest visible position so actions after `/` always target a real row.
+	previous := selectedEmail(m.inbox)
+	previousIndex := m.inbox.Index()
 	var filtered []imap.Email
 
 	// Apply both text filter and unread filter
@@ -4214,7 +4205,27 @@ func (m *Model) applyFilter() tea.Cmd {
 	}
 
 	noThread := len(m.folders) > 0 && m.activeFolder() == m.cfg.Folders.Sent
-	return setEmails(&m.inbox, filtered, m.markedUIDs, m.spyPixelKeys, m.shouldPrefixFolderInSubject(), m.sortField, m.sortReverse, noThread)
+	cmd := setEmails(&m.inbox, filtered, m.markedUIDs, m.spyPixelKeys, m.shouldPrefixFolderInSubject(), m.sortField, m.sortReverse, noThread)
+	if len(filtered) == 0 {
+		return cmd
+	}
+	index := previousIndex
+	if previous != nil {
+		for i, item := range m.inbox.Items() {
+			if candidate, ok := item.(emailItem); ok && emailKey(candidate.email.Folder, candidate.email.UID) == emailKey(previous.Folder, previous.UID) {
+				index = i
+				break
+			}
+		}
+	}
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(m.inbox.Items()) {
+		index = len(m.inbox.Items()) - 1
+	}
+	m.inbox.Select(index)
+	return cmd
 }
 
 // handleChord dispatches two-key sequences (g<x>, M<x>, space<x>).
@@ -4433,31 +4444,14 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	if m.reminderActive {
-		switch key {
-		case "esc":
-			m.reminderActive = false
-			m.reminderTargets = nil
-			return m, nil
-		case "enter":
-			at, err := schedule.ParseSendAt(m.reminderInput.Value(), time.Now())
-			if err != nil {
-				m.reminderInput.SetValue("")
-				m.reminderInput.Placeholder = err.Error()
-				return m, nil
-			}
-			m.reminderActive = false
-			targets := m.reminderTargets
-			m.reminderTargets = nil
+		updated, cmd := m.updateReminder(msg)
+		if next, ok := updated.(Model); ok && key == "enter" && !next.reminderActive {
 			// Reminding from the reader closes it: the mail is leaving the
 			// folder, so the list beneath is what the user returns to.
-			m.state = stateInbox
-			return m, m.optimisticAct(targets, "Reminding", func() tea.Cmd {
-				return m.setRemindersCmd(targets, at)
-			})
+			next.state = stateInbox
+			return next, cmd
 		}
-		var cmd tea.Cmd
-		m.reminderInput, cmd = m.reminderInput.Update(msg)
-		return m, cmd
+		return updated, cmd
 	}
 
 	// Handle reader chords
@@ -4682,6 +4676,9 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.openEmail != nil {
 			m.reminderTargets = []imap.Email{*m.openEmail}
 			m.reminderInput = newReminderInput()
+			m.reminderQuickPick = -1
+			m.reminderShortcut = ""
+			m.reminderError = ""
 			m.reminderActive = true
 		}
 		return m, nil
@@ -5581,7 +5578,7 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.sendLaterActive = false
 			return m, nil
 		case "enter":
-			at, err := schedule.ParseSendAt(m.sendLaterInput.Value(), time.Now())
+			at, err := when.Parse(m.sendLaterInput.Value(), time.Now())
 			if err != nil {
 				m.sendLaterInput.SetValue("")
 				m.sendLaterInput.Placeholder = err.Error()
@@ -5712,7 +5709,7 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		ti := textinput.New()
-		ti.Placeholder = "+2h · 17:30 · tomorrow 09:00 · 2026-08-25 17:30"
+		ti.Placeholder = "in 3 days · friday 2pm · tomorrow morning · 17:30"
 		ti.CharLimit = 40
 		ti.Focus()
 		m.sendLaterInput = ti
@@ -6602,6 +6599,9 @@ func (m Model) View() string {
 	if m.width == 0 {
 		return "Loading…"
 	}
+	if m.reminderActive {
+		return m.viewReminder()
+	}
 	switch m.state {
 	case stateInbox:
 		return m.viewInbox()
@@ -6759,10 +6759,14 @@ func (m Model) viewInbox() string {
 		b.WriteString(m.viewIMAPSearchBar())
 	} else if m.filterActive || m.filterText != "" {
 		cursor := ""
+		hint := "esc clear"
 		if m.filterActive {
 			cursor = "█"
+			hint = "enter confirm · esc clear"
+		} else {
+			hint = "esc clear · actions act on visible rows"
 		}
-		b.WriteString(styleHelp.Render(fmt.Sprintf("  / %s%s  · enter confirm · esc clear", m.filterText, cursor)))
+		b.WriteString(styleHelp.Render(fmt.Sprintf("  / %s%s  · %s", m.filterText, cursor, hint)))
 	} else if m.status != "" {
 		b.WriteString(statusBar(m.status, m.isError))
 	} else {
