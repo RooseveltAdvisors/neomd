@@ -862,6 +862,20 @@ func TestInferSMTPUseTLS(t *testing.T) {
 			wantTLS:      false,
 			description:  "Port 587 should use STARTTLS",
 		},
+		{
+			name:         "GreenMail SMTPS port 3465",
+			port:         "3465",
+			userSTARTTLS: false,
+			wantTLS:      true,
+			description:  "Port 3465 should use implicit TLS",
+		},
+		{
+			name:         "GreenMail submission port 3587",
+			port:         "3587",
+			userSTARTTLS: false,
+			wantTLS:      false,
+			description:  "Port 3587 should use STARTTLS",
+		},
 		// Non-standard ports (Proton Mail Bridge, etc.)
 		{
 			name:         "Proton Mail Bridge SMTP port 1025",

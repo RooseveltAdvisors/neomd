@@ -3,6 +3,17 @@ on: [pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      greenmail:
+        image: greenmail/standalone:2.1.0
+        ports:
+          - 3143:3143 # IMAP
+          - 3993:3993 # IMAPS
+          - 3025:3025 # SMTP
+          - 3465:3465 # SMTPS (TLS)
+          - 3587:3587 # SMTP (STARTTLS)
+        env:
+          GREENMAIL_OPTS: "-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=demo:demo123@neomd.local -Dgreenmail.users.login=email -Dgreenmail.verbose"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -10,3 +21,23 @@ jobs:
           go-version: '1.24'
       - run: go test ./...
       - run: go vet ./...
+      - name: Wait for GreenMail
+        run: |
+          for _ in {1..30}; do
+            if nc -z 127.0.0.1 3993 && nc -z 127.0.0.1 3465; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "GreenMail did not become ready" >&2
+          exit 1
+      - name: Run integration tests
+        env:
+          NEOMD_TEST_IMAP_HOST: 127.0.0.1
+          NEOMD_TEST_IMAP_PORT: 3993
+          NEOMD_TEST_SMTP_HOST: 127.0.0.1
+          NEOMD_TEST_SMTP_PORT: 3465
+          NEOMD_TEST_USER: demo@neomd.local
+          NEOMD_TEST_PASS: demo123
+          NEOMD_TEST_FROM: "NeoMD Demo <demo@neomd.local>"
+        run: go test ./internal/ -run "TestIntegration|Integration_Hardening" -v -count=1 -timeout 180s

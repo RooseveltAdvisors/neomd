@@ -168,7 +168,7 @@ func SendRaw(cfg Config, toAddrs []string, raw []byte) error {
 //
 // Logic:
 //   - If userSTARTTLS is true: always use STARTTLS (user explicitly enabled it)
-//   - Standard ports: 465 → TLS, 587 → STARTTLS
+//   - Standard ports: 465/3465 → TLS, 587/3587 → STARTTLS
 //   - Non-standard ports: default to TLS (e.g., Proton Mail Bridge on 1025 uses STARTTLS,
 //     but user must set starttls=true for that)
 func inferSMTPUseTLS(port string, userSTARTTLS bool) bool {
@@ -177,9 +177,9 @@ func inferSMTPUseTLS(port string, userSTARTTLS bool) bool {
 		return false
 	}
 	switch port {
-	case "465":
+	case "465", "3465":
 		return true // SMTPS (implicit TLS)
-	case "587":
+	case "587", "3587":
 		return false // Submission with STARTTLS (modern standard)
 	default:
 		// Non-standard port: default to TLS for security.
@@ -197,7 +197,7 @@ func sendSTARTTLS(addr string, cfg Config, tlsCfg *tls.Config, auth smtp.Auth, f
 	return err
 }
 
-// sendTLS sends via implicit TLS (port 465 / SMTPS).
+// sendTLS sends via implicit TLS (ports 465/3465 / SMTPS).
 func sendTLS(addr string, cfg Config, tlsCfg *tls.Config, auth smtp.Auth, from string, to []string, msg []byte) error {
 	conn, err := tls.Dial("tcp", addr, tlsCfg)
 	if err != nil {
