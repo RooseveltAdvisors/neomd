@@ -11,6 +11,13 @@
   `TestValidateFileRejectsUnsafeAndOversizedPaths`,
   `TestBuildMessage_RejectsNonRegularAndOversizedAttachments`,
   `TestSaveAttachmentFileSanitizesNameAndDoesNotOverwrite`.
+- **Add a reproducible verification skill** — scripts/verify.sh now enforces clean
+  feature-branch preconditions, code hygiene, Go vet/unit tests, GreenMail integration
+  and hardening tests when a local or provided environment is available, compiled CLI
+  smoke checks, credential scanning, and ignored evidence capture. The /verify skill
+  documents the gates and works through both Claude and agents skill paths. Where:
+  scripts/verify.sh, .claude/skills/verify/SKILL.md, .agents/skills/verify.
+  Test: scripts/verify.sh.
 
 - **Universal full-text `/` search** — `/` now searches every configured account and
   folder over sender/recipient names and addresses, subject, and decoded plain/HTML

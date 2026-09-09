@@ -93,6 +93,13 @@ When you add a new field or path to outgoing messages, extend the round-trip sui
 the same commit — a field that isn't parse-back-asserted is a field that can silently
 break.
 
+## Verification
+
+- Repository verification is reproducible: scripts/verify.sh runs only from a
+  clean feature branch, checks hygiene, runs vet/unit/integration and hardening tests,
+  smoke-tests the compiled CLI, scans its evidence log for credential leaks, and writes
+  the complete proof to ignored evidence/verify.log. Test: scripts/verify.sh.
+
 ## Authentication & Safety Modes
 
 - **External OAuth2 helper** — `[[accounts]].oauth2_token_command` is a fixed argv

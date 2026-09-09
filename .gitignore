@@ -21,3 +21,12 @@ neomd-*.md
 .codex
 
 .claude/
+
+# Verification output
+evidence/
+
+# The repository's verify skill is intentionally shared with Claude harnesses.
+!.claude/
+!.claude/skills/
+!.claude/skills/verify/
+!.claude/skills/verify/SKILL.md
