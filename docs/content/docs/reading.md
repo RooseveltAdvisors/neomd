@@ -77,6 +77,11 @@ Attach:  [1] report.pdf  [2] photo.png
 
 Press `1`–`9` to download attachment N to `~/Downloads/` and open it with `xdg-open`. Filenames are deduplicated automatically if a file already exists.
 
+Downloads use a sanitized basename, are created with owner-only permissions, and never
+overwrite an existing file. Executable extensions and files whose contents do not match a
+known safe extension are saved for inspection but are not auto-opened; decoded attachment
+parts are bounded at 25 MiB.
+
 ## Download Raw Email Source
 
 Press `space` then `d` in the reader to download the full raw email source (`.eml` file) to `~/Downloads/`. The file is named `neomd-YYYYMMDD-<subject>.eml` using the email's date and sanitized subject line.

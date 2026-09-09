@@ -1274,6 +1274,64 @@ func TestFilterValidAttachments(t *testing.T) {
 	}
 }
 
+func TestSaveAttachmentFileSanitizesNameAndDoesNotOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	att := imap.Attachment{Filename: "../../evil.sh", Data: []byte("payload")}
+	first, err := saveAttachmentFile(dir, att)
+	if err != nil {
+		t.Fatalf("saveAttachmentFile: %v", err)
+	}
+	if got := filepath.Base(first); got != "evil.sh" {
+		t.Fatalf("saved basename = %q, want evil.sh", got)
+	}
+	if got, err := os.ReadFile(first); err != nil || string(got) != "payload" {
+		t.Fatalf("saved data = %q, err=%v", got, err)
+	}
+	second, err := saveAttachmentFile(dir, att)
+	if err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	if filepath.Base(second) != "evil_1.sh" {
+		t.Fatalf("duplicate basename = %q, want evil_1.sh", filepath.Base(second))
+	}
+	if filepath.Dir(second) != dir {
+		t.Fatalf("duplicate escaped destination: %q", second)
+	}
+	info, err := os.Stat(first)
+	if err != nil {
+		t.Fatalf("stat saved attachment: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("saved mode = %v; want 0600", info.Mode().Perm())
+	}
+}
+
+func TestFilterValidAttachmentsRejectsSymlinkAndOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	regular := filepath.Join(dir, "regular.txt")
+	if err := os.WriteFile(regular, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(regular, link); err != nil {
+		t.Fatal(err)
+	}
+	large := filepath.Join(dir, "large.bin")
+	if err := os.WriteFile(large, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(large, 25<<20+1); err != nil {
+		t.Fatal(err)
+	}
+	valid, skipped := filterValidAttachments([]string{regular, link, large})
+	if !reflect.DeepEqual(valid, []string{regular}) {
+		t.Fatalf("valid = %v, want [%s]", valid, regular)
+	}
+	if !reflect.DeepEqual(skipped, []string{link, large}) {
+		t.Fatalf("skipped = %v, want [%s %s]", skipped, link, large)
+	}
+}
+
 func TestEditorDoneReplyTrackingSurvivesReEdit(t *testing.T) {
 	m := Model{
 		cfg:            &config.Config{},

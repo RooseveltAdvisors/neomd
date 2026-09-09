@@ -155,6 +155,10 @@ Attachments are tightly integrated with both the pre-send screen and neovim.
 
 **From the pre-send screen** — press `a` to open yazi (auto-detected; override with `$NEOMD_FILE_PICKER`). Press `D` to remove the last attachment.
 
+Attachment paths are checked again when selected and before MIME construction: directories,
+missing paths, symlinks, and files larger than 25 MiB are skipped with a status warning. This
+keeps a stale picker selection from reaching SMTP and bounds local-file reads.
+
 **From within neovim** — press `<leader>a` in any `neomd-*.md` buffer to open yazi in a floating terminal. Selected files are inserted at the cursor as visible `[attach] /path/to/file` lines.
 
 

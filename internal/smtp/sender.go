@@ -17,18 +17,17 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"net/mail"
 	"net/smtp"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	mailattachments "github.com/sspaeti/neomd/internal/attachments"
 	"github.com/sspaeti/neomd/internal/mailtls"
 	"github.com/sspaeti/neomd/internal/render"
 )
@@ -617,7 +616,7 @@ func fetchRemoteImage(rawURL string) ([]byte, string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("HTTP %d fetching image", resp.StatusCode)
 	}
-	data, err := io.ReadAll(resp.Body)
+	data, err := mailattachments.ReadAll(resp.Body)
 	if err != nil {
 		return nil, "", err
 	}
@@ -637,7 +636,7 @@ func writeInlineImage(b *bytes.Buffer, boundary string, img inlineImage) error {
 	var filename, mimeType string
 	if img.path != "" {
 		var err error
-		data, err = os.ReadFile(img.path)
+		data, err = mailattachments.ReadFile(img.path)
 		if err != nil {
 			return err
 		}
@@ -645,13 +644,16 @@ func writeInlineImage(b *bytes.Buffer, boundary string, img inlineImage) error {
 		mimeType = mime.TypeByExtension(filepath.Ext(img.path))
 	} else {
 		data = img.data
+		if len(data) > mailattachments.MaxBytes {
+			return mailattachments.ErrTooLarge
+		}
 		filename = img.filename
 		mimeType = img.mimeType
 	}
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
-	filename = sanitizeFilenameParam(filename)
+	filename = sanitizeFilenameParam(mailattachments.SafeFilename(filename, "inline-image"))
 
 	fmt.Fprintf(b, "--%s\r\n", boundary)
 	fmt.Fprintf(b, "Content-Type: %s; name=\"%s\"\r\n", mimeType, filename)
@@ -713,11 +715,11 @@ func sanitizeFilenameParam(name string) string {
 
 // writeAttachment appends a single file as a base64-encoded MIME part.
 func writeAttachment(b *bytes.Buffer, boundary, path string) error {
-	data, err := os.ReadFile(path)
+	data, err := mailattachments.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	filename := sanitizeFilenameParam(filepath.Base(path))
+	filename := sanitizeFilenameParam(mailattachments.SafeFilename(filepath.Base(path), "attachment"))
 	mimeType := mime.TypeByExtension(filepath.Ext(path))
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
