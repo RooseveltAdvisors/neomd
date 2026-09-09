@@ -207,6 +207,14 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   `[attach] /path` (inline form), never HTML comments (treesitter hides them in nvim).
   Only regular files are accepted (`filterValidAttachments`); skipped paths are surfaced
   in the status bar. Test: `TestFilterValidAttachments`.
+- **Attachment resource and filename safety** — compose accepts only existing, non-symlink
+  regular files up to the shared 25 MiB limit; outgoing MIME reads, decoded received parts,
+  and remote inline images are bounded; reader downloads use a sanitized basename, `0600`
+  permissions, collision-safe creation, and never auto-open executable or mismatched files
+  (`internal/attachments`, `internal/smtp/sender.go`, `internal/imap/read.go`,
+  `internal/ui/model.go`). Tests: `TestValidateFileRejectsUnsafeAndOversizedPaths`,
+  `TestBuildMessage_RejectsNonRegularAndOversizedAttachments`,
+  `TestSaveAttachmentFileSanitizesNameAndDoesNotOverwrite`.
 - **BCC privacy** — Bcc is excluded from message headers but included in SMTP `RCPT TO`;
   comma-separated recipients are split into individual RCPT commands; `auto_bcc` is
   deduped and visible (never silent). Test: `TestCollectRcptTo`.

@@ -1,5 +1,17 @@
 # Changelog
 
+# 2026-09-09
+
+- **Attachments are bounded and safely materialized** — local compose files must be
+  non-symlink regular files no larger than 25 MiB; MIME/file and remote-image reads are
+  bounded; received attachment downloads sanitize sender filenames, use collision-safe
+  `0600` files, and preserve the existing dangerous-file open guard. Where:
+  `internal/attachments`, `internal/smtp/sender.go`, `internal/imap/read.go`,
+  `internal/imap/client.go`, `internal/ui/model.go`. Tests:
+  `TestValidateFileRejectsUnsafeAndOversizedPaths`,
+  `TestBuildMessage_RejectsNonRegularAndOversizedAttachments`,
+  `TestSaveAttachmentFileSanitizesNameAndDoesNotOverwrite`.
+
 - **Universal full-text `/` search** — `/` now searches every configured account and
   folder over sender/recipient names and addresses, subject, and decoded plain/HTML
   body using Bleve v2.5.7's private disposable embedded index. Prefixes, small typos, relevance, and the

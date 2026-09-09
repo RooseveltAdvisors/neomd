@@ -23,6 +23,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	mailattachments "github.com/sspaeti/neomd/internal/attachments"
 	"github.com/sspaeti/neomd/internal/calendar"
 	"github.com/sspaeti/neomd/internal/config"
 	"github.com/sspaeti/neomd/internal/contacts"
@@ -1651,10 +1652,13 @@ func writeAttachmentsTemp(files []imap.Attachment) ([]string, error) {
 	paths := make([]string, 0, len(files))
 	used := make(map[string]bool)
 	for _, a := range files {
-		base := filepath.Base(a.Filename)
-		if base == "" || base == "." || base == ".." || base == "/" || strings.ContainsRune(base, os.PathSeparator) {
-			base = "attachment"
+		if len(a.Data) > mailattachments.MaxBytes {
+			if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
+				log.Printf("remove temporary attachment directory %s: %v", dir, cleanupErr)
+			}
+			return nil, mailattachments.ErrTooLarge
 		}
+		base := mailattachments.SafeFilename(a.Filename, "attachment")
 		name := base
 		for n := 2; used[name]; n++ {
 			ext := filepath.Ext(base)
@@ -1663,7 +1667,9 @@ func writeAttachmentsTemp(files []imap.Attachment) ([]string, error) {
 		used[name] = true
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, a.Data, 0o600); err != nil {
-			os.RemoveAll(dir)
+			if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
+				log.Printf("remove temporary attachment directory %s: %v", dir, cleanupErr)
+			}
 			return nil, err
 		}
 		paths = append(paths, path)
@@ -5332,30 +5338,11 @@ func (m Model) downloadOpenAttachmentCmd(a imap.Attachment) tea.Cmd {
 			return attachOpenDoneMsg{err: err}
 		}
 		dir := filepath.Join(home, "Downloads")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return attachOpenDoneMsg{err: fmt.Errorf("create Downloads: %w", err)}
+		dst, err := saveAttachmentFile(dir, a)
+		if err != nil {
+			return attachOpenDoneMsg{err: err}
 		}
-		// Avoid overwriting existing files by appending a counter before the extension.
-		// Reject filenames that would escape the Downloads dir when joined.
-		// filepath.Base("..") returns "..", filepath.Base("") returns ".".
-		base := filepath.Base(a.Filename)
-		if base == "" || base == "." || base == ".." || base == "/" || strings.ContainsRune(base, os.PathSeparator) {
-			base = fmt.Sprintf("attachment-%d", time.Now().Unix())
-		}
-		dst := filepath.Join(dir, base)
-		if _, err := os.Stat(dst); err == nil {
-			ext := filepath.Ext(base)
-			name := base[:len(base)-len(ext)]
-			for i := 1; ; i++ {
-				dst = filepath.Join(dir, fmt.Sprintf("%s_%d%s", name, i, ext))
-				if _, err := os.Stat(dst); os.IsNotExist(err) {
-					break
-				}
-			}
-		}
-		if err := os.WriteFile(dst, a.Data, 0o644); err != nil {
-			return attachOpenDoneMsg{err: fmt.Errorf("save attachment: %w", err)}
-		}
+		base := filepath.Base(dst)
 		ext := strings.ToLower(filepath.Ext(base))
 		if dangerousExts[ext] {
 			return attachOpenDoneMsg{path: dst, dangerous: true, reason: fmt.Sprintf("executable extension %s", ext)}
@@ -5370,8 +5357,56 @@ func (m Model) downloadOpenAttachmentCmd(a imap.Attachment) tea.Cmd {
 			}
 			return attachOpenDoneMsg{path: dst, dangerous: true, reason: fmt.Sprintf("content is %s, not %s", mimeType, ext)}
 		}
-		_ = exec.Command("xdg-open", dst).Start()
+		if err := exec.Command("xdg-open", dst).Start(); err != nil {
+			log.Printf("open attachment %s: %v", dst, err)
+		}
 		return attachOpenDoneMsg{path: dst}
+	}
+}
+
+// saveAttachmentFile writes one received attachment below dir without
+// overwriting an existing file. The same helper is used by the reader's open
+// action and is kept separate so its filesystem behavior is executable-tested
+// without touching the user's real Downloads directory.
+func saveAttachmentFile(dir string, a imap.Attachment) (string, error) {
+	if len(a.Data) > mailattachments.MaxBytes {
+		return "", mailattachments.ErrTooLarge
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create Downloads: %w", err)
+	}
+	base := mailattachments.SafeFilename(a.Filename, fmt.Sprintf("attachment-%d", time.Now().Unix()))
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	for i := 0; ; i++ {
+		name := base
+		if i > 0 {
+			name = fmt.Sprintf("%s_%d%s", stem, i, ext)
+		}
+		dst := filepath.Join(dir, name)
+		f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("save attachment: %w", err)
+		}
+		if _, err := f.Write(a.Data); err != nil {
+			if closeErr := f.Close(); closeErr != nil {
+				log.Printf("close failed attachment %s after write error: %v", dst, closeErr)
+			}
+			if removeErr := os.Remove(dst); removeErr != nil && !os.IsNotExist(removeErr) {
+				log.Printf("remove incomplete attachment %s: %v", dst, removeErr)
+			}
+			return "", fmt.Errorf("save attachment: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			if removeErr := os.Remove(dst); removeErr != nil && !os.IsNotExist(removeErr) {
+				log.Printf("remove attachment %s after close error: %v", dst, removeErr)
+			}
+			return "", fmt.Errorf("save attachment: %w", err)
+		}
+		return dst, nil
 	}
 }
 
@@ -6892,8 +6927,7 @@ func injectAttachmentsIntoPrelude(prelude string, paths []string) string {
 // returns the path under the cursor rather than the path the user intended.
 func filterValidAttachments(paths []string) (valid, skipped []string) {
 	for _, p := range paths {
-		info, err := os.Stat(p)
-		if err != nil || !info.Mode().IsRegular() {
+		if err := mailattachments.ValidateFile(p); err != nil {
 			skipped = append(skipped, p)
 			continue
 		}

@@ -22,6 +22,7 @@ import (
 	"github.com/emersion/go-message"
 	_ "github.com/emersion/go-message/charset" // register charset decoders for ISO-8859-1, Windows-1252, etc.
 	"github.com/emersion/go-message/mail"
+	mailattachments "github.com/sspaeti/neomd/internal/attachments"
 	"github.com/sspaeti/neomd/internal/mailtls"
 	"github.com/sspaeti/neomd/internal/oauth2"
 	"github.com/sspaeti/neomd/internal/reminder"
@@ -1060,7 +1061,11 @@ func extractHTMLPart(raw []byte) string {
 		if h, ok := p.Header.(*mail.InlineHeader); ok {
 			ct, _, _ := h.ContentType()
 			if ct == "text/html" {
-				data, _ := io.ReadAll(p.Body)
+				data, readErr := mailattachments.ReadAll(p.Body)
+				if readErr != nil {
+					slog.Warn("skip oversized or unreadable HTML part", "error", readErr)
+					continue
+				}
 				return string(data)
 			}
 		}
@@ -1791,7 +1796,11 @@ func parseBody(raw []byte) (markdown, rawHTML, webURL string, attachments []Atta
 				if cid != "" {
 					cidToName[cid] = filename
 				}
-				data, _ := io.ReadAll(p.Body)
+				data, readErr := mailattachments.ReadAll(p.Body)
+				if readErr != nil {
+					slog.Warn("skip oversized or unreadable inline MIME part", "error", readErr)
+					continue
+				}
 				attachments = append(attachments, Attachment{
 					Filename:         filename,
 					ContentType:      ct,
@@ -1804,7 +1813,11 @@ func parseBody(raw []byte) (markdown, rawHTML, webURL string, attachments []Atta
 		case *mail.AttachmentHeader:
 			ct, _, _ = h.ContentType()
 			filename, _ := h.Filename()
-			data, _ := io.ReadAll(p.Body)
+			data, readErr := mailattachments.ReadAll(p.Body)
+			if readErr != nil {
+				slog.Warn("skip oversized or unreadable MIME attachment", "error", readErr)
+				continue
+			}
 			if filename != "" {
 				attachments = append(attachments, Attachment{
 					Filename:         filename,
@@ -1816,7 +1829,11 @@ func parseBody(raw []byte) (markdown, rawHTML, webURL string, attachments []Atta
 			continue
 		}
 
-		data, _ := io.ReadAll(p.Body)
+		data, readErr := mailattachments.ReadAll(p.Body)
+		if readErr != nil {
+			slog.Warn("skip oversized or unreadable MIME body part", "error", readErr)
+			continue
+		}
 		switch ct {
 		case "text/plain":
 			if plainText == "" {

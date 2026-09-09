@@ -178,6 +178,24 @@ func TestBuildMessage_WithAttachment(t *testing.T) {
 	}
 }
 
+func TestBuildMessage_RejectsNonRegularAndOversizedAttachments(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := buildMessage("a@example.com", "b@example.com", "", "subject", "body", "<p>body</p>", []string{dir}); err == nil {
+		t.Fatal("directory attachment should be rejected")
+	}
+
+	tooLarge := filepath.Join(dir, "large.bin")
+	if err := os.WriteFile(tooLarge, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(tooLarge, 25<<20+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildMessage("a@example.com", "b@example.com", "", "subject", "body", "<p>body</p>", []string{tooLarge}); err == nil {
+		t.Fatal("oversized attachment should be rejected")
+	}
+}
+
 func TestBuildMessage_WithInlineImage(t *testing.T) {
 	dir := t.TempDir()
 	imgPath := filepath.Join(dir, "pixel.png")

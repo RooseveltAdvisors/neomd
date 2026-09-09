@@ -9,6 +9,7 @@ import (
 	"github.com/emersion/go-message"
 	_ "github.com/emersion/go-message/charset"
 	"github.com/emersion/go-message/mail"
+	mailattachments "github.com/sspaeti/neomd/internal/attachments"
 )
 
 // ParseRawMessage parses an RFC822 message for the agent-facing read command.
@@ -67,7 +68,7 @@ func ParseRawMessage(raw []byte) (Email, string, []Attachment, error) {
 		case *mail.AttachmentHeader:
 			contentType, _, _ = header.ContentType()
 			filename, _ = header.Filename()
-			data, readErr := io.ReadAll(part.Body)
+			data, readErr := mailattachments.ReadAll(part.Body)
 			if readErr != nil {
 				return email, "", nil, fmt.Errorf("read attachment %q: %w", filename, readErr)
 			}
@@ -80,7 +81,7 @@ func ParseRawMessage(raw []byte) (Email, string, []Attachment, error) {
 			continue
 		}
 
-		data, readErr := io.ReadAll(part.Body)
+		data, readErr := mailattachments.ReadAll(part.Body)
 		if readErr != nil {
 			return email, "", nil, fmt.Errorf("read message body: %w", readErr)
 		}
