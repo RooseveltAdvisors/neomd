@@ -37,6 +37,11 @@ func init() {
 			aliases: []string{"s"},
 			desc:    "screen currently loaded emails only (up to inbox_count)",
 			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
+				if !m.onPlainInboxTab() {
+					m.status = screenInboxOnlyStatus
+					m.isError = true
+					return m, nil
+				}
 				if err := m.validateScreenerSafety(); err != nil {
 					m.status = err.Error()
 					m.isError = true
@@ -114,6 +119,7 @@ func init() {
 			desc:    "reload / refresh the current folder",
 			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				m.loading = true
+				m.refreshing = false
 				return m, m.fetchFolderCmd(m.activeFolder())
 			},
 		},
@@ -208,7 +214,9 @@ func init() {
 			desc:    "open Spam folder (not in tab rotation — use :go-spam to visit)",
 			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
 				m.loading = true
+				m.offTabFolder = "Spam" // as gS: the load guard only applies the active folder's result
 				m.status = "Spam folder — press R to reload, tab to leave"
+				m.refreshing = false
 				return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.cfg.Folders.Spam))
 			},
 		},
@@ -294,6 +302,32 @@ func init() {
 			},
 		},
 		{
+			name:    "merge",
+			aliases: []string{"mg"},
+			argHint: "<title>",
+			desc:    "merge marked/cursor emails into a titled group: :merge <title> (HEY-style merge threads)",
+			run: func(m *Model, args string) (tea.Model, tea.Cmd) {
+				return m.mergeCmd(args, false)
+			},
+		},
+		{
+			name:    "merge-sender",
+			aliases: []string{"mgs"},
+			argHint: "<title>",
+			desc:    "like :merge, plus future mail from the cursor email's sender joins automatically",
+			run: func(m *Model, args string) (tea.Model, tea.Cmd) {
+				return m.mergeCmd(args, true)
+			},
+		},
+		{
+			name:    "unmerge",
+			aliases: []string{"umg"},
+			desc:    "on a ≡ row: dissolve the merge (y/n); inside an opened merge: remove the cursor email",
+			run: func(m *Model, _ string) (tea.Model, tea.Cmd) {
+				return m.unmergeCmd()
+			},
+		},
+		{
 			name:    "quit",
 			aliases: []string{"q"},
 			desc:    "quit neomd",
@@ -323,7 +357,8 @@ func formatInt(n int) string { return fmt.Sprintf("%d", n) }
 // prefix; when nothing matches by prefix, fuzzy subsequence matches are
 // returned (fzf-style, ranked). Empty text returns all commands.
 func matchCmds(text string) []*neomdCmd {
-	return matchCmdsFuzzy(text)
+	word, _ := splitCmdInput(text)
+	return matchCmdsFuzzy(word)
 }
 
 // matchCmd returns the first matching command (for enter / ghost completion).
@@ -354,8 +389,8 @@ func viewCmdLinePreview(text, preview string, width int) string {
 
 	// Ghost completion: rest of first matched name
 	ghost := ""
-	if first != nil && text != "" {
-		lower := strings.ToLower(text)
+	if first != nil && text != "" && !strings.Contains(strings.TrimSpace(text), " ") {
+		lower := strings.ToLower(firstWordOf(text))
 		if strings.HasPrefix(first.name, lower) && len(first.name) > len(lower) {
 			ghost = lipgloss.NewStyle().Foreground(colorMuted).Render(first.name[len(lower):])
 		}
@@ -380,7 +415,7 @@ func viewCmdLinePreview(text, preview string, width int) string {
 
 	// When empty or multiple matches: show a compact menu above the command line
 	// so the user can see what's available and tab-cycle through them.
-	if len(matches) > 1 || text == "" {
+	if (len(matches) > 1 && !strings.Contains(strings.TrimSpace(text), " ")) || text == "" {
 		nameStyle := lipgloss.NewStyle().Foreground(colorPrimary)
 		dimStyle := lipgloss.NewStyle().Foreground(colorMuted)
 		var parts []string
@@ -398,4 +433,132 @@ func viewCmdLinePreview(text, preview string, width int) string {
 
 	_ = width
 	return cmdLine
+}
+
+// splitCmdInput separates ":merge My Title" into ("merge", "My Title").
+func splitCmdInput(input string) (word, args string) {
+	input = strings.TrimSpace(input)
+	word, args, _ = strings.Cut(input, " ")
+	return word, strings.TrimSpace(args)
+}
+
+func firstWordOf(text string) string { w, _ := splitCmdInput(text); return w }
+
+// mergeCmd implements :merge / :merge-sender.
+func (m *Model) mergeCmd(title string, withSender bool) (tea.Model, tea.Cmd) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		m.status = "usage: :merge <title>   (mark emails with m first, or use the cursor email)"
+		m.isError = true
+		return m, nil
+	}
+	targets := m.targetEmails()
+	if len(targets) == 0 {
+		m.status = "No email selected."
+		m.isError = true
+		return m, nil
+	}
+	if withSender {
+		e := selectedEmail(m.inbox)
+		addr := ""
+		if e != nil {
+			addr = normalizedSender(e.From)
+		}
+		if addr == "" {
+			m.status = "Cursor email has no usable From address."
+			m.isError = true
+			return m, nil
+		}
+		m.merges.SetSender(title, addr)
+	}
+	var ids []string
+	skipped := 0
+	for _, e := range targets {
+		if e.MessageID == "" {
+			skipped++
+			continue
+		}
+		ids = append(ids, e.MessageID)
+	}
+	added := m.merges.Add(title, ids...)
+	if withSender {
+		added += m.applySenderRules(m.emails)
+	}
+	if err := m.merges.Save(); err != nil {
+		m.status = "merges.toml: " + err.Error()
+		m.isError = true
+		return m, nil
+	}
+	m.markedUIDs = make(map[uint32]bool)
+	m.isError = false
+	m.status = fmt.Sprintf("Merged %d email(s) into %q", added, title)
+	if skipped > 0 {
+		m.status += fmt.Sprintf(" · %d skipped (no Message-ID)", skipped)
+	}
+	if withSender {
+		m.status += " · sender rule saved"
+	}
+	return m, m.applyFilter()
+}
+
+// unmergeCmd implements :unmerge.
+func (m *Model) unmergeCmd() (tea.Model, tea.Cmd) {
+	if m.inMergeView() {
+		e := selectedEmail(m.inbox)
+		if e == nil {
+			m.status = "No email selected."
+			m.isError = true
+			return m, nil
+		}
+		if !m.merges.Remove(e.MessageID) {
+			m.status = "Not an explicit member (absorbed reply) — nothing to remove."
+			m.isError = true
+			return m, nil
+		}
+		if err := m.merges.Save(); err != nil {
+			m.status = "merges.toml: " + err.Error()
+			m.isError = true
+			return m, nil
+		}
+		kept := m.emails[:0:0]
+		for _, x := range m.emails {
+			if x.UID != e.UID || x.Folder != e.Folder {
+				kept = append(kept, x)
+			}
+		}
+		m.emails = kept
+		m.isError = false
+		m.status = "Removed from merge."
+		return m, m.applyFilter()
+	}
+	it, ok := selectedItem(m.inbox)
+	if !ok || it.merge == nil {
+		m.status = ":unmerge works on a ≡ merged row or inside an opened merge."
+		m.isError = true
+		return m, nil
+	}
+	m.pendingUnmerge = it.merge.title
+	m.isError = false
+	m.status = fmt.Sprintf("Dissolve merge %q (%d in this folder)? y/n", it.merge.title, len(it.merge.members))
+	return m, nil
+}
+
+// titleCompletions returns ":merge <title>" candidates for the typed text,
+// or nil when the command is not one that takes a merge title.
+func (m Model) titleCompletions(text string) []string {
+	word, args := splitCmdInput(text)
+	if !strings.Contains(text, " ") {
+		return nil
+	}
+	c := matchCmd(word)
+	if c == nil || (c.name != "merge" && c.name != "merge-sender") {
+		return nil
+	}
+	var out []string
+	for _, t := range m.merges.Titles() {
+		if strings.HasPrefix(strings.ToLower(t), strings.ToLower(args)) {
+			out = append(out, c.name+" "+t)
+		}
+	}
+	return out
 }

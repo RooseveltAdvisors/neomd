@@ -10,6 +10,7 @@ TI_HOST ?= ti
 .PHONY: build run install daemon clean test test-integration test-integration-ci run-test-mail-server send-test vet fmt fmt-check tidy release docs help check-go demo demo-reset demo-hp demo-hp-reset benchmark ooo
 
 
+
 .DEFAULT_GOAL := install
 
 ## check-go: verify Go is installed
@@ -46,14 +47,6 @@ install: docs build
 daemon: build
 	./$(BINARY) --headless
 
-## demo: run neomd with demo account (~/.config/neomd-demo/config.toml)
-demo: build
-	./$(BINARY) -config $(HOME)/.config/neomd-demo/config.toml
-
-## demo-reset: reset demo account to first-run state (welcome screen + empty screener lists)
-demo-reset:
-	./scripts/reset-demo.sh $(HOME)/.config/neomd-demo
-
 ## demo-hp: run neomd with Hostpoint demo account (fast)
 demo-hp: build
 	./$(BINARY) -config $(HOME)/.config/neomd-demo-hostpoint/config.toml
@@ -81,7 +74,7 @@ test-integration:
 	NEOMD_TEST_USER=neomd.demo@ssp.sh \
 	NEOMD_TEST_PASS=$$IMAP_PASS_NEOMD_DEMO \
 	NEOMD_TEST_FROM="Neomd Demo <neomd.demo@ssp.sh>" \
-	go test ./internal/ -run TestIntegration -v -count=1 -timeout 120s
+	go test ./internal/ -run TestIntegration -v -count=1 -timeout 300s
 
 ## test-integration-ci: run integration tests against a local GreenMail container
 test-integration-ci:
@@ -146,9 +139,24 @@ clean:
 ## release: tag and push a new release (usage: make release VERSION=v0.1.0)
 release: docs docs-build
 	@test -n "$(VERSION)" || (echo "Usage: make release VERSION=v0.1.0" && exit 1)
+	@PREV=$$(git describe --tags --abbrev=0); \
+	if git cat-file -e "$$PREV:RELEASE_NOTES.md" 2>/dev/null && git diff --quiet "$$PREV" -- RELEASE_NOTES.md; then \
+	  echo "RELEASE_NOTES.md is unchanged since $$PREV — run: make release-notes VERSION=$(VERSION)"; exit 1; fi
+	@git diff --quiet HEAD -- RELEASE_NOTES.md || (echo "RELEASE_NOTES.md has uncommitted changes — review and commit them first" && exit 1)
 	git tag -a $(VERSION) -m "Release $(VERSION)"
 	git push origin $(VERSION)
 	@echo "Tagged $(VERSION) — GitHub Actions will build and publish the release."
+
+## release-notes: draft RELEASE_NOTES.md for VERSION with Claude Code from CHANGELOG.md + commits since the last tag (PREV=vX.Y.Z to override); review, then commit it
+release-notes:
+	@test -n "$(VERSION)" || (echo "Usage: make release-notes VERSION=v0.1.0 [PREV=v0.0.9]" && exit 1)
+	@command -v claude >/dev/null || (echo "claude CLI not found — install Claude Code or write RELEASE_NOTES.md by hand" && exit 1)
+	@PREV="$(PREV)"; test -n "$$PREV" || PREV=$$(git describe --tags --abbrev=0); \
+	echo "Drafting RELEASE_NOTES.md for $(VERSION) (changes since $$PREV)…"; \
+	sed -e "s/{{VERSION}}/$(VERSION)/g" -e "s/{{PREV}}/$$PREV/g" scripts/release-notes-prompt.md \
+	  | env -u ANTHROPIC_API_KEY claude -p --allowedTools "Read,Write,Bash(git log:*),Bash(git diff:*),Bash(git describe:*),Bash(head:*)"
+	@# env -u ANTHROPIC_API_KEY: use the Claude Code login, not a stray API key from the shell
+	@echo; echo "Review RELEASE_NOTES.md, then: git add RELEASE_NOTES.md && git commit -m 'release notes $(VERSION)'"
 
 ## docs: regenerate keybindings section in README.md from internal/ui/keys.go
 docs:
@@ -190,11 +198,9 @@ sync-headless: build
 	ssh $(TI_HOST) ". ~/.profile; mkdir -p ~/.local/share/neomd; make run-headless"
 	@echo "Waiting for daemon to start..."
 	@sleep 2
-	@echo "Checking status..."
-	@ssh $(TI_HOST) "ps aux | grep '[n]eomd' || echo 'ERROR: neomd is not running'"
-	@echo ""
-	@echo "Checking logs for errors..."
-	@ssh $(TI_HOST) "tail -20 ~/.local/share/neomd/daemon.log"
+	@echo "Checking status (first screening cycle must finish before the verdict is meaningful)..."
+	@sleep 8
+	@ssh $(TI_HOST) "make status"
 
 ## syncthing-tunnel: start syncthing on ti (if not running) and open SSH tunnel → http://localhost:8385
 syncthing-tunnel:

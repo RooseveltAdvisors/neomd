@@ -155,6 +155,12 @@ func TestEmailBindingMap(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.key, func(t *testing.T) {
 			before := keysTestModel(t, 4)
+			if tt.key == "I" {
+				for i := range before.emails {
+					before.emails[i].Folder = "Feed"
+				}
+				before.applyFilter()
+			}
 			tt.check(t, before, press(before, tt.key))
 		})
 	}
@@ -534,7 +540,7 @@ func TestSnippetPickerComposesPrefilled(t *testing.T) {
 // maybeLoadMoreCmd is present on the model the handler RETURNS — a plain
 // `return m, m.maybeLoadMoreCmd()` would drop it and re-fetch on every keypress.
 func TestScrollLatchSurvivesTheKeyHandler(t *testing.T) {
-	for _, key := range []string{"G", "j", "d"} {
+	for _, key := range []string{"j", "d"} {
 		t.Run(key, func(t *testing.T) {
 			m := keysTestModel(t, 12)
 			m.inbox.Select(len(m.inbox.Items()) - 1)

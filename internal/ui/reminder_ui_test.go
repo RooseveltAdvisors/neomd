@@ -90,9 +90,9 @@ func TestCommittedFilterActionsUseVisibleTarget(t *testing.T) {
 				t.Fatalf("selected UIDs = %#v", after.markedUIDs)
 			}
 		}},
-		{"screen-in", "I", func(t *testing.T, _, after Model) {
+		{"screen-out", "O", func(t *testing.T, _, after Model) {
 			if containsUID(after.emails, 97) {
-				t.Fatal("screen-in acted on the wrong full-list email")
+				t.Fatal("screen-out acted on the wrong full-list email")
 			}
 		}},
 		{"open", "o", func(t *testing.T, _, after Model) {

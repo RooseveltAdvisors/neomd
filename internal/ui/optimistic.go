@@ -146,41 +146,10 @@ func appendNewEmails(dst []imap.Email, extra []imap.Email) ([]imap.Email, int) {
 	return dst, added
 }
 
-// maybeLoadMoreCmd fetches the next page when the cursor nears the bottom of
-// the list. Ad-hoc views (search results, conversation, Everything) span
-// folders and are not paged.
+// maybeLoadMoreCmd delegates to loadMoreIfAtBottom for compatibility.
 func (m *Model) maybeLoadMoreCmd() tea.Cmd {
-	if m.loadingMore || m.moreExhausted || m.loading {
+	if m.moreExhausted {
 		return nil
 	}
-	if m.offTabFolder != "" || m.imapSearchResults || m.filterText != "" {
-		return nil
-	}
-	if m.cfg.UI.InboxCount <= 0 {
-		return nil // unlimited page size: the first fetch already has everything
-	}
-	n := len(m.inbox.Items())
-	if n == 0 || m.inbox.Index() < n-loadMoreThreshold {
-		return nil
-	}
-	folder := m.activeFolder()
-	cursor := oldestUID(m.emails, folder)
-	if cursor == 0 {
-		return nil
-	}
-	m.loadingMore = true
-	return m.fetchMorePageCmd(folder, cursor)
-}
-
-// fetchMorePageCmd fetches one more page of headers older than cursor.
-func (m Model) fetchMorePageCmd(folder string, cursor uint32) tea.Cmd {
-	n := m.cfg.UI.InboxCount
-	return func() tea.Msg {
-		cli := m.imapCli()
-		if cli == nil {
-			return moreEmailsLoadedMsg{folder: folder}
-		}
-		emails, err := cli.FetchHeadersBefore(nil, folder, cursor, n)
-		return moreEmailsLoadedMsg{emails: emails, folder: folder, err: err}
-	}
+	return m.loadMoreIfAtBottom()
 }

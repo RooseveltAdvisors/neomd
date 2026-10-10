@@ -73,7 +73,8 @@ const keyringSentinel = "keyring"
 // keyring. After config.Load() resolves the keyring entry, Password holds
 // the actual password and this method returns false. The sentinel only
 // remains if keyring lookup failed (no entry yet, or service unavailable),
-// in which case downstream code can prompt the user via :set-password.
+// in which case the login fails until the entry is stored (service "neomd",
+// key "account/<name>/password").
 func (a AccountConfig) UseKeyring() bool {
 	return a.Password == keyringSentinel
 }
@@ -291,6 +292,7 @@ type UIConfig struct {
 	BulkProgressThreshold int             `toml:"bulk_progress_threshold"` // show progress counter for batches larger than this (default 10)
 	DraftBackupCount      int             `toml:"draft_backup_count"`      // rolling compose backups in ~/.cache/neomd/drafts/ (default 20, -1 = disabled)
 	MarkAsReadAfterSecs   int             `toml:"mark_as_read_after_secs"` // seconds in reader before marking as read (0 = immediate, default 7)
+	InstantFolderSwitch   *bool           `toml:"instant_folder_switch"`   // show the last-seen list at once and refresh behind it (default true)
 }
 
 // DraftBackups returns the max number of rolling draft backups (default 20, -1 = disabled).
@@ -307,6 +309,15 @@ func (u UIConfig) BulkThreshold() int {
 		return 10
 	}
 	return u.BulkProgressThreshold
+}
+
+// InstantSwitch reports whether folder switches show the cached list first
+// (default true). false restores the spinner-on-every-switch behavior.
+func (u UIConfig) InstantSwitch() bool {
+	if u.InstantFolderSwitch == nil {
+		return true
+	}
+	return *u.InstantFolderSwitch
 }
 
 // AutoScreen returns true if auto-screen-on-inbox-load is enabled (default: true).
@@ -404,6 +415,9 @@ type Config struct {
 	// headless server, and the daemon re-reads it every pass (hot reload,
 	// no restart needed). Set during Load(), not a TOML field.
 	OOOFile string `toml:"-"`
+	// MergesFile is <config dir>/merges.toml — user-defined merged threads
+	// (see internal/merge). Set during Load(), not a TOML field.
+	MergesFile string `toml:"-"`
 }
 
 // OOOConfig holds out-of-office auto-reply settings ([ooo] in config.toml).
@@ -497,6 +511,42 @@ func HistoryPath() string {
 		return filepath.Join(p, "cmd_history")
 	}
 	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_cmd_history", os.Getuid()))
+}
+
+// AuditLogPath returns ~/.cache/neomd/moves.log — every server-side MOVE and
+// EXPUNGE neomd performs (TUI, daemon, CLI) is appended there.
+func AuditLogPath() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName)
+		_ = os.MkdirAll(p, 0o700)
+		return filepath.Join(p, "moves.log")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_moves.log", os.Getuid()))
+}
+
+// IMAPTracePath returns ~/.cache/neomd/imap-trace.log, the opt-in
+// (NEOMD_IMAP_TRACE=1) per-operation timing log. Same directory as moves.log.
+func IMAPTracePath() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName)
+		_ = os.MkdirAll(p, 0o700)
+		return filepath.Join(p, "imap-trace.log")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_imap-trace.log", os.Getuid()))
+}
+
+// InlineImageDir returns ~/.cache/neomd/inline/, creating it if needed. Reply
+// and forward write the quoted mail's inline (cid:) images here so the send
+// pipeline can re-embed them like any local image.
+func InlineImageDir() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName, "inline")
+		_ = os.MkdirAll(p, 0o700)
+		return p
+	}
+	p := filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_inline", os.Getuid()))
+	_ = os.MkdirAll(p, 0o700)
+	return p
 }
 
 // DraftsBackupDir returns ~/.cache/neomd/drafts/, creating it if needed.
@@ -651,6 +701,7 @@ func Load(path string) (*Config, error) {
 	// ooo.toml next to config.toml replaces the whole [ooo] block when it
 	// exists (single syncable file; the daemon also re-reads it every pass).
 	cfg.OOOFile = filepath.Join(filepath.Dir(path), "ooo.toml")
+	cfg.MergesFile = filepath.Join(filepath.Dir(path), "merges.toml")
 	if override, err := LoadOOOOverride(cfg.OOOFile); err != nil {
 		return nil, err
 	} else if override != nil {
@@ -860,7 +911,7 @@ func resolveKeyringPassword(accountName, password string) string {
 		return resolved
 	}
 	if err == keyring.ErrNotFound {
-		fmt.Fprintf(os.Stderr, "neomd: account %q: keyring entry not set — run :set-password %s\n", accountName, accountName)
+		fmt.Fprintf(os.Stderr, "neomd: account %q: keyring entry not set — store the password in the OS keyring under service \"neomd\", key \"account/%s/password\" (docs: Configuration → Storing passwords in the OS keyring)\n", accountName, accountName)
 	} else {
 		fmt.Fprintf(os.Stderr, "neomd: account %q: keyring unavailable: %v\n", accountName, err)
 	}

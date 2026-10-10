@@ -83,12 +83,83 @@ func numberLinks(body string, links []emailLink) string {
 	})
 }
 
+// maxReaderQuoteDepth is the deepest blockquote nesting the reader displays.
+// Glamour's blockquote cost grows superlinearly with nesting: a 50 KB reply
+// chain quoted 33 levels deep ("> > > > …", Gmail style) took 2.3 s to render
+// and 0.2 s capped at 3. Beyond three bars the levels are unreadable in a
+// terminal anyway. Display only — the markdown body kept for reply/forward/
+// editor/browser is never capped.
+const maxReaderQuoteDepth = 3
+
+// capQuoteDepth rewrites every markdown line quoted deeper than max to exactly
+// max levels. Adjacent lines whose original depths differ but both exceed max
+// get a blank quoted line between them so they stay separate paragraphs
+// instead of merging under the now-identical prefix. Fenced code blocks (```
+// or ~~~ at the top level) are left untouched.
+func capQuoteDepth(md string, max int) string {
+	if max < 1 {
+		return md
+	}
+	lines := strings.Split(md, "\n")
+	out := make([]string, 0, len(lines)+8)
+	cappedPrefix := strings.TrimRight(strings.Repeat("> ", max), " ")
+	inFence := false
+	prevDeep := 0 // original depth of the previous line when it exceeded max, else 0
+	for _, line := range lines {
+		trimmed := strings.TrimLeft(line, " ")
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			out = append(out, line)
+			prevDeep = 0
+			continue
+		}
+		if inFence {
+			out = append(out, line)
+			continue
+		}
+		depth, rest := splitQuotePrefix(line)
+		if depth <= max {
+			out = append(out, line)
+			prevDeep = 0
+			continue
+		}
+		if prevDeep != 0 && prevDeep != depth {
+			out = append(out, cappedPrefix)
+		}
+		prevDeep = depth
+		if rest == "" {
+			out = append(out, cappedPrefix)
+		} else {
+			out = append(out, cappedPrefix+" "+rest)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// splitQuotePrefix returns how many '>' markers open the line and the text
+// after them (leading spaces around the markers removed).
+func splitQuotePrefix(line string) (int, string) {
+	depth := 0
+	rest := line
+	for {
+		t := strings.TrimLeft(rest, " ")
+		if !strings.HasPrefix(t, ">") {
+			if depth == 0 {
+				return 0, line
+			}
+			return depth, t
+		}
+		depth++
+		rest = t[1:]
+	}
+}
+
 // loadEmailIntoReader renders the email and sets the viewport content.
 func loadEmailIntoReader(vp *viewport.Model, email *imap.Email, body string, attachments []imap.Attachment, spyPixels imap.SpyPixelInfo, links []emailLink, theme string, width int) error {
 	header := renderEmailHeader(email, attachments, spyPixels, width)
 
 	// Inject link numbers inline before glamour rendering
-	numbered := numberLinks(body, links)
+	numbered := numberLinks(capQuoteDepth(body, maxReaderQuoteDepth), links)
 
 	rendered, err := render.ToANSI(numbered, theme, width)
 	if err != nil {
@@ -133,7 +204,11 @@ func renderEmailHeader(e *imap.Email, attachments []imap.Attachment, spyPixels i
 	if len(attachments) > 0 {
 		var parts []string
 		for i, a := range attachments {
-			parts = append(parts, attachStyle.Render(fmt.Sprintf("[%d] %s", i+1, a.Filename)))
+			label := fmt.Sprintf("[%d] %s", i+1, a.Filename)
+			if s := attachSize(a.Size); s != "" {
+				label += " (" + s + ")"
+			}
+			parts = append(parts, attachStyle.Render(label))
 		}
 		lines = append(lines, styleDate.Render("Attach:  ")+strings.Join(parts, "  "))
 	}
@@ -153,6 +228,21 @@ func renderEmailHeader(e *imap.Email, attachments []imap.Attachment, spyPixels i
 
 	content := strings.Join(lines, "\n")
 	return styleEmailMeta.Render(content) + "\n"
+}
+
+// attachSize formats an attachment's transfer size for the reader header;
+// empty when unknown (the full body fetch does not record sizes).
+func attachSize(b uint32) string {
+	switch {
+	case b == 0:
+		return ""
+	case b < 1024:
+		return fmt.Sprintf("%d B", b)
+	case b < 1024*1024:
+		return fmt.Sprintf("%.0f KB", float64(b)/1024)
+	default:
+		return fmt.Sprintf("%.1f MB", float64(b)/(1024*1024))
+	}
 }
 
 // calendarInviteCard renders a one-line summary of an iCalendar invite if one
@@ -203,11 +293,14 @@ func readerHelp(isDraft bool, hasLinks bool) string {
 }
 
 // inboxHelp returns the one-line help string for the inbox view.
-func inboxHelp(folder string) string {
+// moreBelow prepends the load-more cue (see Model.moreBelow).
+func inboxHelp(folder string, moreBelow bool) string {
 	base := []string{"j/k move", "enter/o open", "space space peek", "e done", "h remind", "s compose", "r reply", "f forward", "x select", "dd/# trash", "u undo", "N next unread", "space i focus", "space t collapse", "/ filter", "g goto", "v move", "? help"}
-	_ = folder
 	if folder == "ToScreen" {
 		base = []string{"j/k move", "I approve", "O block", "F feed", "P papertrail", "x select", "? help"}
+	}
+	if moreBelow {
+		base = append([]string{"↓ more below (j/d at last row)"}, base...)
 	}
 	return styleHelp.Render("  " + strings.Join(base, " · "))
 }

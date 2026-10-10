@@ -63,6 +63,8 @@ To update both the help overlay and this document at once, edit that file and ru
 | `;` | open the snippets picker (m opens the snippet manager) |
 | `o` | open the selected email (enter is the full-word alias) |
 | `<space>o` | open links and attachments in the browser |
+| `<space>h` | toggle key headers in reader |
+| `<space>u` | unsubscribe in reader |
 | `1-9` | open attachment 1-9 |
 | `<space>1-0` | open link 1-10 |
 | `<space>e` | open the raw email in the editor |
@@ -119,6 +121,7 @@ To update both the help overlay and this document at once, edit that file and ru
 | `tab / shift+tab` | next / previous folder tab |
 | `<space>1 … <space>9` | jump to a folder tab |
 | `<space>/` | search all mail on the server |
+| `j / d (last row)` | load more older emails |
 | `?` | toggle this help overlay |
 
 
@@ -135,6 +138,9 @@ To update both the help overlay and this document at once, edit that file and ru
 | `ctrl+enter / enter` | send from pre-send |
 | `d` | save a draft from pre-send |
 | `e` | re-open the editor from pre-send |
+| `s` | spell check in pre-send |
+| `p` | preview email in browser |
+| `i` | AI handoff in pre-send |
 | `ctrl+b` | toggle Cc/Bcc |
 | `ctrl+f` | cycle From identities |
 | `x / esc` | discard the unsent message (with confirmation) |
@@ -149,6 +155,9 @@ To update both the help overlay and this document at once, edit that file and ru
 | `:remind <time>` | remind the selected emails at a natural-language time |
 | `:move <folder>` | move the selected emails to a folder |
 | `:snip [name]` | open the snippet manager, or compose from a named snippet |
+| `:merge <title> / :mg` | merge marked or cursor emails into a titled group |
+| `:merge-sender <title> / :mgs` | merge and auto-join future mail from sender |
+| `:unmerge / :umg` | dissolve group or remove cursor email |
 | `:screen / :s` | dry-run screening |
 | `:screen-all / :sa` | screen all Inbox mail |
 | `:reload / :r` | reload the current folder |
@@ -156,8 +165,12 @@ To update both the help overlay and this document at once, edit that file and ru
 | `:everything / :ev` | show All Mail |
 | `:check / :ch` | show sender classification |
 | `:reset-toscreen / :rts` | move ToScreen mail back to Inbox |
+| `:mark-read / :mr` | mark all emails in current folder as read |
+| `:scan-spy-pixels / :ssp` | scan current folder for tracking pixels |
+| `:notify-test / :nt` | fire a test desktop notification |
+| `:recover / :rec` | reopen most recent compose backup |
 | `:delete-all / :da` | permanently delete the current folder |
-| `:empty-trash / :et` | empty Trash |
+| `:empty-trash / :et` | permanently delete ALL emails in Trash (y/n) |
 | `:go-spam / :spam` | open Spam |
 | `:create-folders / :cf` | create configured folders |
 | `:debug / :dbg` | write a diagnostic report |
