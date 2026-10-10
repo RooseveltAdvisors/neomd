@@ -8503,13 +8503,10 @@ func (m Model) viewPeek() string {
 // inboxHintBar is the bottom help line of the inbox view. It starts with a
 // "↓ more below" cue while the folder may hold more than the loaded rows
 // (load-more on j/d at the last row) — at the front because the terminal
-// clips the line, so a tail cue would never be seen — and ends with the
-// account switch hint and "│ N loaded".
+// clips the line, so a tail cue would never be seen — and ends with
+// "│ N loaded".
 func (m Model) inboxHintBar() string {
 	help := inboxHelp(m.folders[m.activeFolderI], m.moreBelow())
-	if len(m.accounts) > 1 {
-		help += styleHelp.Render(" · ctrl+a switch account")
-	}
 	if len(m.emails) > 0 {
 		help += styleDate.Render(fmt.Sprintf("  │  %d loaded", len(m.emails)))
 	}

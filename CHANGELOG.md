@@ -2,7 +2,7 @@
 
 # 2026-10-10
 
-- **Converge house fork with upstream/main** - Rebase and merge house enhancements onto upstream tip (a596f6a merge-base converged to upstream 75 commits ahead). Reconciled Superhuman UX pack, per-email reminders, OSC 52 yank, read-only mode, GreenMail CI, Message-ID links, instant IMAP actions, and lazy body attachments. Tests: `go test ./...`, `go test ./... -run Hardening`.
+- **Converge house fork with upstream/main** - Rebase and merge house enhancements onto upstream tip (a596f6a merge-base converged to upstream 75 commits ahead). Reconciled Superhuman UX pack, per-email reminders, OSC 52 yank, read-only mode, GreenMail CI, Message-ID links, instant IMAP actions, and lazy body attachments. Inbox `ctrl+a` stays house select-all; upstream's `ctrl+a` account cycling and its hint-bar cue are dropped, so multi-account setups currently have no account-switch key. Tests: `go test ./...`, `go test ./... -run Hardening`.
 
 # 2026-10-06
 
