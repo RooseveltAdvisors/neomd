@@ -40,7 +40,6 @@ oauth2_redirect_port = 8085          # optional; local callback port (default 80
                                       # redirect URI with your provider
 
 # Multiple accounts supported — add more [[accounts]] blocks
-# Switch between them with `ctrl+a` in the inbox
 
 # Root-level settings
 store_sent_drafts_in_sending_account = false  # default: Sent/Drafts stay in the first IMAP account
@@ -267,7 +266,7 @@ from          = "Me <me@gmail.com>"
 imap_disabled = true
 ```
 
-`ctrl+a` account cycling skips IMAP-disabled accounts. Useful for adding a provider purely for sending without fetching its emails.
+Useful for adding a provider purely for sending without fetching its emails.
 
 ## Sending and Discarding
 

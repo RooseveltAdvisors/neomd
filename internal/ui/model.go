@@ -148,7 +148,7 @@ type (
 		seen []seenFlag
 		// optID > 0 when the list was already updated optimistically; the
 		// handler retires or rolls back that batch instead of re-fetching.
-		optID int
+		optID   int
 		removed []removalKey // optimistic rows this MOVE run covers (set by releaseOnDone)
 	}
 	undoDoneMsg struct{ desc string }
@@ -757,8 +757,8 @@ type Model struct {
 	readerPending   string            // chord prefix in reader (space for link open)
 	copyTargetsList []copyTarget      // copy targets shown by the reader's y menu
 	copyMenuCursor  int
-	openRawHeaders  string            // raw RFC 5322 header block, fetched lazily by <space>h / <space>u
-	headersMode     int               // reader viewport: 0 body, 1 curated headers, 2 full raw headers
+	openRawHeaders  string // raw RFC 5322 header block, fetched lazily by <space>h / <space>u
+	headersMode     int    // reader viewport: 0 body, 1 curated headers, 2 full raw headers
 	// Mark-as-read timer tracking
 	markAsReadUID     uint32 // UID of email with pending mark-as-read timer
 	markAsReadFolder  string // folder of email with pending mark-as-read timer
@@ -2189,6 +2189,7 @@ func (m *Model) pushUndo(a undoAction) {
 		m.undoStack = m.undoStack[len(m.undoStack)-maxUndoStack:]
 	}
 }
+
 // reselectEmail moves the list cursor back onto prev (matched by folder+UID)
 // after the items were rebuilt. Rows shift whenever mail arrives or leaves, and
 // keeping the bare index would silently put the cursor on a different email —
@@ -2683,6 +2684,7 @@ func (m Model) batchToggleSeenCmd(emails []imap.Email) tea.Cmd {
 		return batchDoneMsg{seen: flags}
 	}
 }
+
 // classifyForScreen classifies a slice of inbox emails in-memory (O(1) map
 // lookups) and returns planned moves. emails must live at least as long as the
 // returned moves (pointers into the slice are stored).
@@ -6649,6 +6651,7 @@ func (m Model) unsubscribe() (tea.Model, tea.Cmd) {
 	m.isError = true
 	return m, nil
 }
+
 // downloadEMLCmd fetches the raw MIME source and saves it as .eml to ~/Downloads.
 func (m Model) downloadEMLCmd() tea.Cmd {
 	e := m.openEmail
