@@ -67,7 +67,7 @@ func TestToggleSeen_DoneClearsPendingAndKeepsFlag(t *testing.T) {
 	m := instantModel(t, 3)
 	res, _ := m.updateInbox(key("n"))
 	mm := res.(Model)
-	res, _ = mm.Update(toggleSeenDoneMsg{account: "P", ops: []seenOp{{folder: "INBOX", uid: 3, seen: false}}, done: 1})
+	res, _ = mm.Update(toggleSeenDoneMsg{ops: []seenOp{{account: "P", folder: "INBOX", uid: 3, seen: false}}, done: 1})
 	mm = res.(Model)
 	if len(mm.pendingSeen) != 0 {
 		t.Errorf("pendingSeen must be cleared, got %v", mm.pendingSeen)
@@ -84,7 +84,7 @@ func TestToggleSeen_ErrorRevertsAndShowsStatus(t *testing.T) {
 	m := instantModel(t, 3)
 	res, _ := m.updateInbox(key("n"))
 	mm := res.(Model)
-	res, _ = mm.Update(toggleSeenDoneMsg{account: "P", ops: []seenOp{{folder: "INBOX", uid: 3, seen: false}}, done: 0, err: testErr("STORE NO")})
+	res, _ = mm.Update(toggleSeenDoneMsg{ops: []seenOp{{account: "P", folder: "INBOX", uid: 3, seen: false}}, done: 0, err: testErr("STORE NO")})
 	mm = res.(Model)
 	if !seenOf(mm, 3) {
 		t.Error("a failed STORE must revert the flag")
@@ -116,9 +116,43 @@ func TestToggleSeen_BatchMarkedFlipsAllNoSpinner(t *testing.T) {
 		t.Errorf("two pending flags, got %v", mm.pendingSeen)
 	}
 	// Partial failure: first STORE succeeded, second failed → only the second reverts.
-	res, _ = mm.Update(toggleSeenDoneMsg{account: "P", ops: []seenOp{{folder: "INBOX", uid: 2, seen: false}, {folder: "INBOX", uid: 1, seen: false}}, done: 1, err: testErr("STORE NO")})
+	res, _ = mm.Update(toggleSeenDoneMsg{ops: []seenOp{{account: "P", folder: "INBOX", uid: 2, seen: false}, {account: "P", folder: "INBOX", uid: 1, seen: false}}, done: 1, err: testErr("STORE NO")})
 	mm = res.(Model)
 	if seenOf(mm, 2) || !seenOf(mm, 1) {
 		t.Errorf("after partial failure: uid 2 stays unread, uid 1 reverts; got 2=%v 1=%v", seenOf(mm, 2), seenOf(mm, 1))
+	}
+}
+
+// n on a universal-search hit from another account STOREs, tracks, reverts
+// and journals under the hit's account, never the active one.
+func TestToggleSeen_CrossAccountHitUsesItsAccount(t *testing.T) {
+	m := searchView(twoAccountModel(t, 1))
+	m.emails[0].Account = "W"
+	m.applyFilter()
+	m.inbox.Select(0)
+	was := seenOf(m, 90)
+	res, cmd := m.updateInbox(key("n"))
+	mm := res.(Model)
+	if _, ok := mm.pendingSeen[removalKey{account: "W", folder: "Archive", uid: 90}]; !ok {
+		t.Fatalf("pendingSeen must be keyed by account W, got %v", mm.pendingSeen)
+	}
+	var done *toggleSeenDoneMsg
+	for _, msg := range runCmds(t, cmd) {
+		if d, ok := msg.(toggleSeenDoneMsg); ok {
+			done = &d
+		}
+	}
+	if done == nil || len(done.ops) != 1 || done.ops[0].account != "W" {
+		t.Fatalf("STORE op must carry account W, got %+v", done)
+	}
+	res, _ = mm.Update(*done)
+	mm = res.(Model)
+	if seenOf(mm, 90) != was || len(mm.pendingSeen) != 0 {
+		t.Errorf("failed STORE must revert the W hit: seen=%v want %v pending=%v", seenOf(mm, 90), was, mm.pendingSeen)
+	}
+	res, _ = mm.Update(toggleSeenDoneMsg{ops: done.ops, done: 1})
+	mm = res.(Model)
+	if top := mm.undoStack[len(mm.undoStack)-1]; top.seen[0].account != "W" {
+		t.Errorf("undo journal must target account W, got %q", top.seen[0].account)
 	}
 }

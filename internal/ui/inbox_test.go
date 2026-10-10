@@ -285,3 +285,23 @@ func TestSetEmails_CollapsesMembers(t *testing.T) {
 		t.Errorf("items without titleOf = %d, want 3", n)
 	}
 }
+
+// A merged older message pulls its whole thread into the ≡ row even when
+// thread collapse is on and a newer reply would otherwise represent it.
+func TestSetEmails_MergeAbsorbsCollapsedThread(t *testing.T) {
+	emails := []imap.Email{
+		{UID: 1, MessageID: "<b1>", Subject: "Undelivered", From: "d@x", Date: time.Now().Add(-2 * time.Hour), Seen: true},
+		{UID: 2, MessageID: "<reply>", InReplyTo: "<b1>", Subject: "Re: Undelivered", From: "me@x", Date: time.Now().Add(-1 * time.Hour), Seen: true},
+		{UID: 3, MessageID: "<k>", Subject: "Keep", From: "k@x", Date: time.Now(), Seen: true},
+	}
+	l := list.New(nil, emailDelegate{}, 100, 10)
+	titleOf := func(id string) (string, bool) { return "Bounces", id == "<b1>" }
+	setEmails(&l, emails, map[uint32]bool{}, map[string]bool{}, false, "date", true, false, true, map[string]bool{}, titleOf)
+	if n := len(l.Items()); n != 2 {
+		t.Fatalf("items = %d, want 2 (Keep + merge)", n)
+	}
+	it := l.Items()[1].(emailItem)
+	if it.merge == nil || len(it.merge.members) != 2 {
+		t.Fatalf("merge row must hold both thread members, got %+v", it)
+	}
+}

@@ -556,14 +556,13 @@ that conversation; "the test was too strict" is not a decision an agent makes al
   exempt from that guard since they map to a real cached folder (`:go-spam` was fixed
   to set `offTabFolder = "Spam"` so it participates correctly — a latent bug the guard
   surfaced). `R` bypasses the cache. Prefetch (`folderPrefetchedMsg`) fills the cache
-  only. Account switch (`ctrl+a`), tab keys, `<space>N`, `g<x>` and tab clicks all leave
+  only. Tab keys, `<space>N`, `g<x>` and tab clicks all leave
   a synthetic view (`leaveSyntheticView`: `offTabFolder`, `imapSearchResults`,
-  `imapSearchText`); `ctrl+a` also resets `prefetched` so the new account's tabs are
-  warmed. A failed folder fetch (`folderErrMsg`, carries folder+account) for the visible
+  `imapSearchText`). A failed folder fetch (`folderErrMsg`, carries folder+account) for the visible
   folder after a spinner switch shows that folder's snapshot or an empty list — never
   the previous folder's rows; failures for another folder/account are ignored. Tests:
   `TestCache_*`, `TestPrefetch_*`, `TestBgSync_SkipsAutoScreenWhenAccountChanged`,
-  `TestCache_AccountSwitchLeavesSyntheticView`, `TestCache_AccountSwitchCapturesNewAccount`,
+  `TestCtrlA_SelectsAllWithMultipleAccounts`,
   `TestCache_FolderFetchErrorClearsPreviousFolderRows`.
 - **The user's `[contacts]` file is read-only** — `contacts.MergeFile` only reads;
   neomd persists exclusively to its own cache (`config.ContactsCachePath()`), so the
@@ -790,20 +789,19 @@ layer — do not rebind them, and do not let a new binding shadow one.
   never consume another's rollback snapshot.
   Test: `TestOverlappingOptimisticBatchesRollBackIndependently`.
 
-## Infinite Scroll
+## Load More
 
-- **Reaching the bottom appends the next page** — `maybeLoadMoreCmd` fires within
-  `loadMoreThreshold` rows of the end and pages on UID via
-  `imap.Client.FetchHeadersBefore(folder, beforeUID, n)`.
-  Test: `TestScrollToBottomTriggersNextPage`.
+- **Reaching the last row appends the next page** — `loadMoreIfAtBottom` (j/d at the
+  bottom) fetches via `imap.Client.FetchMoreHeaders` unless the folder is
+  `folderComplete`. Test: `TestScrollLatchSurvivesTheKeyHandler`.
 - **The cursor must not move when a page lands** — appends go through `sortEmails` and then
   re-`Select` the previous index. Test: `TestNextPageAppendsAndKeepsScrollPosition`.
 - **Ad-hoc views are never paged** — IMAP search results, `Everything`, conversation and
   sender views span folders, so UID paging is meaningless there.
   Test: `TestScrollDoesNotPageAdHocViews`.
-- **An empty page latches `moreExhausted`** so the client stops asking; a full folder load
-  (`emailsLoadedMsg`) resets paging and clears pending optimistic snapshots.
-  Tests: `TestEmptyNextPageMarksFolderExhausted`, `TestFullFolderLoadResetsPagingState`.
+- **A short page marks the folder `folderComplete`** so the client stops asking; a full
+  folder load (`emailsLoadedMsg`) resets paging and clears pending optimistic snapshots.
+  Test: `TestFullFolderLoadResetsPagingState`.
 
 ## Snippets
 

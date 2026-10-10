@@ -612,28 +612,17 @@ func searchView(m Model) Model {
 	return m
 }
 
-// C2: ctrl+a from a synthetic view must leave it; otherwise account P's
-// search hits stay on screen (and actionable) under account W.
-func TestCache_AccountSwitchLeavesSyntheticView(t *testing.T) {
-	m := searchView(twoAccountModel(t, 1))
-	m.prefetched = true
-	res, cmd := m.updateInbox(tea.KeyMsg{Type: tea.KeyCtrlA})
+// ctrl+a selects every loaded row even with several accounts configured;
+// it never cycles the account (house binding, see keys.go).
+func TestCtrlA_SelectsAllWithMultipleAccounts(t *testing.T) {
+	m := twoAccountModel(t, 2)
+	res, _ := m.updateInbox(tea.KeyMsg{Type: tea.KeyCtrlA})
 	mm := res.(Model)
-	if cmd == nil || mm.accountI != 1 {
-		t.Fatalf("ctrl+a must switch to W and load: accountI=%d cmd=%v", mm.accountI, cmd != nil)
+	if mm.accountI != 0 {
+		t.Fatalf("ctrl+a switched account: accountI=%d", mm.accountI)
 	}
-	if mm.offTabFolder != "" || mm.imapSearchResults || mm.imapSearchText != "" {
-		t.Errorf("synthetic view kept: offTab=%q results=%v text=%q", mm.offTabFolder, mm.imapSearchResults, mm.imapSearchText)
-	}
-	if mm.prefetched {
-		t.Error("prefetched must reset so the new account's tabs get prefetched")
-	}
-	w := mkEmail(70, "<w@x>", "work", "X <x@example.com>", 0, false)
-	w.Folder = "INBOX"
-	res, _ = mm.Update(emailsLoadedMsg{emails: []imap.Email{w}, folder: "INBOX", account: "W"})
-	mm = res.(Model)
-	if got := uidsInList(mm); len(got) != 1 || got[0] != 70 {
-		t.Errorf("W's INBOX must replace P's search rows, list = %v", got)
+	if len(mm.markedUIDs) != len(mm.emails) || len(mm.emails) == 0 {
+		t.Fatalf("ctrl+a must mark all %d loaded rows, marked %v", len(mm.emails), mm.markedUIDs)
 	}
 }
 
@@ -645,19 +634,6 @@ func TestCache_LeaderFolderChordLeavesSearchView(t *testing.T) {
 	mm := res.(Model)
 	if mm.offTabFolder != "" || mm.imapSearchResults || mm.imapSearchText != "" {
 		t.Errorf("search view kept: offTab=%q results=%v text=%q", mm.offTabFolder, mm.imapSearchResults, mm.imapSearchText)
-	}
-}
-
-// I6: the fetch fired by ctrl+a is built for the new account.
-func TestCache_AccountSwitchCapturesNewAccount(t *testing.T) {
-	m := twoAccountModel(t, 1)
-	res, _ := m.updateInbox(tea.KeyMsg{Type: tea.KeyCtrlA})
-	mm := res.(Model)
-	if mm.accountI != 1 {
-		t.Fatalf("accountI = %d, want 1", mm.accountI)
-	}
-	if got := mm.fetchFolderMsgFor("INBOX"); got.account != "W" || got.folder != "INBOX" {
-		t.Errorf("fetch after ctrl+a built for %q/%q, want W/INBOX", got.account, got.folder)
 	}
 }
 
@@ -829,5 +805,27 @@ func TestCache_FolderFetchErrorClearsPreviousFolderRows(t *testing.T) {
 	}
 	if got := uidsInList(mm); len(got) != 0 {
 		t.Errorf("INBOX rows shown under ToScreen after its fetch failed: %v", got)
+	}
+}
+
+// A failed optimisticRemove batch clears the bulk progress bar and reloads
+// from the server instead of re-appending rows the server may have moved.
+func TestOptimistic_RemoveBatchErrorReloadsAndClearsProgress(t *testing.T) {
+	m := instantModel(t, 3)
+	gone := m.emails[0]
+	m.emails = m.emails[1:]
+	m.optimistic = map[int][]imap.Email{7: {gone}}
+	m.bulkProgress = &bulkOp{label: "Archiving", total: 50}
+	key := removalKey{account: "P", folder: gone.Folder, uid: gone.UID}
+	res, cmd := m.Update(batchDoneMsg{optID: 7, removed: []removalKey{key}, err: testErr("MOVE NO")})
+	mm := res.(Model)
+	if mm.bulkProgress != nil {
+		t.Error("bulk progress must clear when the batch ends")
+	}
+	if !mm.loading || cmd == nil {
+		t.Error("a failed optimistic MOVE must reload from the server")
+	}
+	if len(mm.emails) != 2 || mm.optimistic[7] != nil {
+		t.Errorf("rows must not be re-appended from the snapshot: emails=%d snapshot=%v", len(mm.emails), mm.optimistic[7])
 	}
 }

@@ -443,10 +443,10 @@ func setEmails(l *list.Model, emails []imap.Email, marked map[uint32]bool, spyPi
 	} else {
 		threaded = threadEmails(emails, sortField, sortReverse)
 	}
+	threaded = collapseMerges(threaded, titleOf, sortField, sortReverse)
 	if collapseThreads {
 		threaded = collapseThreadRows(threaded, expandedThreads)
 	}
-	threaded = collapseMerges(threaded, titleOf, sortField, sortReverse)
 	items := make([]list.Item, len(threaded))
 	for i, te := range threaded {
 		displaySubj := te.email.Subject

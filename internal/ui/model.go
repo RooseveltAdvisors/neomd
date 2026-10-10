@@ -155,10 +155,9 @@ type (
 	// toggleSeenDoneMsg reports the STOREs of one n press. ops[:done] reached
 	// the server; ops[done:] did not (err set) and must be reverted locally.
 	toggleSeenDoneMsg struct {
-		account string
-		ops     []seenOp
-		done    int
-		err     error
+		ops  []seenOp
+		done int
+		err  error
 	}
 	errMsg struct{ err error }
 	// folderErrMsg is fetchFolderCmd's failure: it names the folder and
@@ -673,9 +672,10 @@ type removalKey struct {
 // seenOp is one planned \Seen change, captured by value so the STORE
 // goroutine never reads through a pointer into the list.
 type seenOp struct {
-	folder string
-	uid    uint32
-	seen   bool
+	account string
+	folder  string
+	uid     uint32
+	seen    bool
 }
 
 // folderSnapshot is the last header list fetched for one account+folder.
@@ -800,9 +800,6 @@ type Model struct {
 	// id so overlapping actions roll back independently. See optimistic.go.
 	optimistic    map[int][]imap.Email
 	optimisticSeq int
-
-	// Infinite scroll paging state for the current folder view.
-	moreExhausted bool
 
 	// Snippet picker (`;`) and manager.
 	snippets       []snippets.Snippet
@@ -1172,6 +1169,15 @@ func (m Model) imapCli() *imap.Client {
 		return m.clients[m.accountI]
 	}
 	return m.primaryIMAPClient()
+}
+
+// emailAccount names e's account: e.Account when set (universal search
+// rows), else the active account.
+func (m Model) emailAccount(e *imap.Email) string {
+	if e != nil && e.Account != "" {
+		return e.Account
+	}
+	return m.activeAccountName()
 }
 
 // imapCliForEmail keeps cross-account search results actionable. A message's
@@ -1756,18 +1762,21 @@ func collectRcptTo(to, cc, bcc string) []string {
 	return out
 }
 
-// toggleSeenCmd flips the \Seen flag on an email and updates local state.
-// toggleSeenCmd runs the STOREs for ops in order on the primary connection.
+// toggleSeenCmd runs the STOREs for ops in order, each on its own account's
+// primary connection.
 // The list was already flipped optimistically; the done message only
 // releases pendingSeen and reverts whatever did not reach the server.
 func (m Model) toggleSeenCmd(ops []seenOp) tea.Cmd {
 	if m.cfg != nil && m.cfg.ReadOnly {
 		return readOnlyBatchCmd("mark read")
 	}
-	cli := m.imapCli()
-	account := m.activeAccountName()
+	clis := make([]*imap.Client, len(ops))
+	for i, o := range ops {
+		clis[i] = m.imapCliForEmail(&imap.Email{Account: o.account})
+	}
 	return func() tea.Msg {
 		for i, o := range ops {
+			cli := clis[i]
 			var err error
 			if o.seen {
 				err = cli.MarkSeen(nil, o.folder, o.uid)
@@ -1775,23 +1784,23 @@ func (m Model) toggleSeenCmd(ops []seenOp) tea.Cmd {
 				err = cli.MarkUnseen(nil, o.folder, o.uid)
 			}
 			if err != nil {
-				return toggleSeenDoneMsg{account: account, ops: ops, done: i, err: err}
+				return toggleSeenDoneMsg{ops: ops, done: i, err: err}
 			}
 		}
-		return toggleSeenDoneMsg{account: account, ops: ops, done: len(ops)}
+		return toggleSeenDoneMsg{ops: ops, done: len(ops)}
 	}
 }
 
-// setSeenLocal sets the \Seen flag of folder/uid in the visible list and in
-// the active account's cached snapshot of that folder (set, not toggle, so
+// setSeenLocal sets the \Seen flag of account/folder/uid in the visible list
+// and in that account's cached snapshot of that folder (set, not toggle, so
 // it is safe when the two alias the same array).
-func (m *Model) setSeenLocal(folder string, uid uint32, seen bool) {
+func (m *Model) setSeenLocal(account, folder string, uid uint32, seen bool) {
 	for i := range m.emails {
-		if m.emails[i].UID == uid && m.emails[i].Folder == folder {
+		if m.emails[i].UID == uid && m.emails[i].Folder == folder && m.emailAccount(&m.emails[i]) == account {
 			m.emails[i].Seen = seen
 		}
 	}
-	if snap, ok := m.folderCache[cacheKey(m.activeAccountName(), folder)]; ok {
+	if snap, ok := m.folderCache[cacheKey(account, folder)]; ok {
 		for i := range snap.emails {
 			if snap.emails[i].UID == uid && snap.emails[i].Folder == folder {
 				snap.emails[i].Seen = seen
@@ -3441,10 +3450,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		prevCursor := selectedEmail(m.inbox) // keep the cursor on the same email after reload
 		m.emails = msg.emails
-		// A full folder load resets paging: the infinite scroll starts over
+		// A full folder load resets paging: load-more starts over
 		// from this page and nothing is pending optimistically any more.
 		m.loadingMore = false
-		m.moreExhausted = false
 		m.optimistic = nil
 		m.harvestContacts(msg.emails)
 		m.applySenderRules(msg.emails)
@@ -3931,9 +3939,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The flags were flipped when n was pressed; release the pending
 		// state and revert only what never reached the server.
 		for i, op := range msg.ops {
-			delete(m.pendingSeen, removalKey{account: msg.account, folder: op.folder, uid: op.uid})
-			if i >= msg.done && msg.account == m.activeAccountName() {
-				m.setSeenLocal(op.folder, op.uid, !op.seen)
+			delete(m.pendingSeen, removalKey{account: op.account, folder: op.folder, uid: op.uid})
+			if i >= msg.done {
+				m.setSeenLocal(op.account, op.folder, op.uid, !op.seen)
 			}
 		}
 		if msg.err != nil {
@@ -3944,7 +3952,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.done > 0 {
 			flags := make([]seenFlag, msg.done)
 			for i, op := range msg.ops[:msg.done] {
-				flags[i] = seenFlag{folder: op.folder, uid: op.uid, account: msg.account, markSeen: !op.seen}
+				flags[i] = seenFlag{folder: op.folder, uid: op.uid, account: op.account, markSeen: !op.seen}
 			}
 			m.pushUndo(undoAction{seen: flags})
 		}
@@ -3991,12 +3999,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSenderResult(msg)
 
 	case batchDoneMsg:
-		if msg.optID > 0 {
-			if len(msg.removed) > 0 {
-				m.releasePending(msg.removed, msg.err != nil)
-			} else if m.pendingBatches > 0 {
-				m.pendingBatches--
-			}
+		if msg.optID > 0 && len(msg.removed) == 0 {
+			m.bulkProgress = nil
 			m.pushUndo(undoAction{moves: msg.undo, seen: msg.seen})
 			if msg.err != nil {
 				cmd := m.rollbackOptimistic(msg.optID)
@@ -4009,6 +4013,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.isError = false
 			return m, m.fetchFolderCountsCmd()
 		}
+		m.retireOptimistic(msg.optID)
 		// optimistic: the initiating key (x/A/B/M*/I/O/F/P/$) already removed
 		// the rows and kept the list visible. Handlers that still hide the
 		// list (U undo, X, toggle-seen, delete-all, …) keep the spinner reload.
@@ -4368,11 +4373,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			have[e.UID] = true
 			m.emails = append(m.emails, e)
 			added++
-		}
-		if added == 0 {
-			m.moreExhausted = true
-		} else {
-			m.moreExhausted = false
 		}
 		if m.folderWindow == nil {
 			m.folderWindow = make(map[string]int)
@@ -4923,7 +4923,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	// ── Vim visual selection / mark ─────────────────────────────────
-	case "x":
+	case "x", "m":
 		it, ok := selectedItem(m.inbox)
 		if !ok {
 			break
@@ -4953,41 +4953,11 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.markedUIDs[it.email.UID] = true
 			}
 		}
-		return m, m.applyFilter()
-
-	case "m":
-		it, ok := selectedItem(m.inbox)
-		if !ok {
-			break
-		}
-		if m.markedUIDs == nil {
-			m.markedUIDs = make(map[uint32]bool)
-		}
-		if it.merge != nil {
-			all := true
-			for _, mem := range it.merge.members {
-				if !m.markedUIDs[mem.UID] {
-					all = false
-					break
-				}
+		if key == "m" {
+			next := m.inbox.Index() + 1
+			if next < len(m.inbox.Items()) {
+				m.inbox.Select(next)
 			}
-			for _, mem := range it.merge.members {
-				if all {
-					delete(m.markedUIDs, mem.UID)
-				} else {
-					m.markedUIDs[mem.UID] = true
-				}
-			}
-		} else {
-			if m.markedUIDs[it.email.UID] {
-				delete(m.markedUIDs, it.email.UID)
-			} else {
-				m.markedUIDs[it.email.UID] = true
-			}
-		}
-		next := m.inbox.Index() + 1
-		if next < len(m.inbox.Items()) {
-			m.inbox.Select(next)
 		}
 		return m, m.applyFilter()
 
@@ -5261,12 +5231,12 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pendingSeen == nil {
 			m.pendingSeen = make(map[removalKey]bool)
 		}
-		account := m.activeAccountName()
 		ops := make([]seenOp, len(targets))
 		for i, e := range targets {
-			ops[i] = seenOp{folder: e.Folder, uid: e.UID, seen: !e.Seen}
+			account := m.emailAccount(&e)
+			ops[i] = seenOp{account: account, folder: e.Folder, uid: e.UID, seen: !e.Seen}
 			m.pendingSeen[removalKey{account: account, folder: e.Folder, uid: e.UID}] = !e.Seen
-			m.setSeenLocal(e.Folder, e.UID, !e.Seen)
+			m.setSeenLocal(account, e.Folder, e.UID, !e.Seen)
 		}
 		m.markedUIDs = make(map[uint32]bool)
 		idx := m.inbox.Index()
@@ -5359,19 +5329,6 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.spinner.Tick, cmd)
 
 	case "ctrl+a":
-		if len(m.clients) > 1 {
-			// Skip IMAP-disabled accounts (nil clients).
-			for range m.clients {
-				m.accountI = (m.accountI + 1) % len(m.clients)
-				if m.clients[m.accountI] != nil {
-					break
-				}
-			}
-			m.activeFolderI = 0
-			m.leaveSyntheticView()
-			m.prefetched = false // warm the new account's tabs too
-			return m, m.loadActiveFolder()
-		}
 		m.markedUIDs = make(map[uint32]bool, len(m.emails))
 		for _, e := range m.emails {
 			m.markedUIDs[e.UID] = true

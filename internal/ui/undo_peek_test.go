@@ -31,7 +31,7 @@ func TestUndoJournalScreenerMove(t *testing.T) {
 	for k := range after.optimistic {
 		id = k
 	}
-	done, _ := after.Update(batchDoneMsg{optID: id, undo: []undoMove{{
+	done, _ := after.Update(batchDoneMsg{optID: id, removed: after.removalKeys([]imap.Email{target}), undo: []undoMove{{
 		uid: 777, fromFolder: target.Folder, toFolder: "Feed",
 	}}})
 	confirmed := done.(Model)

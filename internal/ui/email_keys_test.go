@@ -371,72 +371,16 @@ func TestOptimisticRemindMovesRowsAtOnce(t *testing.T) {
 
 // ── 3. Infinite scroll ───────────────────────────────────────────────────
 
-func TestOldestUIDIsThePagingCursor(t *testing.T) {
-	emails := []imap.Email{
-		{UID: 40, Folder: "INBOX"}, {UID: 12, Folder: "INBOX"},
-		{UID: 7, Folder: "Archive"}, // other folder must not lower the cursor
-	}
-	if got := oldestUID(emails, "INBOX"); got != 12 {
-		t.Fatalf("oldestUID = %d, want 12", got)
-	}
-	if got := oldestUID(emails, "Feed"); got != 0 {
-		t.Fatalf("oldestUID for an unheld folder = %d, want 0", got)
-	}
-}
-
-func TestAppendNewEmailsDeduplicates(t *testing.T) {
-	have := []imap.Email{{UID: 9, Folder: "INBOX"}}
-	got, added := appendNewEmails(have, []imap.Email{
-		{UID: 9, Folder: "INBOX"},   // already held
-		{UID: 9, Folder: "Archive"}, // same UID, different folder → new
-		{UID: 8, Folder: "INBOX"},
-	})
-	if added != 2 || len(got) != 3 {
-		t.Fatalf("added=%d len=%d, want 2/3", added, len(got))
-	}
-	if _, again := appendNewEmails(got, got); again != 0 {
-		t.Fatalf("re-appending the same page added %d", again)
-	}
-}
-
-// TestScrollToBottomTriggersNextPage pins that reaching the end of the list
-// fetches more — and that the middle of the list does not.
-func TestScrollToBottomTriggersNextPage(t *testing.T) {
-	m := keysTestModel(t, 12)
-
-	m.inbox.Select(0)
-	if cmd := m.maybeLoadMoreCmd(); cmd != nil {
-		t.Fatal("top of the list should not page")
-	}
-
-	m.inbox.Select(len(m.inbox.Items()) - 1)
-	if cmd := m.maybeLoadMoreCmd(); cmd == nil {
-		t.Fatal("bottom of the list should page")
-	}
-	if !m.loadingMore {
-		t.Fatal("paging should latch loadingMore so the fetch is not duplicated")
-	}
-	if cmd := m.maybeLoadMoreCmd(); cmd != nil {
-		t.Fatal("a second fetch fired while one was in flight")
-	}
-
-	m.loadingMore = false
-	m.moreExhausted = true
-	if cmd := m.maybeLoadMoreCmd(); cmd != nil {
-		t.Fatal("exhausted folder should not keep fetching")
-	}
-}
-
 func TestScrollDoesNotPageAdHocViews(t *testing.T) {
 	m := keysTestModel(t, 12)
 	m.inbox.Select(len(m.inbox.Items()) - 1)
 	m.imapSearchResults = true
-	if cmd := m.maybeLoadMoreCmd(); cmd != nil {
+	if cmd := m.loadMoreIfAtBottom(); cmd != nil {
 		t.Fatal("IMAP search results are not a paged folder view")
 	}
 	m.imapSearchResults = false
 	m.offTabFolder = "Everything"
-	if cmd := m.maybeLoadMoreCmd(); cmd != nil {
+	if cmd := m.loadMoreIfAtBottom(); cmd != nil {
 		t.Fatal("cross-folder views are not paged")
 	}
 }
@@ -464,18 +408,6 @@ func TestNextPageAppendsAndKeepsScrollPosition(t *testing.T) {
 	if after.loadingMore {
 		t.Fatal("loadingMore should clear once the page lands")
 	}
-	if after.moreExhausted {
-		t.Fatal("a page that added rows must not mark the folder exhausted")
-	}
-}
-
-func TestEmptyNextPageMarksFolderExhausted(t *testing.T) {
-	m := keysTestModel(t, 6)
-	next, _ := m.Update(moreEmailsLoadedMsg{emails: nil, folder: "INBOX"})
-	after := next.(Model)
-	if !after.moreExhausted || len(after.emails) != 6 {
-		t.Fatalf("exhausted=%v emails=%d, want true/6", after.moreExhausted, len(after.emails))
-	}
 }
 
 func TestNextPageForAnotherFolderIsDropped(t *testing.T) {
@@ -491,14 +423,13 @@ func TestNextPageForAnotherFolderIsDropped(t *testing.T) {
 
 func TestFullFolderLoadResetsPagingState(t *testing.T) {
 	m := keysTestModel(t, 6)
-	m.moreExhausted = true
 	m.loadingMore = true
 	m.optimistic = map[int][]imap.Email{1: {{UID: 1}}}
 	next, _ := m.Update(emailsLoadedMsg{emails: keysTestEmails(2), folder: "INBOX"})
 	after := next.(Model)
-	if after.moreExhausted || after.loadingMore || after.optimistic != nil {
-		t.Fatalf("reload should reset paging/optimistic state: exhausted=%v more=%v opt=%v",
-			after.moreExhausted, after.loadingMore, after.optimistic)
+	if after.loadingMore || after.optimistic != nil {
+		t.Fatalf("reload should reset paging/optimistic state: more=%v opt=%v",
+			after.loadingMore, after.optimistic)
 	}
 }
 
@@ -537,8 +468,8 @@ func TestSnippetPickerComposesPrefilled(t *testing.T) {
 }
 
 // TestScrollLatchSurvivesTheKeyHandler pins that the loadingMore latch set by
-// maybeLoadMoreCmd is present on the model the handler RETURNS — a plain
-// `return m, m.maybeLoadMoreCmd()` would drop it and re-fetch on every keypress.
+// loadMoreIfAtBottom is present on the model the handler RETURNS — a plain
+// `return m, m.loadMoreIfAtBottom()` would drop it and re-fetch on every keypress.
 func TestScrollLatchSurvivesTheKeyHandler(t *testing.T) {
 	for _, key := range []string{"j", "d"} {
 		t.Run(key, func(t *testing.T) {

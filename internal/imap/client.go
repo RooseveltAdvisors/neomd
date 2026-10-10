@@ -464,7 +464,7 @@ func parseSendAtSection(raw []byte) time.Time {
 
 func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Email, error) {
 	defer trace(time.Now(), "FetchHeaders %s n=%d", folder, n)
-	return c.fetchHeadersWindow(ctx, folder, n, nil, 0)
+	return c.fetchHeadersWindow(ctx, folder, n, nil)
 }
 
 // FetchMoreHeaders is the "load more" page: the n most recently received
@@ -475,20 +475,12 @@ func (c *Client) FetchMoreHeaders(ctx context.Context, folder string, n int, loa
 	if n <= 0 {
 		return nil, nil
 	}
-	return c.fetchHeadersWindow(ctx, folder, n, loaded, 0)
-}
-
-// FetchHeadersBefore fetches the n most recent headers with UID strictly below
-// beforeUID — the paging primitive behind the inbox's infinite scroll. A
-// beforeUID of 0 means "no cursor", making it identical to FetchHeaders.
-func (c *Client) FetchHeadersBefore(ctx context.Context, folder string, beforeUID uint32, n int) ([]Email, error) {
-	defer trace(time.Now(), "FetchHeadersBefore %s n=%d beforeUID=%d", folder, n, beforeUID)
-	return c.fetchHeadersWindow(ctx, folder, n, nil, beforeUID)
+	return c.fetchHeadersWindow(ctx, folder, n, loaded)
 }
 
 // fetchHeadersWindow fetches headers of the n most recently received messages
 // of folder (all when n == 0), skipping UIDs in exclude, newest first.
-func (c *Client) fetchHeadersWindow(ctx context.Context, folder string, n int, exclude map[uint32]bool, beforeUID uint32) ([]Email, error) {
+func (c *Client) fetchHeadersWindow(ctx context.Context, folder string, n int, exclude map[uint32]bool) ([]Email, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -527,14 +519,6 @@ func (c *Client) fetchHeadersWindow(ctx context.Context, folder string, n int, e
 		// Window: the n most recently received messages, newest first.
 		// n=0 means no limit — fetch all (UID-descending, no extra round trip).
 		sort.Slice(allUIDs, func(i, j int) bool { return allUIDs[i] < allUIDs[j] })
-		// Paging cursor: keep only UIDs older than the oldest one already held.
-		if beforeUID > 0 {
-			cut := sort.Search(len(allUIDs), func(i int) bool { return uint32(allUIDs[i]) >= beforeUID })
-			allUIDs = allUIDs[:cut]
-			if len(allUIDs) == 0 {
-				return nil
-			}
-		}
 		if n > 0 && len(allUIDs) > n {
 			allUIDs, err = newestUIDsByInternalDate(conn, allUIDs, n)
 			if err != nil {
