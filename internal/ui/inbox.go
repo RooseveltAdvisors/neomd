@@ -18,17 +18,16 @@ import (
 // emailItem wraps imap.Email to satisfy bubbles/list.Item.
 type emailItem struct {
 	email        imap.Email
-	index        int    // position in list (1-based)
-	marked       bool   // selected for batch operation
-	displaySubj  string // rendered subject (may include folder prefix in temporary views)
-	threadPrefix string // tree chars e.g. "┌─>" for threaded display
-	hasSpyPixel  bool   // tracking pixels were detected when body was loaded
-	threadCount  int    // >0 when this row represents a collapsed thread (count of messages)
+	index        int       // position in list (1-based)
+	marked       bool      // selected for batch operation
+	displaySubj  string    // rendered subject (may include folder prefix in temporary views)
+	threadPrefix string    // tree chars e.g. "┌─>" for threaded display
+	hasSpyPixel  bool      // tracking pixels were detected when body was loaded
+	threadCount  int       // >0 when this row represents a collapsed thread (count of messages)
+	merge        *mergeRow // non-nil: collapsed user-merged group; email is its newest member
 }
 
-func (e emailItem) FilterValue() string {
-	return e.email.From + " " + e.email.Subject
-}
+func (e emailItem) FilterValue() string { return e.email.From + " " + e.email.Subject }
 
 func (e emailItem) Title() string       { return e.email.Subject }
 func (e emailItem) Description() string { return e.email.From }
@@ -65,6 +64,14 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 
 	isSelected := index == m.Index()
 	unread := !e.email.Seen
+	answered := e.email.Answered
+	if e.merge != nil {
+		unread, answered = false, false
+		for _, mem := range e.merge.members {
+			unread = unread || !mem.Seen
+			answered = answered || mem.Answered
+		}
+	}
 
 	width := m.Width()
 	if width <= 0 {
@@ -76,7 +83,7 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	// Flag column: mark takes priority; show unread alongside mark
 	flag := "  "
 	switch {
-	case e.marked && !e.email.Seen:
+	case e.marked && unread:
 		flag = "*N"
 	case e.marked:
 		flag = "* "
@@ -85,12 +92,14 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	}
 	// Reply indicator
 	replyStr := " "
-	if e.email.Answered {
+	if answered {
 		replyStr = "·"
 	}
 	// Thread connector column; a collapsed thread shows ▸ with count badge.
 	threadStr := "  "
-	if e.threadCount > 0 {
+	if e.merge != nil {
+		threadStr = "≡ "
+	} else if e.threadCount > 0 {
 		threadStr = "▸ "
 	} else if e.threadPrefix != "" {
 		threadStr = e.threadPrefix + " "
@@ -133,6 +142,9 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 	if e.displaySubj != "" {
 		subjectText = e.displaySubj
 	}
+	if e.merge != nil {
+		subjectText = fmt.Sprintf("%s (%d)", e.merge.title, len(e.merge.members))
+	}
 	subjectText = sendLaterPrefix(e.email) + subjectText
 	if e.threadCount > 0 {
 		subjectText = fmt.Sprintf("×%d ", e.threadCount) + subjectText
@@ -160,7 +172,7 @@ func (d emailDelegate) Render(w io.Writer, m list.Model, index int, item list.It
 		flagS = lipgloss.NewStyle().Foreground(colorMuted).Render(flag)
 	}
 	replyS := lipgloss.NewStyle().Foreground(colorMuted).Render(replyStr)
-	if e.email.Answered {
+	if answered {
 		replyS = lipgloss.NewStyle().Foreground(colorPrimary).Render(replyStr)
 	}
 	threadS := lipgloss.NewStyle().Foreground(colorBorder).Render(threadStr)
@@ -424,13 +436,14 @@ func spyPixelKey(folder string, uid uint32) string {
 	return folder + "\x00" + fmt.Sprintf("%d", uid)
 }
 
-func setEmails(l *list.Model, emails []imap.Email, marked map[uint32]bool, spyPixels map[string]bool, prefixFolders bool, sortField string, sortReverse bool, disableThreading bool, collapseThreads bool, expandedThreads map[string]bool) tea.Cmd {
+func setEmails(l *list.Model, emails []imap.Email, marked map[uint32]bool, spyPixels map[string]bool, prefixFolders bool, sortField string, sortReverse bool, disableThreading bool, collapseThreads bool, expandedThreads map[string]bool, titleOf func(string) (string, bool)) tea.Cmd {
 	var threaded []threadedEmail
 	if disableThreading {
 		threaded = flatEmails(emails, sortField, sortReverse)
 	} else {
 		threaded = threadEmails(emails, sortField, sortReverse)
 	}
+	threaded = collapseMerges(threaded, titleOf, sortField, sortReverse)
 	if collapseThreads {
 		threaded = collapseThreadRows(threaded, expandedThreads)
 	}
@@ -440,14 +453,23 @@ func setEmails(l *list.Model, emails []imap.Email, marked map[uint32]bool, spyPi
 		if prefixFolders {
 			displaySubj = "[" + te.email.Folder + "] " + displaySubj
 		}
+		isMarked := marked[te.email.UID]
+		if te.merge != nil {
+			// A collapsed row counts as marked only when every member is.
+			isMarked = len(te.merge.members) > 0
+			for _, mem := range te.merge.members {
+				isMarked = isMarked && marked[mem.UID]
+			}
+		}
 		items[i] = emailItem{
 			email:        te.email,
 			index:        i + 1,
-			marked:       marked[te.email.UID],
+			marked:       isMarked,
 			displaySubj:  displaySubj,
 			threadPrefix: te.threadPrefix,
 			hasSpyPixel:  spyPixels[spyPixelKey(te.email.Folder, te.email.UID)],
 			threadCount:  te.threadCount,
+			merge:        te.merge,
 		}
 	}
 	return l.SetItems(items)
@@ -500,4 +522,10 @@ func selectedEmail(l list.Model) *imap.Email {
 	}
 	e := item.email
 	return &e
+}
+
+// selectedItem returns the highlighted list item (with merge info), or false.
+func selectedItem(l list.Model) (emailItem, bool) {
+	item, ok := l.SelectedItem().(emailItem)
+	return item, ok
 }

@@ -3,6 +3,7 @@ package editor
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseHeaders(t *testing.T) {
@@ -185,6 +186,7 @@ func TestReplyPrelude(t *testing.T) {
 		"Re: Hello",
 		"",
 		"Bob Smith",
+		time.Time{},
 		"Line one\nLine two",
 	)
 
@@ -196,9 +198,31 @@ func TestReplyPrelude(t *testing.T) {
 		t.Errorf("missing quoted line two, got:\n%s", result)
 	}
 
-	// Attribution line includes original sender name.
+	// Attribution line includes original sender name; with a zero date it
+	// falls back to the plain "wrote:" form.
 	if !strings.Contains(result, "**Bob Smith** wrote:") {
 		t.Errorf("missing attribution line, got:\n%s", result)
+	}
+}
+
+func TestReplyPreludeIncludesDate(t *testing.T) {
+	date := time.Date(2026, time.September, 28, 13, 29, 0, 0, time.UTC)
+	result := ReplyPrelude("bob@x.com", "", "Re: Hello", "", "Bob Smith <bob@x.com>", date, "body")
+	want := "> **Bob Smith <bob@x.com>** wrote on 28 Sep 2026 at 13:29:"
+	if !strings.Contains(result, want) {
+		t.Errorf("missing dated attribution %q, got:\n%s", want, result)
+	}
+}
+
+func TestReactionBodyIncludesDate(t *testing.T) {
+	date := time.Date(2026, time.September, 28, 13, 29, 0, 0, time.UTC)
+	result := ReactionBody("👍", "Simon", "Bob Smith <bob@x.com>", date, "body")
+	want := "> **Bob Smith <bob@x.com>** wrote on 28 Sep 2026 at 13:29:"
+	if !strings.Contains(result, want) {
+		t.Errorf("missing dated attribution %q, got:\n%s", want, result)
+	}
+	if !strings.Contains(ReactionBody("👍", "Simon", "Bob", time.Time{}, "body"), "> **Bob** wrote:") {
+		t.Errorf("zero date should fall back to plain wrote:")
 	}
 }
 
@@ -291,5 +315,42 @@ func TestPreludeParseHeadersRoundTrip(t *testing.T) {
 				t.Errorf("round-trip subject = %q, want %q", gotSubject, tt.subject)
 			}
 		})
+	}
+}
+
+func TestCommand_SplitsEditorArguments(t *testing.T) {
+	t.Setenv("EDITOR", "nvim --clean")
+	cmd := Command("/tmp/x.md")
+	want := []string{"nvim", "--clean", "/tmp/x.md"}
+	if len(cmd.Args) != len(want) {
+		t.Fatalf("Args = %q, want %q", cmd.Args, want)
+	}
+	for i := range want {
+		if cmd.Args[i] != want[i] {
+			t.Errorf("Args[%d] = %q, want %q", i, cmd.Args[i], want[i])
+		}
+	}
+}
+
+func TestCommand_DefaultsToNvim(t *testing.T) {
+	t.Setenv("EDITOR", "")
+	cmd := Command("-R", "/tmp/x.md")
+	if len(cmd.Args) != 3 || cmd.Args[0] != "nvim" || cmd.Args[1] != "-R" || cmd.Args[2] != "/tmp/x.md" {
+		t.Errorf("Args = %q", cmd.Args)
+	}
+}
+
+func TestCommand_QuotedEditorGoesThroughShell(t *testing.T) {
+	// Quotes and other shell syntax cannot be split by hand; defer to sh like git.
+	t.Setenv("EDITOR", `nvim -u "my conf.lua"`)
+	cmd := Command("/tmp/x.md")
+	want := []string{"sh", "-c", `nvim -u "my conf.lua" "$@"`, "editor", "/tmp/x.md"}
+	if len(cmd.Args) != len(want) {
+		t.Fatalf("Args = %q, want %q", cmd.Args, want)
+	}
+	for i := range want {
+		if cmd.Args[i] != want[i] {
+			t.Errorf("Args[%d] = %q, want %q", i, cmd.Args[i], want[i])
+		}
 	}
 }

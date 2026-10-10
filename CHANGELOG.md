@@ -1,5 +1,241 @@
 # Changelog
 
+# 2026-10-10
+
+- **Converge house fork with upstream/main** - Rebase and merge house enhancements onto upstream tip (a596f6a merge-base converged to upstream 75 commits ahead). Reconciled Superhuman UX pack, per-email reminders, OSC 52 yank, read-only mode, GreenMail CI, Message-ID links, instant IMAP actions, and lazy body attachments. Inbox `ctrl+a` stays house select-all; upstream's `ctrl+a` account cycling and its hint-bar cue are dropped, so multi-account setups currently have no account-switch key. Tests: `go test ./...`, `go test ./... -run Hardening`.
+
+# 2026-10-06
+
+- **Long reply chains open in 0.4 s instead of 2.3 s** — a 72 KB back-and-forth thread (Gmail-style `> > > >` quoting, 33 levels deep, 650 quoted lines) took almost 3 s to open. Profiling the stages showed the IMAP fetch and HTML→Markdown conversion at ~50 ms together; glamour's `render.ToANSI` took 2.28 s because its blockquote rendering grows superlinearly with nesting depth (20 identical paragraphs: 9 ms at depth 0, 69 ms at depth 8, 668 ms at depth 33). The reader now caps the *displayed* blockquote depth at 3 (`capQuoteDepth`, `maxReaderQuoteDepth` in `internal/ui/reader.go`) before glamour runs: deeper lines are rewritten to three `>` markers, a blank quoted line is inserted where two capped lines had different original depths so they stay separate paragraphs, and fenced code is left alone. Beyond three `│` bars the levels were unreadable in a terminal anyway. Display only — `Model.openBody` (reply/forward/react quoting, `e` editor view, `O` browser view, `.eml` download) is untouched, and bodies nested ≤ 3 round-trip through `capQuoteDepth` unchanged. Lazy/incremental rendering was considered and rejected: the cost is in nesting depth, not length, so rendering the top first would still have stalled on scroll. Tests: `TestCapQuoteDepth_LimitsNesting`, `TestCapQuoteDepth_ShallowBodyUnchanged`, `TestCapQuoteDepth_DepthChangeKeepsParagraphBreak`, `TestCapQuoteDepth_FencedCodeUntouched`, `TestReader_DeepQuoteChainRendersFast` (`internal/ui/reader_quote_depth_test.go`).
+
+# 2026-10-05
+
+- **The folder window is the newest mail by arrival date, not the highest UIDs (#34)** — `FetchHeaders` picked its `inbox_count` window as the highest `n` UIDs. IMAP MOVE/COPY give a message a fresh, highest UID in the destination mailbox (RFC 9051 per-mailbox UIDs), so every mail bulk-moved *into* a folder — `I` approve on ToScreen, `:reset-toscreen`, `U` undo — landed above all real recent mail, filled the window, and pushed the recent mail below the cutoff where no display sort (`,m`) could bring it back. Only folders with more than `inbox_count` messages were affected, which is why a HEY-style Inbox of a dozen rows never showed it while a 12'000-mail legacy Inbox after its first screening did (reproduced on Hostpoint/Dovecot, so not an Infomaniak quirk; the demo's `moves.log` shows `ToScreen uid=273 → INBOX destUID=1397`). `FetchHeaders`, `FetchLatest` (`:everything`) and the per-folder search cap (`searchFolderCap`, was a literal 100) now narrow the window with one cheap `UID FETCH (UID INTERNALDATE)` and keep the `n` most recently received (`newestUIDsByInternalDate`, `internal/imap/client.go`); INTERNALDATE survives MOVE/COPY on every server tested, and the SORT extension is not used because Infomaniak does not offer it. Folders at or below `inbox_count`, and `inbox_count = 0`, take the old single-round-trip path unchanged, so a daily Inbox sees no new traffic. Verified on the live Hostpoint demo: a 10-row window returned April mail before, October mail after. Tests: `TestMem_FetchHeaders_WindowIsNewestByInternalDateNotUID`, `TestMem_FetchHeaders_FolderWithinLimitUnchanged`, `TestMem_FetchLatest_WindowIsNewestByInternalDateNotUID`, `TestMem_SearchFolder_CapIsNewestByInternalDateNotUID`.
+- **Load more: `j`, `d` or `ctrl+d` on the last row fetches the next `inbox_count` older emails** — Archive, Feed and other folders with more than `inbox_count` messages ended at the window; the only way further back was a bigger `inbox_count` in the config. Moving onto the last row with `j`/`down`/`d`/`ctrl+d` now shows "Loading more…" and appends the next page (`FetchMoreHeaders`: the newest-by-arrival messages whose UIDs are not listed yet, so a mail arriving between pages is neither duplicated nor skipped), re-sorts, keeps the cursor on its row and reports "Loaded N more · M emails" or "All M emails loaded". While a folder may hold more than the loaded rows, the bottom hint bar starts with "↓ more below (j/d at last row)" (`inboxHintBar`/`moreBelow`) — at the front, because the terminal clips that line and the existing "│ N loaded" tail is rarely visible — so the cue shows before reaching the bottom; a complete folder shows the plain bar as before. Cost of the new window on a 1'300–1'700-message folder (Hostpoint): about 30 ms more per load, nothing for folders within `inbox_count`. The extended list survives `R`, ↻ and tab switches for the session (`windowFor`, `folderWindow`), a folder that returned fewer rows than requested is marked complete and never re-fetched at the bottom (`folderComplete`), `G` only jumps, synthetic views (Search, Everything, Thread) never page, and `inbox_count = 0` (fetch all) is untouched. Tests: `TestMem_FetchMoreHeaders_SkipsLoadedAndPicksNewestRemaining`, `TestLoadMore_*` (`internal/ui/load_more_test.go`).
+
+# 2026-10-05
+
+- **`ctrl+u` pages up in the inbox list; `esc` clears marks** — `ctrl+d` got its vim
+  half-page alias on 09-30 but `ctrl+u` was still "clear all marks", so the matching
+  page-up habit did nothing useful. `ctrl+u` is now an alias for `u` in `updateInbox`
+  (`internal/ui/model.go`, shared `inboxPageUp`); `u` is unchanged. "Clear all marks"
+  moved to `esc`, as the first step of its existing back-one-level cascade (marks →
+  temporary view → filter/unread-only); the header hint reads `[N marked · esc to
+  clear]`. `ctrl+m` was considered as the pair to `m` but terminals send it as a
+  carriage return, which bubbletea reports as `enter`. Tests:
+  `TestInbox_CtrlUPagesUpLikeU`, `TestInbox_EscClearsMarks`,
+  `TestInboxHeaderMarkHintNamesEsc`.
+
+# 2026-10-03
+
+- **`make status` on the headless server now says whether screening actually works** — the old target only checked that the process existed, which is how a DNS outage on the server (Tailscale rewrote `resolv.conf`, no global nameserver configured) went unnoticed for 25 days while every one-minute cycle failed with `lookup imap.mail.hostpoint.ch ... server misbehaving` and no mail was screened. `status` (`scripts/headless-server/Makefile`) now prints the last three log lines and a verdict from the most recent cycle result: `OK: last screening cycle succeeded`, or `ERROR: last screening cycle FAILED:` with the error text and `failing since: <timestamp of the first error after the last success>`, exiting 1. It also exits 1 when the daemon is not running or the log file is missing (renamed/deleted under a running daemon). `make sync-headless` runs it after deploy instead of its own `ps` + `tail -20`. Verified on the FreeBSD server with BSD make against the live log, a synthetic failing log and an empty log; no Go code changed.
+
+# 2026-10-02
+
+- **0.10 audit fixes** — a pre-release audit of the instant-IMAP work found these; each is fixed with a pinning test.
+  - **A download never lands on another email** — `attachmentFetchedMsg` was matched by attachment index only, so `1` on mail A, then opening mail B, saved A's bytes under B's filename (and `<space> v a` could RSVP B's invite with A's data). The message now carries folder+UID from `fetchAttachmentCmd` and is dropped unless that email is still open. Tests: `TestLazyAttachment_StaleDownloadForOtherEmailIgnored`, `TestLazyAttachment_FetchCmdCarriesFolderAndUID`.
+  - **`E` on a large draft no longer attaches 0-byte files** — `continueDraft` wrote `nil` data for attachments the lazy fetch left on the server, then sent/re-saved them and moved the good original to Trash. It now downloads each server-side part first (`then: "draft"`), and `writeAttachmentsTemp` refuses an undownloaded attachment. Tests: `TestLazyAttachment_ContinueDraftDownloadsFirst`, `TestWriteAttachmentsTemp_RefusesServerSideAttachment`.
+  - **Lazy fetch keeps every small part** — the plan took the first text child as the only body: `mixed[text/plain, text/html]` rendered the plain part and missed spy pixels, an inline calendar first child showed "(no body)", inline `cid:` images under the mixed container lost their placeholder. `planLazy` now keeps the body root and every child ≤ 256 KB and drops only bigger ones; `reassembleKept` rebuilds a synthetic multipart so `parseBody` sees the original structure. A server that does not echo a section falls back to the full fetch. Tests: `TestMem_FetchBodyOf_PlainAndHTMLSiblings`, `TestMem_FetchBodyOf_InlineCIDSibling`, `TestMem_FetchBodyOf_CalendarFirstChild`, `TestLazy_PlanNilWhenEveryChildIsSmall`.
+  - **Marks made during a move survive its completion** — an optimistic `batchDoneMsg` cleared all marks, so `x`, `m m`, `x` hit the cursor row. Test: `TestOptimistic_MarksMadeDuringMoveSurviveCompletion`.
+  - **`U` waits for an in-flight move** — `U` right after `x` undid the previous operation (the new undo entry is pushed on completion). It now says "Move still in progress — wait for ↻ then undo". Test: `TestOptimistic_UndoWaitsForInFlightMove`.
+  - **A failing auto-screen MOVE no longer loops** — error → reload → auto-screen → error repeated without end (missing folder, quota). The error reload now skips auto-screen once (`skipAutoScreenOnce`). Test: `TestAutoScreen_ErrorDoesNotLoop`.
+  - **`I`/`O`/`F`/`P`/`$` on a row already in the target folder keep it** — the row vanished and came back on refresh although no MOVE runs. Test: `TestOptimistic_ScreenInInboxKeepsRow`.
+  - **A ↻ refresh landing during a body fetch is still a background refresh** — it was treated as a spinner reload (marks and `/` filter wiped, the other spinner ended early). `refreshing` alone decides now; spinner folder loads clear it. Test: `TestCache_RefreshLandingDuringBodyFetchKeepsMarksAndSpinner`.
+  - **The bg sync caches the Inbox without the rows it screens** — a Tab to Inbox showed rows being moved away. Test: `TestCache_BgInboxSnapshotExcludesScreenedRows`.
+  - **Header hint says `ctrl+u` clears marks** — `[N marked · U to clear]` pointed at undo. Test: `TestInboxHeaderMarkHintNamesCtrlU`.
+  - **`:screen` / `S` only on the Inbox tab; MOVE source is the email's folder** — `:screen` on ToScreen (or `S` in a Search view) MOVEd those UIDs out of INBOX, i.e. unrelated Inbox mail. Both refuse elsewhere, and `screenMove` carries `src`. Tests: `TestScreenCommand_RefusedOutsideInboxTab`, `TestAutoScreenPlan_UsesEmailFolderAsSource`.
+  - **Background sync honours empty lists and `auto_screen_on_load = false`** — on a fresh install the first 5-minute tick moved the whole Inbox to ToScreen. An Inbox load during a running sync no longer notifies (the sync notifies with real destinations). Test: `TestBgSync_SkipsScreeningWhenListsEmptyOrDisabled`.
+  - **Reply `·` survives list rebuilds** — `sendDoneMsg` now sets `Answered` in `m.emails` and the folder cache (`setAnsweredLocal`). Test: `TestReplyDotSurvivesListRebuild`.
+  - **Keyring warning no longer points at a non-existent `:set-password`** — it names the keyring service `neomd` and key `account/<name>/password`; the unused `internal/ui/password_prompt.go` is removed.
+  - **`?` help and keybindings doc list `:thread`, `:scan-spy-pixels` and `:recover`** (`internal/ui/keys.go`, regenerated with `make docs`).
+
+- **Large emails open instantly; attachments stay on the server until you press `1`–`9`** — opening a 6.7 MB mail (an .xlsx and a PDF) took seconds because the reader fetched the whole raw message (`BODY.PEEK[]`) and base64-decoded every attachment before drawing a line. The reader only needs the text parts. For a `multipart/mixed` message of 1 MB or more (`lazyBodyThreshold`), `FetchBodyOf` (`internal/imap/lazybody.go`) now fetches, in one FETCH, the top-level header, the body root (the first non-attachment text/multipart child — the text/HTML tree with inline signature images) and any sibling part under 256 KB (calendar invites, small images), reassembles them into a synthetic multipart message and parses it with the unchanged `parseBody` (plan refined in the audit-fix entry above: every child ≤ 256 KB is kept, only bigger ones stay on the server). Larger siblings become `Attachment` entries with filename, type, size and IMAP section path but `Data == nil`; the reader lists them with their size, and `1`–`9` (or `<space> v` on an invite) first shows "Downloading big.pdf (2.1 MB)…", fetches that one part (`FetchPart`, decoded), then opens it exactly as before (`attachmentFetchedMsg`). The BODYSTRUCTURE needed for this is the one `FetchHeaders` already fetches, now kept on `imap.Email`, so no extra round trip. Small mail, non-mixed mail and everything that wants the raw message (`.eml` download, headers view, daemon) take the full fetch unchanged; draft reopen (`E`) uses the lazy body and downloads every server-side attachment before writing the temp files (see the audit-fix entry above). Tests: `TestLazy_PlanPicksBodyRootAndSiblings`, `TestLazy_ReassembleKeptKeepsTopHeadersAndParts`, `TestMem_FetchBodyOf_LargeMixedSkipsBigAttachment`, `TestMem_FetchBodyOf_SmallMessageIsFullFetch`, `TestIntegration_LazyBodyOnRealServer`, `TestLazyAttachment_*`
+- **`n` read/unread toggle flips at once; no more lag when toggling a run of emails** — after the instant-IMAP work a cached folder switch leaves a refresh fetch in flight on the primary connection, and every `n` STORE queued behind it; worse, when that refresh landed it carried the pre-toggle `\Seen` flag, so the row stayed (or snapped back to) its old state until the STORE's reply arrived. Holding `n` over a few rows looked like lag. The flag is now flipped locally the moment `n` is pressed (list and cached snapshot, `setSeenLocal`), the cursor moves on, and the STORE runs behind the list (`toggleSeenCmd(ops []seenOp)`, plan captured by value). A `pendingSeen` set (account+folder+UID → wanted state) overlays every fetch result that lands while a STORE is in flight (`withPendingSeen`, applied in `emailsLoadedMsg`, `bgInboxFetchedMsg` and the prefetch handler — the latter now also applies `withoutPending`), so a refresh cannot undo the toggle. `toggleSeenDoneMsg` releases the pending state; on an error only the ops that never reached the server are reverted and the error is shown in the status line. Marked-batch `n` no longer hides the list behind a spinner and no longer reloads the folder. Server-side STOREs are unchanged. Tests: `TestToggleSeen_FlipsImmediatelyNoSpinner`, `TestToggleSeen_RefreshLandingMidFlightKeepsFlag`, `TestToggleSeen_DoneClearsPendingAndKeepsFlag`, `TestToggleSeen_ErrorRevertsAndShowsStatus`, `TestToggleSeen_BatchMarkedFlipsAllNoSpinner`
+
+# 2026-09-30
+
+- **`ctrl+d` pages down in the inbox list** — muscle memory from vim kept sending
+  `ctrl+d` at the inbox, where it did nothing (the reader viewport and the `?` help
+  overlay already accepted it). `ctrl+d` is now an alias for `d` in `updateInbox`
+  (`internal/ui/model.go`); `d` is unchanged. `ctrl+u` stays "clear all marks", so
+  page-up remains plain `u`. Test: `TestInbox_CtrlDPagesDownLikeD`.
+- **Opt-in IMAP timing trace (`NEOMD_IMAP_TRACE=1`)** — every "neomd feels slow" report
+  used to require guessing which IMAP call was slow. Setting `NEOMD_IMAP_TRACE=1` now
+  makes every public `internal/imap` operation (`FetchHeaders`, `FetchHeadersByUID`,
+  `SearchUIDs`, `FetchUnseenCounts`, `FetchBody`, `MoveMessage`, `ExpungeAll`,
+  `searchFolder`, `MarkSeen`, `MarkUnseen`) append a `<RFC3339Nano> <op> <ms>ms` line to
+  `~/.cache/neomd/imap-trace.log` (`imap.SetTracePath`/`trace()` in new
+  `internal/imap/trace.go`, `config.IMAPTracePath()` next to `moves.log`, enabled in
+  `cmd/neomd/main.go` right after `config.Load`). Off by default: lazy `defer
+  trace(start, format, args...)` formatting means zero allocation, zero file I/O when
+  disabled. This is how every number in this entry was reproduced. Tests:
+  `TestTrace_WritesLineWhenEnabled`, `TestTrace_NoopWhenDisabled`,
+  `TestIMAPTracePath_NextToMovesLog`.
+- **Pipelined SELECT/STATUS; MOVE no longer forces a re-SELECT** — every folder switch
+  paid for SELECT, UID SEARCH and FETCH as three fully serial round trips, then four more
+  serial STATUS calls for tab counts; every MOVE in a batch re-SELECTed the mailbox it
+  was already in. go-imap v2 sends a command as soon as it's called and only blocks in
+  `Wait()` (RFC 9051 §5.5 permits pipelining commands that don't depend on each other's
+  result), so `beginSelect`/`endSelect` (`internal/imap/client.go`) now send SELECT and
+  the following UID SEARCH/UID FETCH back-to-back in `FetchHeaders` (3→2 round trips),
+  `SearchUIDs` and `FetchHeadersByUID` (2→1) and `searchFolder` (2→1 per folder — 11
+  fewer round trips on `space /` across every folder); a failed SELECT drains the
+  pipelined response so the connection stays usable for the next call.
+  `FetchUnseenCounts` fires all STATUS commands before waiting on any (4→1). `MoveMessage`
+  no longer clears `selectedMailbox` after a successful MOVE — RFC 9051 §6.4.8 says the
+  source mailbox stays selected and every neomd operation afterwards is UID-addressed, so
+  sequence-number shifts from the server's untagged EXPUNGE can't misaddress anything
+  (10 marked emails: 20→11 round trips). No server-side operation changed, only when
+  responses are awaited. A failed SELECT now also clears the cached selection
+  (`TestMem_FailedSelectClearsCachedSelection`). Pinned by a new in-memory IMAP server harness
+  (`internal/imap/memserver_test.go`, `imapserver/imapmemserver` on loopback TLS) and live
+  integration tests. Tests: `TestMem_FetchHeaders_MissingMailboxKeepsConnectionUsable`,
+  `TestMem_FetchHeaders_SecondCallSkipsSelect`, `TestMem_FetchUnseenCounts`,
+  `TestMem_MoveMessage_KeepsSelectionAndBatchWorks`,
+  `TestIntegration_PipelinedFetchMatchesSearch`, `TestIntegration_MoveWithoutReselect`.
+- **A second IMAP connection per account for background housekeeping** — tab counts, the
+  5-minute sync, VIP folder polls, spy-pixel scans, the overdue-scheduled check and the
+  new prefetch (below) used to share the same mutex-guarded connection as everything the
+  user does, so background work queued behind — and in front of — the user's next
+  keypress. `cmd/neomd/main.go` now builds a second `*imap.Client` per account
+  (`bgClients`, same config, nil for `imap_disabled` accounts); `Model.bgImapCli()`
+  returns it for the active account and falls back to `imapCli()` when nil, so every
+  existing nil-client rule still holds. Everything the user triggers directly (folder
+  load, body fetch, move, delete, screen, flags, search, undo, and the auto-screen MOVEs
+  that follow an Inbox load) stays on the primary connection so a user's consecutive
+  actions stay serial and predictable. While the 5-minute sync is mid-cycle
+  (`bgSyncInProgress`), an Inbox load skips its own auto-screen pass so the sync's MOVEs
+  and a concurrent load's MOVEs can't race on the same mail. Both connections lazily open
+  on first use and are closed on exit; two connections per account is well inside every
+  provider's limit. Tests: `TestBgImapCli_FallsBackToPrimaryWhenNil`,
+  `TestBgImapCli_NilWhenEverythingDisabled`, `TestInboxLoadSkipsAutoScreenWhileBgSyncRuns`.
+- **Optimistic list updates for delete/archive/move/screen — the list never hides**
+  — `x`/`A`/`B`/`M*`/`I O F P $` and auto-screen used to set `loading = true` (spinner,
+  list hidden), run the MOVEs, then reload the folder and tab counts — up to `2N + 7`
+  round trips the user waited through before seeing the list again. A new
+  `removeFromList` (`internal/ui/model.go`) drops the targeted rows from the visible
+  list and the folder cache immediately, clears marks, and rebuilds the list so the
+  cursor lands on the same folder+UID as before, or on the next row when that email
+  itself was removed — the same rule a normal reload already followed
+  (`TestReloadKeepsCursorOnSameEmail`, CHANGELOG 2026-09-18). The **same**
+  `batchMoveCmd`/`batchScreenerCmd` server calls run afterwards, unchanged in count,
+  order or audit-log lines. `batchDoneMsg`/`autoScreenDoneMsg` pick the redraw path with
+  `optimistic := !m.loading`: success shows "Moved."/"Screened N", pushes undo entries,
+  and triggers a *background* refresh of the active folder (`refreshActiveFolderCmd`,
+  header `↻`) instead of a spinner reload; any error sets `loading = true` and does a
+  full reload from the server with the error in the status line, keeping partial undo
+  info — the optimistic removal is never trusted past an error. `u` undo, `X`,
+  toggle-seen, delete-all and `:screen` keep the non-optimistic spinner-reload path
+  unconditionally. Screener sender-expansion (one unmarked ToScreen row screens in every
+  queued mail from that sender) is mirrored locally by removing every loaded row with
+  the same `normalizedSender`. Bulk progress (`bulkProgress`) now renders in the status
+  line while the list stays visible instead of in the hidden-list spinner branch.
+  Review fixes: a refresh already in flight when a row was removed used to put it back
+  until the MOVE finished — `removeFromList` now records each row in `pendingRemoval`,
+  `optimisticRemove`/`releaseOnDone` tag the MOVE's done message with exactly those keys,
+  and fetch results are filtered (`withoutPending`) until then. On error the source
+  folders' trimmed snapshots are dropped (an `x` in Inbox followed by a Tab no longer
+  leaves Inbox's cache missing the row), and an error inside a Search/Thread/… view
+  leaves that view and reloads the tab folder instead of keeping a trimmed list with no
+  reload. The auto-screen MOVE plans capture `(uid, dst)` by value
+  (`autoScreenPlan`): the background sync read `mv.email.UID` through a pointer into the
+  cached Inbox slice, which a cache-hit Tab re-sorted in place — the MOVEs could hit the
+  wrong messages (and it was a data race); the background Inbox snapshot is now cached
+  as a copy too. Tests:
+  `TestOptimistic_LateRefreshDoesNotResurfaceRemovedRow`,
+  `TestOptimistic_ErrorReleasesPendingRemoval`,
+  `TestOptimistic_ErrorDropsOriginFolderCache`,
+  `TestOptimistic_ErrorInSearchViewReloadsTabFolder`,
+  `TestAutoScreenPlan_CapturesUIDsByValue`, `TestCache_BgInboxSnapshotIsACopy`,
+  `TestOptimistic_DeleteRemovesRowImmediately`,
+  `TestOptimistic_BatchDoneSuccessRefreshesInBackground`,
+  `TestOptimistic_BatchErrorReloadsAndKeepsPartialUndo`,
+  `TestOptimistic_ScreenInToScreenRemovesSameSender`,
+  `TestOptimistic_ScreenWithMarksRemovesOnlyTargets`.
+- **Per-folder cache with a visible `↻` refresh, plus startup prefetch** — switching
+  tabs (`Tab`, `gk`, …) used to always spinner-load the folder from the server, even for
+  a folder shown seconds ago. A new `folderCache` (keyed by account name + IMAP folder
+  name, `cacheKey`) is served instantly by `loadActiveFolder` on a cache hit — the list
+  redraws at once, `refreshing = true`, and the same fetch fires behind it; the header
+  shows `↻` until it lands. `emailsLoadedMsg` now carries the account name, always
+  writes the snapshot into the cache, and is applied to the visible list only when the
+  folder **and** account are still the active ones — a late result for a folder the user
+  already left is cached, never shown, closing a latent race that existed even before
+  this change. Synthetic off-tab views (Search, Everything, Thread, Sender, Merged: …)
+  are never overwritten by a stale folder result underneath them; fixing that guard
+  surfaced a real, separate bug where `:go-spam` didn't set `offTabFolder`, so it now
+  sets `offTabFolder = "Spam"` like every other off-tab command. `R` always bypasses the
+  cache (hard refresh); `u` undo and every error path do too. A background prefetch
+  (`prefetchFoldersCmd`, `prefetchList`) runs once per session after the first folder
+  load, on the background connection only, filling the cache for every tab folder
+  (ToScreen first) so even the *first* `Tab` of a session is instant; it never touches
+  the visible list, and it skips a folder if a fresher load already landed for it or the
+  active account changed mid-cycle (`bgInboxFetchedMsg` now carries the account too).
+  Kill switch: `[ui] instant_folder_switch = true` (default); `false` restores today's
+  spinner-on-every-switch behavior while Layers 1–3 stay active. Off-tab views (Search,
+  Everything, Thread, Sender, Merge, Drafts, Spam) are not cached themselves.
+  Review fixes: `ctrl+a` from a Search/Thread/… view kept the old account's rows on
+  screen, actionable against the new account's client — account switch, `<space>N`,
+  `g<x>` and tab clicks now leave the synthetic view completely, and `ctrl+a` resets
+  the prefetch flag so the new account's tabs are warmed. A background refresh no longer
+  wipes marks (kept for rows still present) or the `/` filter. A failed fetch of the
+  folder just switched to (new `folderErrMsg` with folder+account; generic `errMsg`
+  unchanged for other senders) no longer leaves the previous folder's rows under the new
+  header, and a stale failure for another folder is ignored. Tests:
+  `TestCache_AccountSwitchLeavesSyntheticView`, `TestCache_LeaderFolderChordLeavesSearchView`,
+  `TestCache_AccountSwitchCapturesNewAccount`, `TestCache_BackgroundRefreshKeepsMarksAndFilter`,
+  `TestCache_FolderFetchErrorClearsPreviousFolderRows`,
+  `TestCache_SwitchToCachedFolderIsInstant`, `TestCache_SwitchToUncachedFolderShowsSpinner`,
+  `TestCache_LoadedResultIsCachedAndShownOnlyForActiveFolder`,
+  `TestCache_LateResultForOtherFolderIsCachedNotShown`, `TestCache_KeyedByAccount`,
+  `TestUIConfig_InstantSwitchDefaultsTrue`, `TestPrefetch_ListStartsWithToScreenAndSkipsCachedAndActive`,
+  `TestPrefetch_MsgFillsCacheOnlyAndChains`, `TestPrefetch_ScheduledOnceAfterFirstLoad`,
+  `TestBgSync_SkipsAutoScreenWhenAccountChanged`.
+
+**Round trips per action, before vs. after** (by construction from the design above —
+what a trace of each action shows, not a millisecond measurement). Round trips listed
+after the redraw run asynchronously on the same primary connection the next user action
+uses; only tab counts, the 5-minute sync, spy scan and prefetch use the second
+connection:
+
+| Action | Today | RTTs before redraw (then async on primary) | Perceived |
+|---|---|---|---|
+| Folder switch, seen before | 3 (+4 queued) | 0 (2 behind the list, primary connection) | instant |
+| Folder switch, first time | 3 (+4 queued) | 2 (+1 on bg connection) | ~2 RTT |
+| Screen-in `I` on one row | ~10 | 0 (3 behind the list, primary connection) | instant |
+| Delete/archive/move N rows | 2N + 7 | 0 (N behind the list, primary connection) | instant |
+| Open email | 1–2 | 1–2 | unchanged |
+| Search across folders | 2 per folder | 1 per folder | halved |
+
+To measure your own provider and session instead of relying on the numbers above, set
+`NEOMD_IMAP_TRACE=1` (see Configuration → `NEOMD_IMAP_TRACE`) and count trace lines per
+keypress as a rough indication of IMAP activity.
+
+# 2026-09-28
+
+- **Reply quote header shows when the original was written** — `r`, `ctrl+r` and emoji reactions used to quote the original as `> **Simon <simon@example.io>** wrote:`, with no way to tell from the quote when that mail arrived. The attribution now reads `> **Simon <simon@example.io>** wrote on 28 Sep 2026 at 13:29:` in local 24h time. When the email carries no parseable `Date` (zero time) the old plain `wrote:` form is kept, so nothing renders as `wrote on 1 Jan 0001`. Forward is unchanged (it already has its own `Date:` line). `buildQuotedReply`, `ReplyPrelude` and `ReactionBody` in `internal/editor/editor.go` take the original `time.Time`; both callers in `internal/ui/model.go` pass `e.Date.Local()`. A 12h/AM-PM option is on the roadmap, not in this change. Tests: `TestReplyPreludeIncludesDate`, `TestReactionBodyIncludesDate`
+
+# 2026-09-27
+
+- **Raw mail headers (`<space>h`) and one-key unsubscribe (`<space>u`) in the reader** — a user screening mail wanted to check whether a message came through an old mailing list (`List-Id`, `List-Unsubscribe`, `Precedence`, `Received` chain) and found no way to see headers from inside neomd. `<space>h` now fetches the raw source once (the same FETCH as the `.eml` download, cached per open email) and cycles the viewport mutt-style: first a curated set (From, Reply-To, To, Cc, Subject, Date, Message-ID, threading ids, Return-Path, Precedence, Auto-Submitted, X-Mailer, Authentication-Results, every `List-*` and `X-Spam*` header — `weedHeaders`, mutt's "weed" list), a second press shows the full raw block (Received chain, DKIM, MIME), a third restores the rendered email. `<space>u` reads the RFC 2369 `List-Unsubscribe` header: an https entry opens in `$BROWSER`, a `mailto:` entry prefills a compose (subject from the URL, default `unsubscribe`), and when the header is missing it falls back to the first body link whose text or URL mentions "unsubscribe" — the footer link most newsletters carry. Plain `http` entries are ignored. Status line reports what was opened; nothing found shows a red status. Helpers in new `internal/ui/unsubscribe.go`; chord wiring, `rawHeadersMsg`, `toggleHeadersView`, `unsubscribe` in `internal/ui/model.go`; help rows in `internal/ui/keys.go`. Tests: `TestHeaderBlockStopsAtFirstBlankLine`, `TestHeaderValueFindsCaseInsensitiveAndUnfolds`, `TestWeedHeadersKeepsKeyHeadersInFixedOrderWithFolding`, `TestParseListUnsubscribeSplitsHTTPSAndMailto`, `TestParseListUnsubscribeIgnoresPlainHTTP`, `TestParseMailtoSplitsAddressAndSubject`, `TestFindUnsubscribeLinkMatchesTextOrURL`
+
+- **`$EDITOR` with arguments works (Omarchy's `omarchy-launch-editor --inline`, `code --wait`, `emacsclient -t`, `nvim -u ~/mail.lua`)** — issue #32: the whole `$EDITOR` value was passed to `exec.Command` as the program name, so any value carrying arguments failed with `exec: "nvim --clean": executable file not found in $PATH` — compose, reply, reply-all, forward, continue-draft (`E`) and read-only view (`e`) all broke, and Omarchy sets such a value by default. All seven call sites now go through one helper, `editor.Command(args...)` (`internal/editor/editor.go`): the value is split on whitespace; a value containing shell syntax (quotes, `$`, `~`, `|`, …) is run via `sh -c '<EDITOR> "$@"'` with the file appended, the way git runs `GIT_EDITOR`; empty falls back to `nvim` as before. A plain `EDITOR=nvim` behaves byte-for-byte as it did. Tests: `TestCommand_SplitsEditorArguments`, `TestCommand_DefaultsToNvim`, `TestCommand_QuotedEditorGoesThroughShell`
+
+# 2026-09-18
+
+- **Safety: move audit log, cursor follows the email across reloads, undo never guesses** — investigating a report that deleting one Inbox mail also removed a related one found no code path that moves an unselected mail (`x`/`A`/`M*` act on exactly the marked or cursor UIDs; the screener only moves senders on its lists; the list renders every loaded mail), but it did find three hazards. (1) After every folder reload — including the one that follows a delete — the list kept the cursor *index*, so when rows shifted the highlighted row silently became a different email and the next key acted on it; the cursor now follows the same folder+UID (`reselectEmail`, `internal/ui/model.go`). (2) When a server sends no UIDPLUS COPYUID, `MoveMessage` assumed the destination UID equalled the source UID, so `U` could have moved an unrelated message out of Trash; it now returns 0 and undo skips such moves with a clear status (`undoableMoves`). (3) There was no record of what neomd moved: every MOVE, failed MOVE and EXPUNGE from the TUI, the headless daemon and the CLI is now appended with a timestamp to `~/.cache/neomd/moves.log` (`imap.SetAuditLogPath`, `config.AuditLogPath`), so the next "where did my mail go" is answered by `grep uid=… ~/.cache/neomd/moves.log`. Tests: `TestReloadKeepsCursorOnSameEmail`, `TestUndoableMovesSkipsUnknownDestUID`, `TestAuditLog_AppendsLines`
+- **Quoted signature logos keep their size in replies** — a signature `<img … width="70" height="70">` (a 192px PNG shown at 70px) lost its size when the previous mail was converted to markdown for quoting, so every reply and the whole quoted history showed the logo at full size. The HTML→markdown converter now carries an explicit width/height (attribute or inline `px` style) as the image title, `![Logo](url "70x70")` (`sizedImageRule`, `internal/imap/client.go`), and `render.ToHTML` turns that marker back into `width`/`height` attributes (`applyImageSizeTitles`); the marker is plain CommonMark, so the editor, drafts and the plain-text `[Image: …]` placeholder are unaffected, and the size sticks after the image is embedded as `cid:`. Tests: `TestHTMLToMarkdown_PreservesImageSizeAsTitle`, `TestToHTML_ImageSizeTitleBecomesWidthHeight`, `TestBuildMessage_SizedImageKeepsWidthHeightAfterEmbedding`
+- **Reopened drafts no longer carry `^M` line endings; browser view (`O`) shows umlauts correctly for Outlook mail** — (1) a draft saved with an attachment is multipart, and reopening it (`E`) returned the body with the wire `\r\n` endings, so every line showed `^M` in nvim and the body drifted on each re-save; the `X-Neomd-Draft` branch of `parseBody` now undoes only the line endings and stays otherwise byte-exact — the `![](path)` image reference keeps its spot and the attachment its name and bytes (`internal/imap/client.go`). (2) `O` wrote the received HTML, already transcoded to UTF-8, to a temp file while leaving the sender's `<meta … charset=Windows-1252>` in place, so the browser misdecoded every non-ASCII character ("Späti" → "SpÃ¤ti"); `SanitizeForBrowser` now removes any charset declaration and injects `<meta charset="utf-8">` before the CSP (`internal/render/html.go`); ASCII-only mail and neomd's own preview HTML are unchanged. Tests: `TestHardening_DraftRoundTrip_InlineImageAndAttachment`, `TestSanitizeForBrowser_ForcesUTF8Charset`
+- **Replies no longer swap quoted images for the new one; quoted inline images are re-embedded; plain-text part stops leaking local paths** — three related defects in the send pipeline. (1) Every message named its first inline image `img0@neomd`, so a reply that added a picture hijacked every `cid:img0@neomd` image quoted from earlier neomd mails in the thread — all of them rendered as the new picture, in every client. Content-IDs are now `img<n>.<random>@<sender domain>` (`newCID` in `internal/smtp/sender.go`) and foreign `cid:` references in the HTML are never touched. (2) Quoting a mail whose HTML embedded `cid:` images carried dangling references (the parts were never re-attached), so quoted pictures were broken; reply and forward now write the open email's referenced inline parts to `~/.cache/neomd/inline/<folder>-<uid>/` and point the quoted markdown at those files (`Model.quotedBody` → `materializeInlineImages`, `internal/ui/inline_images.go`), so the normal local-image pass embeds them again under fresh ids — this also repairs Gmail-originated `cid:ii_…` images in the quote. (3) The text/plain alternative contained `![](</home/<user>/…/screenshot.png>)` and raw `![name](cid:…)` markdown, exposing the sender's home directory; images are now `[Image: name]` in the plain part (`render.ImagePlaceholdersForPlainText`, send path only — drafts keep the raw markdown). Tests: `TestBuildMessage_InlineCIDsAreUniquePerMessage`, `TestBuildMessage_QuotedForeignCIDIsNotHijacked`, `TestMaterializeInlineImages_*`, `TestImagePlaceholdersForPlainText`, `TestBuildMessage_PlainPartHasNoImagePaths`; hardening test `TestHardening_RoundTrip_InlineImagePlusAttachment` updated to the unique-id scheme
+- **Non-UTF-8 sender names decode correctly (Outlook `=?Windows-1252?Q?…?=`), and outgoing address headers are always 7-bit** — replying to a mail whose display names were RFC 2047-encoded in Windows-1252 (typical for Outlook) showed the raw `=?Windows-1252?Q?Simon_Sp=E4ti?=` text in the inbox, the reader and the reply-all recipients. Root cause: go-imap decodes ENVELOPE names and subjects through an optional `WordDecoder`; neomd never set one, so Go's default decoder (UTF-8 / ISO-8859-1 / US-ASCII only) failed and go-imap returned the encoded text unchanged — the `go-message/charset` import only covered bodies. Every connection now uses `clientOptions()` with a charset-aware `envelopeWordDecoder` (`internal/imap/client.go`), so Windows-125x, ISO-8859-x, KOI8, Shift_JIS, GBK, … names and subjects decode on every platform. Second, related gap: a display name that arrives already decoded (envelope, contacts, typed) was written into From/To/Cc as raw non-ASCII bytes, which RFC 5322 forbids and some servers reject; `buildMessageWithBCC` now runs all address fields through `encodeAddressNames` (`internal/smtp/sender.go`) — non-ASCII names are RFC 2047-encoded via `net/mail`, addresses untouched, all-ASCII fields (including already-encoded words) unchanged byte-for-byte, SMTP RCPT TO unaffected. Tests: `TestEnvelopeWordDecoder_DecodesWindows1252`, `TestClientOptions_SetWordDecoder`, `TestEncodeAddressNames`, `TestBuildMessage_HeadersAre7BitWithNonASCIINames`
+- **`h` goes back one level in the inbox list, like in the reader** — closing a temporary view (`Search`, `Thread`, `Sender`, `Merged: …`) or clearing the `/` filter and `z` unread-only used to need `esc`; `h` now does the same (it still pages up when nothing is open, as before). `case "esc", "h"` in `updateInbox`, `internal/ui/model.go`; help row in `internal/ui/keys.go`. Test: `TestInboxHKeyClosesOffTabView`
+- **Merge threads (HEY-style) — collapse unrelated emails into one titled row** — recurring mail that shares no reply headers (mailer-daemon bounces, notification floods) can now be merged by hand: mark with `m`, run `:merge <title>`, and the members collapse into a single `≡ <title> (n)` row in every folder they sit in, sorted by the newest member, with `N`/`·` aggregated. Enter, `l`, or `T` on that row opens all members across Inbox/Sent/Archive/Waiting/Someday/Scheduled/Work in a `Merged: <title>` off-tab (`esc` closes) — replies to a merged mail come along, both in the list (the automatic thread is absorbed) and in the view (IMAP search on `In-Reply-To`). `:merge-sender <title>` additionally stores the cursor email's address as a rule so future mail from that sender joins automatically on folder load. `:unmerge` dissolves a merge from its `≡` row (y/n) or removes the cursor email inside an opened merge. Bulk keys (`A`, `x`, `M*`, `n`, screener keys) and `m` act on every member of a collapsed row; undo works as for any multi-move. Merges are stored by Message-ID in `<config dir>/merges.toml` (new `internal/merge` package, `Config.MergesFile`), so they survive folder moves and can live in dotfiles. `T` on a normal email, automatic threading, and the reader are unchanged. New `collapseMerges` (`internal/ui/thread.go`), `SearchByMessageIDs` (`internal/imap/client.go`), commands in `internal/ui/cmdline.go`; colon-commands can now take arguments (`runArgs`). Tests: `TestCollapseMerges_*`, `TestRenderCollapsedMergeRow`, `TestSetEmails_CollapsesMembers`, `TestTargetEmails_ExpandsCollapsedRow`, `TestMarkKey_TogglesAllMembers`, `TestApplySenderRules_PersistsMatches`, `TestHandleMergeResult_*`, `TestMergeCmd_*`, `TestMergeSenderCmd_*`, `TestUnmergeCmd_*`, `TestTitleCompletions`, `TestSplitCmdInput`, `TestMatchCmds_IgnoresArguments`, `TestMessageIDCriteria`, `TestOrCriteria`, `TestLoad_SetsMergesFileNextToConfig`, `internal/merge/store_test.go`
+- **Merge threads: review fixes — removals stick, off-tab views stay expanded, non-ASCII titles, bounded merge search** — four issues found in the final review of the feature above: (1) `:unmerge` on a single member of a merge that carries a **sender rule** was undone on the next folder load, because the rule matched the same address again; removed Message-IDs are now recorded in the merge's `excluded` list in `merges.toml` (`merge.Store.Remove`/`IsExcluded`, skipped by `applySenderRules`) and an explicit `:merge` clears the exclusion. (2) Merged rows collapsed inside the `T` conversation and the `V` sender view, hiding the individual messages those views exist to show — collapsing is now gated to folder views and the `Search`/`Everything` off-tabs (`applyFilter`). (3) The `:` command line dropped non-ASCII input, so `:merge Rückläufer` was untypable — the insert branch now counts runes, not bytes; `right`/`ctrl+p` no longer wipe an already-typed title. (4) Opening a merge sent every stored Message-ID in one IMAP SEARCH; it is now capped at the 100 most recently added members (`mergeSearchMaxIDs`), matching the per-folder result cap of `searchFolder`. Tests: `TestRemove_ExcludesFromSenderRule`, `TestRemove_NoRuleDoesNotExclude`, extended `TestApplySenderRules_PersistsMatches`, `TestApplyFilter_NoCollapseInThreadView`, `TestCmdLine_AcceptsUnicodeRune`
+
+# 2026-09-14
+
+- **Reply from the Sent folder goes to the people you wrote to, not to yourself** — `r` / `ctrl+r` on a mail in Sent used to treat you (the sender) as the reply target, so following up on your own last message meant retyping every address. Now, in the Sent tab, `r` sets To = the mail's original `To`, and `ctrl+r` additionally sets Cc = the original `Cc` minus every own address (logins, account Froms, sender aliases). From is still auto-selected from the address you originally sent with (`matchFromForReply`). Behaviour in every other folder is unchanged (Reply-To/From → To, To+Cc → Cc). Recipient computation extracted into `replyRecipients` in `internal/ui/model.go`; help text for `r`/`ctrl+r` updated. Test: `TestReplyFromSentFolderTargetsOriginalRecipients`
+
 # 2026-09-09
 
 - **Attachments are bounded and safely materialized** — local compose files must be

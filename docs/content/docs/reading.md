@@ -10,7 +10,7 @@ Emails are rendered as styled Markdown in the terminal using [glamour](https://g
 | Key | Action |
 |-----|--------|
 | `j` / `k` | scroll line by line |
-| `space` / `d` | page down / up |
+| `d` / `u` (or `ctrl+d`/`ctrl+u`, `f`/`b`) | page down / up |
 | `gg` | jump to top of email |
 | `G` | jump to bottom of email |
 | `h` / `q` / `esc` | back to inbox |
@@ -28,7 +28,7 @@ Emails are rendered as styled Markdown in the terminal using [glamour](https://g
 
 Remote images appear as `[Image: alt]` placeholders, keeping the reading experience clean and fast. To see images, press `O` to open in your browser.
 
-**Inline / attached images** (e.g. screenshots pasted into an email) are listed in the reader header: `Attach:  [1] screenshot.png  [2] report.pdf`. Press `1`–`9` to download to `~/Downloads/` and open with `xdg-open`. Inline images also show `[Image: filename.png]` placeholders at their position in the body text.
+**Inline / attached images** (e.g. screenshots pasted into an email) are listed in the reader header: `Attach:  [1] screenshot.png  [2] report.pdf`. Press `1`–`9` to download to `~/Downloads/` and open with `xdg-open`. Inline images also show `[Image: filename.png]` placeholders at their position in the body text. On mail ≥ 1 MB, an inline image over 256 KB stays on the server until downloaded this way — see [Attachments](#attachments) below.
 
 When you press `O` to open in the browser, inline images are extracted from the email and saved to temp files. The HTML `cid:` references are rewritten to `file://` paths so the browser renders them — including images sent by other people (not just your own).
 
@@ -63,9 +63,9 @@ Links in emails are automatically numbered inline where they appear in the body.
 
 Press `space` then a digit (`1`–`9`, `0` for 10th) to open the link in `$BROWSER`.
 
-- Up to 10 links per email, deduplicated by URL
+- Up to 99 links per email, deduplicated by URL — `1`–`9`/`0` open the first ten; `space` then `l` then two digits (`l11`–`l99`) opens the rest
 - Numbers appear inline so you can see them while reading without scrolling
-- If an email has no links, `space` works as page-down as usual
+- `space` is always the reader's leader key (see [Navigation](#navigation)) — it never pages the body; use `d`/`u` for that
 
 ## Attachments
 
@@ -81,6 +81,8 @@ Downloads use a sanitized basename, are created with owner-only permissions, and
 overwrite an existing file. Executable extensions and files whose contents do not match a
 known safe extension are saved for inspection but are not auto-opened; decoded attachment
 parts are bounded at 25 MiB.
+
+On mail ≥ 1 MB total, attachments over 256 KB stay on the server until you ask for them - the header still lists them with their size, and pressing `1`–`9` (or the `<space> v` calendar chord for a large invite) shows `Downloading <name> (<size>)…` while it fetches, then opens as usual. The size shown is the encoded transfer size (roughly 1.37× the actual file for base64-encoded attachments). Smaller mail, and parts that were fetched with the body, behave exactly as before. `E` (continue draft) on a large draft or queued send-later message downloads any missing parts first, before opening the editor.
 
 ## Download Raw Email Source
 
@@ -160,6 +162,55 @@ Threads display with a Twitter-style vertical connector line:
 Or as image:
 ![neomd](/images/reader-threaded.png)
 
+## Merge Threads
+
+Automatic threading only groups real replies. Some mail never threads yet arrives in floods — mailer-daemon bounces, CI notifications, "your invoice is ready" — and each one takes an inbox row. Like [HEY's merge threads](https://help.hey.com/article/780-merge-threads), neomd lets you merge any emails you choose into one titled group.
+
+**Merge:** mark emails with `m` (or just sit on one), then
+
+```
+:merge Bounces
+```
+
+The members collapse into a single row wherever they live:
+
+```
+  4 N  ≡ 09:12    Mailer-Daemon         Bounces (12)                   (3.1K)
+```
+
+- `≡` marks a merged row; the subject shows the title and how many members sit in this folder
+- `N` shows if any member is unread, `·` if you replied to any of them
+- The row sorts by its newest member, like a normal thread
+- Replies to a merged email are absorbed automatically — the whole reply thread joins the row
+
+**Open:** press Enter, `l`, or `T` on the row to see every member across Inbox, Sent, Archive, Waiting, Someday, Scheduled, and Work in a temporary `Merged: <title>` tab (with `[Folder]` prefixes). Enter reads one email as usual; `esc` returns. Opening a merge searches the 100 most recently added members; very large groups show a partial view.
+
+**Act on all members at once:** archive (`A`), delete (`x`), move (`M…`), toggle read (`n`), and the screener keys applied to a merged row apply to every member in the current folder. `m` marks or unmarks all of them. Undo (`U`) works as for any bulk move.
+
+**Auto-merge future mail from a sender:**
+
+```
+:merge-sender Bounces
+```
+
+Same as `:merge`, plus the cursor email's sender address is stored as a rule. Every folder load then adds new mail from that sender to the group.
+
+**Unmerge:**
+
+- `:unmerge` on a `≡` row asks `y/n` and dissolves the whole merge (rule included).
+- `:unmerge` inside an opened merge removes only the cursor email.
+
+**Where it lives:** `merges.toml` next to your `config.toml` (demo configs get their own). Members are stored by Message-ID, never by UID, so a merge survives moving its emails between folders. The file is plain TOML and safe to keep in dotfiles:
+
+```toml
+[[merges]]
+title = "Bounces"
+sender = "mailer-daemon@"       # optional, case-insensitive substring of the From address
+message_ids = ["<a@x>", "<b@y>"]
+```
+
+`T` on a normal (non-merged) email still opens the conversation view described below.
+
 ## Sender View
 
 Press `V` on any email in the inbox list to see **every email from that sender, across every folder** — not just the current one. neomd extracts the sender's address and runs an IMAP `from:` search across Inbox, Sent, Archive, ToScreen, Feed, PaperTrail, ScreenedOut, Waiting, Scheduled, Someday, Spam, Drafts, Trash, and Work (if configured).
@@ -178,6 +229,7 @@ This is handy for pulling up a person's full history at a glance — e.g. checki
 | `ctrl+r` | reply-all (sender + all CC recipients) |
 | `f` | forward email |
 | `T` | show full conversation thread across folders |
+| `enter` / `l` / `T` on a `≡` row | open a merged group — every member across folders |
 | `V` | show all emails from this sender, across all folders |
 | `E` | continue draft (only in Drafts folder) — re-opens as editable compose |
 
@@ -198,7 +250,7 @@ Neomd marks emails as read **after you've spent time viewing them**, not immedia
 
 **How it works:**
 
-- When you open an email (press `enter` or `l`), neomd fetches the full body from IMAP
+- When you open an email (press `enter` or `l`), neomd fetches the body from IMAP — for mail under 1 MB that's the full message; for larger `multipart/mixed` mail it fetches only the text parts and small (≤ 256 KB) siblings, leaving big attachments on the server until you download them (see [Attachments](#attachments))
 - Once the body loads, a **timer starts** (default: 7 seconds)
 - If you stay in the reader for the full duration, the email is marked as `\Seen` on the server
 - If you exit early (press `h`, `q`, `esc`, or `T`), the email **stays unread**

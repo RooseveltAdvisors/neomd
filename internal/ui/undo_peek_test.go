@@ -31,7 +31,7 @@ func TestUndoJournalScreenerMove(t *testing.T) {
 	for k := range after.optimistic {
 		id = k
 	}
-	done, _ := after.Update(batchDoneMsg{optID: id, undo: []undoMove{{
+	done, _ := after.Update(batchDoneMsg{optID: id, removed: after.removalKeys([]imap.Email{target}), undo: []undoMove{{
 		uid: 777, fromFolder: target.Folder, toFolder: "Feed",
 	}}})
 	confirmed := done.(Model)
@@ -61,7 +61,7 @@ func TestUndoJournalReadToggle(t *testing.T) {
 	m := keysTestModel(t, 2)
 	m.emails[0].Seen = false
 
-	toggled, _ := m.Update(toggleSeenDoneMsg{uid: m.emails[0].UID, folder: "INBOX", seen: true})
+	toggled, _ := m.Update(toggleSeenDoneMsg{ops: []seenOp{{folder: "INBOX", uid: m.emails[0].UID, seen: true}}, done: 1})
 	after := toggled.(Model)
 	if len(after.undoStack) != 1 || len(after.undoStack[0].seen) != 1 {
 		t.Fatalf("toggle not journaled: %#v", after.undoStack)

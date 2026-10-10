@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Dev Commands
 
-- `make build` — compile to `./neomd` (also regenerates `docs/keybindings.md` from `internal/ui/keys.go`)
+- `make build` — compile to `./neomd` (also regenerates `docs/content/docs/keybindings.md` from `internal/ui/keys.go`)
 - `make run ARGS="..."` — build and run
 - `make install` — install to `~/.local/bin/neomd` (default target)
 - `make test` — `go test ./...` (unit tests, no network)
@@ -18,7 +18,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `make daemon` — build and run headless (`./neomd --headless`); screener loop only, no TUI
 - `make benchmark` — IMAP latency benchmark (requires `IMAP_PASS_SIMU`, `IMAP_APPPASS_GMAIL_NEOMD` env vars)
 - `make android` — cross-compile ARM64 for Termux
-- `make release VERSION=v0.1.0` — tag and push a new release (runs docs build, GitHub Actions handles publishing)
+- `make release-notes VERSION=v0.1.0` — drafts `RELEASE_NOTES.md` ("## What has changed?" + Highlights + Fixes) with Claude Code (`claude -p`, prompt in `scripts/release-notes-prompt.md`) from `CHANGELOG.md` and commits since the last tag; review and commit it
+- `make release VERSION=v0.1.0` — tag and push a new release (runs docs build, GitHub Actions handles publishing; refuses if `RELEASE_NOTES.md` is unchanged since the last tag or uncommitted). The workflow puts `RELEASE_NOTES.md` on top of the release body, goreleaser's grouped changelog below
 - Single test: `go test ./internal/smtp -run TestBuildMessage`
 
 Requires Go 1.22+. Binary version is injected via `-ldflags -X main.version=$(git describe)`.
@@ -33,7 +34,7 @@ Requires Go 1.22+. Binary version is injected via `-ldflags -X main.version=$(gi
 - `compose.go` — multi-step compose form (To/CC/BCC/Subject)
 - `search.go`, `cmdline.go`, `thread.go`, `keys.go`, `styles.go`
 
-**Keybindings are declared once** in `internal/ui/keys.go` and drive both the in-app help overlay and the generated `docs/keybindings.md`. When adding a binding, edit that table — do not hand-edit the markdown docs.
+**Keybindings are declared once** in `internal/ui/keys.go` and drive both the in-app help overlay and the generated `docs/content/docs/keybindings.md`. When adding a binding, edit that table — do not hand-edit the markdown docs.
 
 **Compose flow:** user's `$EDITOR` (nvim) opens a temp `neomd-*.md` file with a prelude of `# [neomd: to: ...]` / `# [neomd: subject: ...]` headers built by `internal/editor/editor.go`. On editor exit, parsing extracts headers and `[attach] /path` inline lines (plain-text marker, NOT HTML comments — treesitter hides those). Then `statePresend` shows a review screen before sending.
 
@@ -52,15 +53,15 @@ Requires Go 1.22+. Binary version is injected via `-ldflags -X main.version=$(gi
 - `go-message` v0.18.2: `mail.PartHeader` lacks `ContentType()` — type-assert to `*mail.InlineHeader` / `*mail.AttachmentHeader`
 - `bubbletea` v1.3.10: key type is `tea.KeyMsg` (not `KeyPressMsg`)
 
-Folder operations prefer RFC 6851 MOVE; `u` undo uses UIDPLUS destination UIDs captured on move/delete.
+Folder operations prefer RFC 6851 MOVE; `U` undo uses UIDPLUS destination UIDs captured on move/delete.
 
-**Screener** (`internal/screener/`) reads line-based lists of email addresses from paths defined in config. Default paths are under `~/.config/neomd/lists/`. Classification (`I`/`O`/`F`/`P`) appends to the corresponding list file and moves the message to the matching folder. Auto-screening runs on Inbox load and on a 5-minute background timer (`ui.background_sync_interval`).
+**Screener** (`internal/screener/`) reads line-based lists of email addresses from paths defined in config. Default paths are under `~/.config/neomd/lists/`. Classification (`I`/`O`/`F`/`P`) appends to the corresponding list file and moves the message to the matching folder. Auto-screening runs on Inbox load and on a 5-minute background timer (`ui.bg_sync_interval`).
 
 **Config** (`internal/config/`) — TOML at `~/.config/neomd/config.toml`, auto-created with placeholders. Supports multiple `[[accounts]]` and SMTP-only `[[senders]]` aliases (cycled with `ctrl+f` in compose/pre-send). OAuth2 authentication supported via `oauth2_client_id`, `oauth2_client_secret`, `oauth2_issuer_url`, `oauth2_scopes` fields. `-config PATH` flag overrides location.
 
 **Keyring credentials** (`internal/keyring/`) — accounts may set `password = "keyring"` to fetch the password from the OS keyring (zalando/go-keyring; macOS Keychain, Secret Service on Linux, Credential Manager on Windows). Resolution happens in `config.Load()` so all consumers (IMAP at boot, SMTP at send, `[[senders]]` aliases) see the resolved value. If the keyring entry is missing or the service is unavailable, the `"keyring"` sentinel is preserved and a warning is logged. Service name: `neomd`; key format: `account/<name>/password`.
 
-**Documentation** — Hugo site in `docs/` served at https://neomd.ssp.sh/. README.md is synced to `docs/content/overview.md` via `scripts/sync-readme-to-docs.sh`. Keybindings are auto-generated from `internal/ui/keys.go` via `cmd/docs/main.go` — never hand-edit the markdown tables.
+**Documentation** — Hugo site in `docs/` served at https://neomd.ssp.sh/. README.md is synced to `docs/content/docs/_index.md` via `scripts/sync-readme-to-docs.sh`. Keybindings are auto-generated from `internal/ui/keys.go` via `cmd/docs/main.go` — never hand-edit the markdown tables.
 
 **Package structure:**
 - `internal/ui/` — bubbletea TUI: model.go (state machine), inbox.go, reader.go, compose.go, keys.go (single source of truth for keybindings)
